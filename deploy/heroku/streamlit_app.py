@@ -1,51 +1,64 @@
 import streamlit as st
-import pandas as pd
-from io import StringIO
+import serial
+import threading
+import time
 
-st.set_page_config(page_title="Simple Spreadsheet App")
-st.title("Simple Spreadsheet App with Editable HTML Table")
-st.write("Edit the table cells and then submit to update the data.")
+st.set_page_config(page_title="USB Serial Console")
+st.title("USB Serial Console")
+st.write("Connect your USB Serial Console Cable and send/receive data.")
 
-# Initial dataframe
-if 'df' not in st.session_state:
-    st.session_state.df = pd.DataFrame({"Column 1": ["", ""], "Column 2": ["", ""]})
+# Session state for serial port and data
+if "serial_port" not in st.session_state:
+    st.session_state.serial_port = None
+if "received_data" not in st.session_state:
+    st.session_state.received_data = ""
+if "stop_thread" not in st.session_state:
+    st.session_state.stop_thread = False
 
-# Render editable HTML table
-html_table = st.session_state.df.to_html(index=False, escape=False, table_id="editable_table")
+# Function to read from serial port
 
-def generate_html_table(df):
-    table_html = '<table id="editable_table" contenteditable="true" border="1" style="border-collapse: collapse; width: 100%;">'
-    table_html += "<thead><tr>"
-    for col in df.columns:
-        table_html += f"<th>{col}</th>"
-    table_html += "</tr></thead><tbody>"
-    for i, row in df.iterrows():
-        table_html += "<tr>"
-        for cell in row:
-            table_html += f"<td contenteditable=\"true\">{cell}</td>"
-        table_html += "</tr>"
-    table_html += "</tbody></table>"
-    return table_html
+def read_from_port(ser):
+    while not st.session_state.stop_thread:
+        if ser.in_waiting > 0:
+            data = ser.read(ser.in_waiting).decode(errors='ignore')
+            st.session_state.received_data += data
+            time.sleep(0.1)
 
-editable_table_html = generate_html_table(st.session_state.df)
 
-st.markdown(editable_table_html, unsafe_allow_html=True)
+ports_list = st.text_input("Enter Serial Port (e.g. COM3 or /dev/ttyUSB0):")
 
-st.write("")
+baud_rate = st.selectbox("Baud Rate", [9600, 19200, 38400, 57600, 115200], index=0)
 
-# Hidden text area to capture edited table as CSV
-edited_csv = st.text_area("Edited CSV", height=200, help="Paste CSV exported from the table here to update.")
-
-if st.button("Update Data from CSV"):
+if st.button("Connect"):
     try:
-        df_new = pd.read_csv(StringIO(edited_csv))
-        st.session_state.df = df_new
-        st.success("Data updated successfully.")
+        if st.session_state.serial_port is not None:
+            st.session_state.serial_port.close()
+
+        ser = serial.Serial(port=ports_list, baudrate=baud_rate, timeout=0.1)
+        st.session_state.serial_port = ser
+        st.session_state.received_data = ""
+        st.session_state.stop_thread = False
+
+        # Start thread to read data
+        thread = threading.Thread(target=read_from_port, args=(ser,), daemon=True)
+        thread.start()
+        st.success(f"Connected to {ports_list} at {baud_rate} baud.")
     except Exception as e:
-        st.error(f"Failed to update data: {e}")
+        st.error(f"Failed to connect: {e}")
 
-st.write("### Current Data")
-st.dataframe(st.session_state.df)
+if st.session_state.serial_port and st.session_state.serial_port.is_open:
+    send_data = st.text_input("Send Data:")
+    if st.button("Send"):
+        try:
+            st.session_state.serial_port.write(send_data.encode())
+            st.success("Data sent.")
+        except Exception as e:
+            st.error(f"Failed to send data: {e}")
 
-csv = st.session_state.df.to_csv(index=False)
-st.download_button(label="Download CSV", data=csv, file_name="spreadsheet_data.csv", mime="text/csv")
+    st.text_area("Received Data:", value=st.session_state.received_data, height=300)
+
+if st.button("Disconnect") and st.session_state.serial_port:
+    st.session_state.stop_thread = True
+    st.session_state.serial_port.close()
+    st.session_state.serial_port = None
+    st.success("Disconnected.")
