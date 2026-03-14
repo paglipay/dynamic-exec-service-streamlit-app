@@ -1,5 +1,7 @@
 import json
 from copy import deepcopy
+from datetime import date, datetime
+from urllib import error, parse, request
 
 import streamlit as st
 
@@ -186,7 +188,7 @@ def validate_schema(schema: dict) -> tuple[bool, str]:
 			return False, f"Element #{idx + 1} must be an object."
 		if "type" not in element:
 			return False, f"Element #{idx + 1} is missing 'type'."
-		if "key" not in element:
+		if element.get("type") != "button" and "key" not in element:
 			return False, f"Element #{idx + 1} is missing 'key'."
 
 	return True, ""
@@ -234,8 +236,11 @@ def add_current_json_as_sample(name: str) -> tuple[bool, str]:
 	return True, f"Sample '{unique_name}' added."
 
 
-def render_dynamic_element(element: dict, idx: int, used_keys: set[str]) -> None:
+def render_dynamic_element(element: dict, idx: int, used_keys: set[str]):
 	elem_type = element.get("type", "")
+	if elem_type == "button":
+		return None, None
+
 	key = normalize_key(element.get("key", ""), f"field_{idx + 1}")
 	if key in used_keys:
 		key = f"{key}_{idx + 1}"
@@ -246,21 +251,21 @@ def render_dynamic_element(element: dict, idx: int, used_keys: set[str]) -> None
 
 	if elem_type == "header":
 		st.header(element.get("text", label))
-		return
+		return None, None
 	if elem_type == "subheader":
 		st.subheader(element.get("text", label))
-		return
+		return None, None
 	if elem_type == "markdown":
 		st.markdown(element.get("text", ""))
-		return
+		return None, None
 	if elem_type == "text_input":
-		st.text_input(label, key=key, placeholder=element.get("placeholder", ""), help=help_text)
-		return
+		value = st.text_input(label, key=key, placeholder=element.get("placeholder", ""), help=help_text)
+		return key, value
 	if elem_type == "text_area":
-		st.text_area(label, key=key, placeholder=element.get("placeholder", ""), help=help_text)
-		return
+		value = st.text_area(label, key=key, placeholder=element.get("placeholder", ""), help=help_text)
+		return key, value
 	if elem_type == "number_input":
-		st.number_input(
+		value = st.number_input(
 			label,
 			key=key,
 			min_value=element.get("min_value", 0),
@@ -269,15 +274,15 @@ def render_dynamic_element(element: dict, idx: int, used_keys: set[str]) -> None
 			step=element.get("step", 1),
 			help=help_text,
 		)
-		return
+		return key, value
 	if elem_type == "selectbox":
-		st.selectbox(label, options=element.get("options", ["Option 1"]), key=key, help=help_text)
-		return
+		value = st.selectbox(label, options=element.get("options", ["Option 1"]), key=key, help=help_text)
+		return key, value
 	if elem_type == "checkbox":
-		st.checkbox(label, value=element.get("value", False), key=key, help=help_text)
-		return
+		value = st.checkbox(label, value=element.get("value", False), key=key, help=help_text)
+		return key, value
 	if elem_type == "slider":
-		st.slider(
+		value = st.slider(
 			label,
 			min_value=element.get("min_value", 0),
 			max_value=element.get("max_value", 100),
@@ -285,12 +290,52 @@ def render_dynamic_element(element: dict, idx: int, used_keys: set[str]) -> None
 			key=key,
 			help=help_text,
 		)
-		return
+		return key, value
 	if elem_type == "date_input":
-		st.date_input(label, key=key, help=help_text)
-		return
+		value = st.date_input(label, key=key, help=help_text)
+		return key, value
 
 	st.warning(f"Unsupported element type: {elem_type}")
+	return None, None
+
+
+def to_json_safe(value):
+	if isinstance(value, (date, datetime)):
+		return value.isoformat()
+	return value
+
+
+def send_http_request(method: str, url: str, payload: dict) -> tuple[bool, str, int | None]:
+	clean_method = method.upper().strip()
+	if clean_method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+		return False, f"Unsupported HTTP method: {clean_method}", None
+
+	if not url.strip():
+		return False, "Submit URL is empty.", None
+
+	try:
+		if clean_method == "GET":
+			query = parse.urlencode(payload, doseq=True)
+			separator = "&" if "?" in url else "?"
+			target_url = f"{url}{separator}{query}" if query else url
+			req = request.Request(target_url, method=clean_method)
+		else:
+			data = json.dumps(payload).encode("utf-8")
+			req = request.Request(
+				url,
+				data=data,
+				method=clean_method,
+				headers={"Content-Type": "application/json", "Accept": "application/json"},
+			)
+
+		with request.urlopen(req, timeout=15) as response:
+			body = response.read().decode("utf-8", errors="replace")
+			return True, body, response.getcode()
+	except error.HTTPError as exc:
+		body = exc.read().decode("utf-8", errors="replace")
+		return False, body or str(exc), exc.code
+	except Exception as exc:  # noqa: BLE001
+		return False, str(exc), None
 
 
 def render_canvas(schema: dict) -> None:
@@ -298,12 +343,43 @@ def render_canvas(schema: dict) -> None:
 	if schema.get("description"):
 		st.caption(schema["description"])
 
+	submit_method = schema.get("submit_method", "POST")
+	submit_url = schema.get("submit_url", "")
+	if submit_url:
+		st.caption(f"Submit target: {submit_method.upper()} {submit_url}")
+
+	has_submit_button = any(element.get("type") == "button" for element in schema.get("elements", []))
 	used_keys: set[str] = set()
+	submitted_data: dict[str, object] = {}
+	submitted = False
 	with st.form("dynamic_canvas_form"):
 		for idx, element in enumerate(schema.get("elements", [])):
-			render_dynamic_element(element, idx, used_keys)
+			result_key, result_value = render_dynamic_element(element, idx, used_keys)
+			if result_key is not None:
+				submitted_data[result_key] = to_json_safe(result_value)
 
-		st.form_submit_button(schema.get("submit_label", "Submit"))
+		if has_submit_button:
+			submitted = st.form_submit_button(schema.get("submit_label", "Submit"))
+
+	if not has_submit_button:
+		st.info("Add an element with type 'button' to enable submission.")
+		return
+
+	if submitted:
+		st.success("Form submitted.")
+		st.json(submitted_data)
+		if submit_url:
+			ok, response_body, status_code = send_http_request(submit_method, submit_url, submitted_data)
+			if ok:
+				st.success(f"Request sent successfully ({status_code}).")
+				if response_body:
+					st.code(response_body, language="json")
+			else:
+				if status_code is not None:
+					st.error(f"Request failed with status {status_code}.")
+				else:
+					st.error("Request failed.")
+				st.code(response_body)
 
 
 def app() -> None:
@@ -334,6 +410,26 @@ def app() -> None:
 
 		if st.button("Render Canvas", type="primary", use_container_width=True):
 			parse_and_store_render_schema()
+
+		st.divider()
+		st.subheader("HTTP Submission")
+		st.session_state.rendered_schema["submit_url"] = st.text_input(
+			"Submit URL",
+			value=st.session_state.rendered_schema.get("submit_url", ""),
+			placeholder="https://example.com/api/forms",
+		)
+		st.session_state.rendered_schema["submit_method"] = st.selectbox(
+			"HTTP Verb",
+			options=["POST", "PUT", "PATCH", "DELETE", "GET"],
+			index=["POST", "PUT", "PATCH", "DELETE", "GET"].index(
+				st.session_state.rendered_schema.get("submit_method", "POST").upper()
+				if st.session_state.rendered_schema.get("submit_method", "POST").upper() in {"POST", "PUT", "PATCH", "DELETE", "GET"}
+				else "POST"
+			),
+		)
+		if st.button("Apply HTTP Settings To JSON", use_container_width=True):
+			st.session_state.json_text = to_json_text(st.session_state.rendered_schema)
+			st.success("Updated JSON schema with submit settings.")
 
 		st.divider()
 		st.subheader("Add Current JSON as Sample")
