@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 import re
 
@@ -68,9 +69,13 @@ def next_field_name(field_type: str) -> str:
 
 
 def add_field(field_type: str) -> None:
-	template = FIELD_TEMPLATES[field_type].copy()
+	template = deepcopy(FIELD_TEMPLATES[field_type])
+	field_id = next_field_name(field_type)
+	field_number = sum(1 for field in st.session_state.builder_fields if field["type"] == field_type) + 1
 	template["type"] = field_type
-	template["id"] = next_field_name(field_type)
+	template["id"] = field_id
+	template["label"] = f"{template['label']} {field_number}"
+	template["key"] = slugify(f"{template['key']}_{field_number}")
 	st.session_state.builder_fields.append(template)
 
 
@@ -156,11 +161,24 @@ def render_field_editor(index: int, field: dict) -> None:
 def render_preview_field(field: dict) -> None:
 	label = field["label"] + (" *" if field.get("required") else "")
 	help_text = field.get("help_text") or None
+	preview_key = f"preview_{field['id']}"
 
 	if field["type"] == "text_input":
-		st.text_input(label, placeholder=field.get("placeholder", ""), help=help_text, disabled=True)
+		st.text_input(
+			label,
+			placeholder=field.get("placeholder", ""),
+			help=help_text,
+			disabled=True,
+			key=preview_key,
+		)
 	elif field["type"] == "text_area":
-		st.text_area(label, placeholder=field.get("placeholder", ""), help=help_text, disabled=True)
+		st.text_area(
+			label,
+			placeholder=field.get("placeholder", ""),
+			help=help_text,
+			disabled=True,
+			key=preview_key,
+		)
 	elif field["type"] == "number_input":
 		st.number_input(
 			label,
@@ -170,44 +188,71 @@ def render_preview_field(field: dict) -> None:
 			step=int(field.get("step", 1)),
 			help=help_text,
 			disabled=True,
+			key=preview_key,
 		)
 	elif field["type"] == "selectbox":
-		st.selectbox(label, options=field.get("options", ["Option 1"]), help=help_text, disabled=True)
+		st.selectbox(
+			label,
+			options=field.get("options", ["Option 1"]),
+			help=help_text,
+			disabled=True,
+			key=preview_key,
+		)
 	elif field["type"] == "checkbox":
-		st.checkbox(label, value=field.get("value", False), help=help_text, disabled=True)
+		st.checkbox(label, value=field.get("value", False), help=help_text, disabled=True, key=preview_key)
+
+
+def make_unique_field_keys(fields: list[dict]) -> list[dict]:
+	seen_keys: dict[str, int] = {}
+	unique_fields = []
+
+	for field in fields:
+		field_copy = deepcopy(field)
+		base_key = slugify(field_copy.get("key", field_copy["id"]))
+		count = seen_keys.get(base_key, 0) + 1
+		seen_keys[base_key] = count
+		if count > 1:
+			field_copy["key"] = f"{base_key}_{count}"
+		else:
+			field_copy["key"] = base_key
+		unique_fields.append(field_copy)
+
+	return unique_fields
 
 
 def generate_field_code(field: dict) -> str:
 	label_expr = repr(field["label"] + (" *" if field.get("required") else ""))
 	key_expr = repr(field["key"])
 	help_expr = repr(field.get("help_text", ""))
+	widget_key_expr = repr(f"widget_{field['key']}")
 
 	if field["type"] == "text_input":
 		return (
 			f"submitted_data[{key_expr}] = st.text_input({label_expr}, "
-			f"placeholder={repr(field.get('placeholder', ''))}, help={help_expr})"
+			f"placeholder={repr(field.get('placeholder', ''))}, help={help_expr}, key={widget_key_expr})"
 		)
 	if field["type"] == "text_area":
 		return (
 			f"submitted_data[{key_expr}] = st.text_area({label_expr}, "
-			f"placeholder={repr(field.get('placeholder', ''))}, help={help_expr})"
+			f"placeholder={repr(field.get('placeholder', ''))}, help={help_expr}, key={widget_key_expr})"
 		)
 	if field["type"] == "number_input":
 		return (
 			f"submitted_data[{key_expr}] = st.number_input({label_expr}, "
 			f"min_value={int(field.get('min_value', 0))}, max_value={int(field.get('max_value', 100))}, "
-			f"value={int(field.get('value', 0))}, step={int(field.get('step', 1))}, help={help_expr})"
+			f"value={int(field.get('value', 0))}, step={int(field.get('step', 1))}, help={help_expr}, key={widget_key_expr})"
 		)
 	if field["type"] == "selectbox":
 		return (
 			f"submitted_data[{key_expr}] = st.selectbox({label_expr}, "
-			f"options={repr(field.get('options', ['Option 1']))}, help={help_expr})"
+			f"options={repr(field.get('options', ['Option 1']))}, help={help_expr}, key={widget_key_expr})"
 		)
-	return f"submitted_data[{key_expr}] = st.checkbox({label_expr}, value={bool(field.get('value', False))}, help={help_expr})"
+	return f"submitted_data[{key_expr}] = st.checkbox({label_expr}, value={bool(field.get('value', False))}, help={help_expr}, key={widget_key_expr})"
 
 
 def generate_app_source(title: str, description: str, submit_label: str, fields: list[dict]) -> str:
-	field_lines = [generate_field_code(field) for field in fields]
+	prepared_fields = make_unique_field_keys(fields)
+	field_lines = [generate_field_code(field) for field in prepared_fields]
 	if not field_lines:
 		field_lines = ["st.info('No fields configured.')"]
 
@@ -294,6 +339,10 @@ def app() -> None:
 		with st.container(border=True):
 			st.markdown(f"### {st.session_state.builder_title}")
 			st.write(st.session_state.builder_description)
+
+			field_keys = [slugify(field.get("key", field["id"])) for field in st.session_state.builder_fields]
+			if len(field_keys) != len(set(field_keys)):
+				st.warning("Duplicate field keys detected. Published apps will auto-suffix duplicates to keep widgets unique.")
 
 			if not st.session_state.builder_fields:
 				st.caption("Your form preview will appear here.")
