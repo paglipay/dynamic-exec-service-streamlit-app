@@ -1,6 +1,5 @@
 from pathlib import Path
 import re
-import textwrap
 
 import streamlit as st
 
@@ -185,54 +184,64 @@ def generate_field_code(field: dict) -> str:
 
 	if field["type"] == "text_input":
 		return (
-			f"    submitted_data[{key_expr}] = st.text_input({label_expr}, "
+			f"submitted_data[{key_expr}] = st.text_input({label_expr}, "
 			f"placeholder={repr(field.get('placeholder', ''))}, help={help_expr})"
 		)
 	if field["type"] == "text_area":
 		return (
-			f"    submitted_data[{key_expr}] = st.text_area({label_expr}, "
+			f"submitted_data[{key_expr}] = st.text_area({label_expr}, "
 			f"placeholder={repr(field.get('placeholder', ''))}, help={help_expr})"
 		)
 	if field["type"] == "number_input":
 		return (
-			f"    submitted_data[{key_expr}] = st.number_input({label_expr}, "
+			f"submitted_data[{key_expr}] = st.number_input({label_expr}, "
 			f"min_value={int(field.get('min_value', 0))}, max_value={int(field.get('max_value', 100))}, "
 			f"value={int(field.get('value', 0))}, step={int(field.get('step', 1))}, help={help_expr})"
 		)
 	if field["type"] == "selectbox":
 		return (
-			f"    submitted_data[{key_expr}] = st.selectbox({label_expr}, "
+			f"submitted_data[{key_expr}] = st.selectbox({label_expr}, "
 			f"options={repr(field.get('options', ['Option 1']))}, help={help_expr})"
 		)
-	return f"    submitted_data[{key_expr}] = st.checkbox({label_expr}, value={bool(field.get('value', False))}, help={help_expr})"
+	return f"submitted_data[{key_expr}] = st.checkbox({label_expr}, value={bool(field.get('value', False))}, help={help_expr})"
 
 
 def generate_app_source(title: str, description: str, submit_label: str, fields: list[dict]) -> str:
-	field_code = "\n".join(generate_field_code(field) for field in fields) or "    st.info('No fields configured.')"
-	return textwrap.dedent(
-		f'''
-		import streamlit as st
+	field_lines = [generate_field_code(field) for field in fields]
+	if not field_lines:
+		field_lines = ["st.info('No fields configured.')"]
 
+	lines = [
+		"import streamlit as st",
+		"",
+		"",
+		"def app() -> None:",
+		f"    st.set_page_config(page_title={title!r})",
+		f"    st.title({title!r})",
+		f"    st.write({description!r})",
+		"",
+		"    submitted_data = {}",
+		"    with st.form(\"published_form\"):",
+	]
 
-		def app() -> None:
-			st.set_page_config(page_title={title!r})
-			st.title({title!r})
-			st.write({description!r})
+	for field_line in field_lines:
+		lines.append(f"        {field_line}")
 
-			submitted_data = {{}}
-			with st.form("published_form"):
-		{field_code}
-				submitted = st.form_submit_button({submit_label!r})
+	lines.extend(
+		[
+			f"        submitted = st.form_submit_button({submit_label!r})",
+			"",
+			"    if submitted:",
+			"        st.success(\"Form submitted successfully.\")",
+			"        st.json(submitted_data)",
+			"",
+			"",
+			"if __name__ == \"__main__\":",
+			"    app()",
+		]
+	)
 
-			if submitted:
-				st.success("Form submitted successfully.")
-				st.json(submitted_data)
-
-
-		if __name__ == "__main__":
-			app()
-		'''
-	).strip() + "\n"
+	return "\n".join(lines) + "\n"
 
 
 def publish_app(title: str, description: str, submit_label: str, filename: str, fields: list[dict]) -> Path:
