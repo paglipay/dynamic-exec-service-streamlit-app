@@ -30,7 +30,8 @@ DEFAULT_SAMPLES = [
 				{"type": "text_input", "label": "Issue Title", "key": "issue_title"},
 				{"type": "selectbox", "label": "Severity", "key": "severity", "options": ["Low", "Medium", "High", "Critical"]},
 				{"type": "text_area", "label": "Steps to Reproduce", "key": "steps"},
-				{"type": "checkbox", "label": "Blocks release", "key": "blocks_release", "value": False}
+				{"type": "checkbox", "label": "Blocks release", "key": "blocks_release", "value": False},
+				{"type": "button", "label": "Submit Bug", "method": "POST", "url": ""}
 			]
 		},
 	},
@@ -42,7 +43,8 @@ DEFAULT_SAMPLES = [
 				{"type": "text_input", "label": "Attendee Name", "key": "attendee_name"},
 				{"type": "selectbox", "label": "Will Attend", "key": "attendance", "options": ["Yes", "No", "Maybe"]},
 				{"type": "number_input", "label": "Guests", "key": "guests", "min_value": 0, "max_value": 5, "value": 1, "step": 1},
-				{"type": "date_input", "label": "Arrival Date", "key": "arrival_date"}
+				{"type": "date_input", "label": "Arrival Date", "key": "arrival_date"},
+				{"type": "button", "label": "Submit RSVP", "method": "POST", "url": ""}
 			]
 		},
 	},
@@ -54,7 +56,8 @@ DEFAULT_SAMPLES = [
 				{"type": "text_input", "label": "Role Name", "key": "role_name"},
 				{"type": "selectbox", "label": "Department", "key": "department", "options": ["Engineering", "Operations", "Finance", "People"]},
 				{"type": "slider", "label": "Seniority", "key": "seniority", "min_value": 1, "max_value": 10, "value": 5},
-				{"type": "checkbox", "label": "Urgent", "key": "urgent", "value": True}
+				{"type": "checkbox", "label": "Urgent", "key": "urgent", "value": True},
+				{"type": "button", "label": "Submit Intake", "method": "POST", "url": ""}
 			]
 		},
 	},
@@ -67,7 +70,8 @@ DEFAULT_SAMPLES = [
 				{"type": "text_input", "label": "Destination", "key": "destination"},
 				{"type": "date_input", "label": "Departure Date", "key": "departure_date"},
 				{"type": "number_input", "label": "Travelers", "key": "travelers", "min_value": 1, "max_value": 12, "value": 2, "step": 1},
-				{"type": "text_area", "label": "Preferences", "key": "preferences"}
+				{"type": "text_area", "label": "Preferences", "key": "preferences"},
+				{"type": "button", "label": "Submit Trip", "method": "POST", "url": ""}
 			]
 		},
 	},
@@ -79,7 +83,8 @@ DEFAULT_SAMPLES = [
 				{"type": "text_input", "label": "Feature Name", "key": "feature_name"},
 				{"type": "text_area", "label": "Problem Statement", "key": "problem_statement"},
 				{"type": "text_area", "label": "Proposed Solution", "key": "proposed_solution"},
-				{"type": "selectbox", "label": "Impact", "key": "impact", "options": ["Small", "Medium", "Large"]}
+				{"type": "selectbox", "label": "Impact", "key": "impact", "options": ["Small", "Medium", "Large"]},
+				{"type": "button", "label": "Submit Request", "method": "POST", "url": ""}
 			]
 		},
 	},
@@ -90,7 +95,8 @@ DEFAULT_SAMPLES = [
 			"elements": [
 				{"type": "slider", "label": "Overall Satisfaction", "key": "satisfaction", "min_value": 1, "max_value": 10, "value": 8},
 				{"type": "selectbox", "label": "How likely to recommend?", "key": "recommend", "options": ["Not likely", "Maybe", "Likely"]},
-				{"type": "text_area", "label": "Feedback", "key": "feedback"}
+				{"type": "text_area", "label": "Feedback", "key": "feedback"},
+				{"type": "button", "label": "Submit Survey", "method": "POST", "url": ""}
 			]
 		},
 	},
@@ -102,7 +108,8 @@ DEFAULT_SAMPLES = [
 				{"type": "text_area", "label": "Yesterday", "key": "yesterday"},
 				{"type": "text_area", "label": "Today", "key": "today"},
 				{"type": "text_area", "label": "Blockers", "key": "blockers"},
-				{"type": "checkbox", "label": "Need Help", "key": "need_help", "value": False}
+				{"type": "checkbox", "label": "Need Help", "key": "need_help", "value": False},
+				{"type": "button", "label": "Submit Standup", "method": "POST", "url": ""}
 			]
 		},
 	},
@@ -114,7 +121,8 @@ DEFAULT_SAMPLES = [
 				{"type": "text_input", "label": "SKU", "key": "sku"},
 				{"type": "number_input", "label": "Quantity", "key": "quantity", "min_value": 0, "max_value": 10000, "value": 0, "step": 1},
 				{"type": "selectbox", "label": "Warehouse", "key": "warehouse", "options": ["A", "B", "C"]},
-				{"type": "checkbox", "label": "Backordered", "key": "backordered", "value": False}
+				{"type": "checkbox", "label": "Backordered", "key": "backordered", "value": False},
+				{"type": "button", "label": "Submit Update", "method": "POST", "url": ""}
 			]
 		},
 	},
@@ -126,7 +134,8 @@ DEFAULT_SAMPLES = [
 				{"type": "text_input", "label": "First Name", "key": "first_name"},
 				{"type": "text_input", "label": "Last Name", "key": "last_name"},
 				{"type": "text_input", "label": "Phone", "key": "phone"},
-				{"type": "checkbox", "label": "Agree to Terms", "key": "agree_terms", "value": False}
+				{"type": "checkbox", "label": "Agree to Terms", "key": "agree_terms", "value": False},
+				{"type": "button", "label": "Register", "method": "POST", "url": ""}
 			]
 		},
 	},
