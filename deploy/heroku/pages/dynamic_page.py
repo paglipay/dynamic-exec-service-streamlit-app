@@ -16,7 +16,8 @@ DEFAULT_SAMPLES = [
 				{"type": "text_input", "label": "Full Name", "key": "full_name", "placeholder": "Jane Doe"},
 				{"type": "text_input", "label": "Email", "key": "email", "placeholder": "jane@example.com"},
 				{"type": "selectbox", "label": "Topic", "key": "topic", "options": ["Sales", "Support", "Partnership"]},
-				{"type": "text_area", "label": "Message", "key": "message", "placeholder": "Tell us how we can help"}
+				{"type": "text_area", "label": "Message", "key": "message", "placeholder": "Tell us how we can help"},
+				{"type": "button", "label": "Send", "method": "POST", "url": ""}
 			]
 		},
 	},
@@ -190,6 +191,10 @@ def validate_schema(schema: dict) -> tuple[bool, str]:
 			return False, f"Element #{idx + 1} is missing 'type'."
 		if element.get("type") != "button" and "key" not in element:
 			return False, f"Element #{idx + 1} is missing 'key'."
+		if element.get("type") == "button":
+			method = str(element.get("method", "POST")).upper()
+			if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+				return False, f"Element #{idx + 1} has invalid button method '{method}'."
 
 	return True, ""
 
@@ -343,15 +348,11 @@ def render_canvas(schema: dict) -> None:
 	if schema.get("description"):
 		st.caption(schema["description"])
 
-	submit_method = schema.get("submit_method", "POST")
-	submit_url = schema.get("submit_url", "")
-	if submit_url:
-		st.caption(f"Submit target: {submit_method.upper()} {submit_url}")
-
-	has_submit_button = any(element.get("type") == "button" for element in schema.get("elements", []))
+	button_elements = [element for element in schema.get("elements", []) if element.get("type") == "button"]
+	has_submit_button = len(button_elements) > 0
 	used_keys: set[str] = set()
 	submitted_data: dict[str, object] = {}
-	submitted = False
+	clicked_button = None
 	with st.form("dynamic_canvas_form"):
 		for idx, element in enumerate(schema.get("elements", [])):
 			result_key, result_value = render_dynamic_element(element, idx, used_keys)
@@ -359,15 +360,23 @@ def render_canvas(schema: dict) -> None:
 				submitted_data[result_key] = to_json_safe(result_value)
 
 		if has_submit_button:
-			submitted = st.form_submit_button(schema.get("submit_label", "Submit"))
+			for button_idx, button_cfg in enumerate(button_elements):
+				button_label = button_cfg.get("label", f"Submit {button_idx + 1}")
+				if st.form_submit_button(button_label):
+					clicked_button = button_cfg
 
 	if not has_submit_button:
 		st.info("Add an element with type 'button' to enable submission.")
 		return
 
-	if submitted:
+	if clicked_button:
 		st.success("Form submitted.")
 		st.json(submitted_data)
+
+		submit_method = str(clicked_button.get("method", schema.get("submit_method", "POST"))).upper()
+		submit_url = str(clicked_button.get("url", schema.get("submit_url", ""))).strip()
+		if submit_url:
+			st.caption(f"Submit target: {submit_method} {submit_url}")
 		if submit_url:
 			ok, response_body, status_code = send_http_request(submit_method, submit_url, submitted_data)
 			if ok:
@@ -410,26 +419,6 @@ def app() -> None:
 
 		if st.button("Render Canvas", type="primary", use_container_width=True):
 			parse_and_store_render_schema()
-
-		st.divider()
-		st.subheader("HTTP Submission")
-		st.session_state.rendered_schema["submit_url"] = st.text_input(
-			"Submit URL",
-			value=st.session_state.rendered_schema.get("submit_url", ""),
-			placeholder="https://example.com/api/forms",
-		)
-		st.session_state.rendered_schema["submit_method"] = st.selectbox(
-			"HTTP Verb",
-			options=["POST", "PUT", "PATCH", "DELETE", "GET"],
-			index=["POST", "PUT", "PATCH", "DELETE", "GET"].index(
-				st.session_state.rendered_schema.get("submit_method", "POST").upper()
-				if st.session_state.rendered_schema.get("submit_method", "POST").upper() in {"POST", "PUT", "PATCH", "DELETE", "GET"}
-				else "POST"
-			),
-		)
-		if st.button("Apply HTTP Settings To JSON", use_container_width=True):
-			st.session_state.json_text = to_json_text(st.session_state.rendered_schema)
-			st.success("Updated JSON schema with submit settings.")
 
 		st.divider()
 		st.subheader("Add Current JSON as Sample")
