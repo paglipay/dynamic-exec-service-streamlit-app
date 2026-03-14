@@ -1,0 +1,362 @@
+import json
+from copy import deepcopy
+
+import streamlit as st
+
+
+DEFAULT_SAMPLES = [
+	{
+		"name": "Contact Form",
+		"schema": {
+			"title": "Contact Form",
+			"description": "Share your contact details.",
+			"elements": [
+				{"type": "text_input", "label": "Full Name", "key": "full_name", "placeholder": "Jane Doe"},
+				{"type": "text_input", "label": "Email", "key": "email", "placeholder": "jane@example.com"},
+				{"type": "selectbox", "label": "Topic", "key": "topic", "options": ["Sales", "Support", "Partnership"]},
+				{"type": "text_area", "label": "Message", "key": "message", "placeholder": "Tell us how we can help"}
+			]
+		},
+	},
+	{
+		"name": "Bug Report",
+		"schema": {
+			"title": "Bug Report",
+			"description": "Capture issue details quickly.",
+			"elements": [
+				{"type": "text_input", "label": "Issue Title", "key": "issue_title"},
+				{"type": "selectbox", "label": "Severity", "key": "severity", "options": ["Low", "Medium", "High", "Critical"]},
+				{"type": "text_area", "label": "Steps to Reproduce", "key": "steps"},
+				{"type": "checkbox", "label": "Blocks release", "key": "blocks_release", "value": False}
+			]
+		},
+	},
+	{
+		"name": "Event RSVP",
+		"schema": {
+			"title": "Event RSVP",
+			"elements": [
+				{"type": "text_input", "label": "Attendee Name", "key": "attendee_name"},
+				{"type": "selectbox", "label": "Will Attend", "key": "attendance", "options": ["Yes", "No", "Maybe"]},
+				{"type": "number_input", "label": "Guests", "key": "guests", "min_value": 0, "max_value": 5, "value": 1, "step": 1},
+				{"type": "date_input", "label": "Arrival Date", "key": "arrival_date"}
+			]
+		},
+	},
+	{
+		"name": "Hiring Intake",
+		"schema": {
+			"title": "Hiring Intake",
+			"elements": [
+				{"type": "text_input", "label": "Role Name", "key": "role_name"},
+				{"type": "selectbox", "label": "Department", "key": "department", "options": ["Engineering", "Operations", "Finance", "People"]},
+				{"type": "slider", "label": "Seniority", "key": "seniority", "min_value": 1, "max_value": 10, "value": 5},
+				{"type": "checkbox", "label": "Urgent", "key": "urgent", "value": True}
+			]
+		},
+	},
+	{
+		"name": "Trip Planner",
+		"schema": {
+			"title": "Trip Planner",
+			"description": "Plan your next trip.",
+			"elements": [
+				{"type": "text_input", "label": "Destination", "key": "destination"},
+				{"type": "date_input", "label": "Departure Date", "key": "departure_date"},
+				{"type": "number_input", "label": "Travelers", "key": "travelers", "min_value": 1, "max_value": 12, "value": 2, "step": 1},
+				{"type": "text_area", "label": "Preferences", "key": "preferences"}
+			]
+		},
+	},
+	{
+		"name": "Feature Request",
+		"schema": {
+			"title": "Feature Request",
+			"elements": [
+				{"type": "text_input", "label": "Feature Name", "key": "feature_name"},
+				{"type": "text_area", "label": "Problem Statement", "key": "problem_statement"},
+				{"type": "text_area", "label": "Proposed Solution", "key": "proposed_solution"},
+				{"type": "selectbox", "label": "Impact", "key": "impact", "options": ["Small", "Medium", "Large"]}
+			]
+		},
+	},
+	{
+		"name": "Customer Survey",
+		"schema": {
+			"title": "Customer Survey",
+			"elements": [
+				{"type": "slider", "label": "Overall Satisfaction", "key": "satisfaction", "min_value": 1, "max_value": 10, "value": 8},
+				{"type": "selectbox", "label": "How likely to recommend?", "key": "recommend", "options": ["Not likely", "Maybe", "Likely"]},
+				{"type": "text_area", "label": "Feedback", "key": "feedback"}
+			]
+		},
+	},
+	{
+		"name": "Daily Standup",
+		"schema": {
+			"title": "Daily Standup",
+			"elements": [
+				{"type": "text_area", "label": "Yesterday", "key": "yesterday"},
+				{"type": "text_area", "label": "Today", "key": "today"},
+				{"type": "text_area", "label": "Blockers", "key": "blockers"},
+				{"type": "checkbox", "label": "Need Help", "key": "need_help", "value": False}
+			]
+		},
+	},
+	{
+		"name": "Inventory Update",
+		"schema": {
+			"title": "Inventory Update",
+			"elements": [
+				{"type": "text_input", "label": "SKU", "key": "sku"},
+				{"type": "number_input", "label": "Quantity", "key": "quantity", "min_value": 0, "max_value": 10000, "value": 0, "step": 1},
+				{"type": "selectbox", "label": "Warehouse", "key": "warehouse", "options": ["A", "B", "C"]},
+				{"type": "checkbox", "label": "Backordered", "key": "backordered", "value": False}
+			]
+		},
+	},
+	{
+		"name": "Simple Registration",
+		"schema": {
+			"title": "Simple Registration",
+			"elements": [
+				{"type": "text_input", "label": "First Name", "key": "first_name"},
+				{"type": "text_input", "label": "Last Name", "key": "last_name"},
+				{"type": "text_input", "label": "Phone", "key": "phone"},
+				{"type": "checkbox", "label": "Agree to Terms", "key": "agree_terms", "value": False}
+			]
+		},
+	},
+]
+
+
+def to_json_text(schema: dict) -> str:
+	return json.dumps(schema, indent=2)
+
+
+def normalize_key(raw_key: str, fallback: str) -> str:
+	key = (raw_key or "").strip().lower().replace(" ", "_")
+	return key or fallback
+
+
+def init_state() -> None:
+	if "samples" not in st.session_state:
+		st.session_state.samples = deepcopy(DEFAULT_SAMPLES)
+
+	if "selected_sample_name" not in st.session_state:
+		st.session_state.selected_sample_name = st.session_state.samples[0]["name"]
+
+	if "json_text" not in st.session_state:
+		st.session_state.json_text = to_json_text(st.session_state.samples[0]["schema"])
+
+	if "rendered_schema" not in st.session_state:
+		st.session_state.rendered_schema = st.session_state.samples[0]["schema"]
+
+	if "render_error" not in st.session_state:
+		st.session_state.render_error = ""
+
+
+def sample_names() -> list[str]:
+	return [sample["name"] for sample in st.session_state.samples]
+
+
+def get_selected_sample() -> dict:
+	selected_name = st.session_state.selected_sample_name
+	for sample in st.session_state.samples:
+		if sample["name"] == selected_name:
+			return sample
+	return st.session_state.samples[0]
+
+
+def load_selected_sample_into_textarea() -> None:
+	selected = get_selected_sample()
+	st.session_state.json_text = to_json_text(selected["schema"])
+
+
+def validate_schema(schema: dict) -> tuple[bool, str]:
+	if not isinstance(schema, dict):
+		return False, "Schema must be a JSON object."
+
+	elements = schema.get("elements")
+	if not isinstance(elements, list):
+		return False, "Schema must include an 'elements' list."
+
+	for idx, element in enumerate(elements):
+		if not isinstance(element, dict):
+			return False, f"Element #{idx + 1} must be an object."
+		if "type" not in element:
+			return False, f"Element #{idx + 1} is missing 'type'."
+		if "key" not in element:
+			return False, f"Element #{idx + 1} is missing 'key'."
+
+	return True, ""
+
+
+def parse_and_store_render_schema() -> None:
+	try:
+		parsed = json.loads(st.session_state.json_text)
+	except json.JSONDecodeError as exc:
+		st.session_state.render_error = f"Invalid JSON: {exc}"
+		return
+
+	valid, message = validate_schema(parsed)
+	if not valid:
+		st.session_state.render_error = message
+		return
+
+	st.session_state.rendered_schema = parsed
+	st.session_state.render_error = ""
+
+
+def add_current_json_as_sample(name: str) -> tuple[bool, str]:
+	cleaned_name = name.strip()
+	if not cleaned_name:
+		return False, "Provide a sample name."
+
+	try:
+		parsed = json.loads(st.session_state.json_text)
+	except json.JSONDecodeError as exc:
+		return False, f"Cannot add sample. JSON is invalid: {exc}"
+
+	valid, message = validate_schema(parsed)
+	if not valid:
+		return False, f"Cannot add sample. {message}"
+
+	existing_names = set(sample_names())
+	unique_name = cleaned_name
+	suffix = 2
+	while unique_name in existing_names:
+		unique_name = f"{cleaned_name} ({suffix})"
+		suffix += 1
+
+	st.session_state.samples.append({"name": unique_name, "schema": parsed})
+	st.session_state.selected_sample_name = unique_name
+	return True, f"Sample '{unique_name}' added."
+
+
+def render_dynamic_element(element: dict, idx: int, used_keys: set[str]) -> None:
+	elem_type = element.get("type", "")
+	key = normalize_key(element.get("key", ""), f"field_{idx + 1}")
+	if key in used_keys:
+		key = f"{key}_{idx + 1}"
+	used_keys.add(key)
+
+	label = element.get("label", key)
+	help_text = element.get("help", None)
+
+	if elem_type == "header":
+		st.header(element.get("text", label))
+		return
+	if elem_type == "subheader":
+		st.subheader(element.get("text", label))
+		return
+	if elem_type == "markdown":
+		st.markdown(element.get("text", ""))
+		return
+	if elem_type == "text_input":
+		st.text_input(label, key=key, placeholder=element.get("placeholder", ""), help=help_text)
+		return
+	if elem_type == "text_area":
+		st.text_area(label, key=key, placeholder=element.get("placeholder", ""), help=help_text)
+		return
+	if elem_type == "number_input":
+		st.number_input(
+			label,
+			key=key,
+			min_value=element.get("min_value", 0),
+			max_value=element.get("max_value", 100),
+			value=element.get("value", 0),
+			step=element.get("step", 1),
+			help=help_text,
+		)
+		return
+	if elem_type == "selectbox":
+		st.selectbox(label, options=element.get("options", ["Option 1"]), key=key, help=help_text)
+		return
+	if elem_type == "checkbox":
+		st.checkbox(label, value=element.get("value", False), key=key, help=help_text)
+		return
+	if elem_type == "slider":
+		st.slider(
+			label,
+			min_value=element.get("min_value", 0),
+			max_value=element.get("max_value", 100),
+			value=element.get("value", 25),
+			key=key,
+			help=help_text,
+		)
+		return
+	if elem_type == "date_input":
+		st.date_input(label, key=key, help=help_text)
+		return
+
+	st.warning(f"Unsupported element type: {elem_type}")
+
+
+def render_canvas(schema: dict) -> None:
+	st.markdown(f"### {schema.get('title', 'Dynamic Canvas')}")
+	if schema.get("description"):
+		st.caption(schema["description"])
+
+	used_keys: set[str] = set()
+	with st.form("dynamic_canvas_form"):
+		for idx, element in enumerate(schema.get("elements", [])):
+			render_dynamic_element(element, idx, used_keys)
+
+		st.form_submit_button(schema.get("submit_label", "Submit"))
+
+
+def app() -> None:
+	st.set_page_config(page_title="Dynamic JSON Canvas", layout="wide")
+	init_state()
+
+	st.title("Dynamic JSON Canvas Renderer")
+	st.write("Pick a sample JSON, edit it, and press Render Canvas to quickly update the canvas.")
+
+	left, right = st.columns([1, 1.4], gap="large")
+
+	with left:
+		st.subheader("JSON Editor")
+
+		st.selectbox(
+			"Sample JSON",
+			options=sample_names(),
+			key="selected_sample_name",
+			on_change=load_selected_sample_into_textarea,
+		)
+
+		st.text_area(
+			"JSON Schema",
+			key="json_text",
+			height=380,
+			help="Edit JSON then press Render Canvas.",
+		)
+
+		if st.button("Render Canvas", type="primary", use_container_width=True):
+			parse_and_store_render_schema()
+
+		st.divider()
+		st.subheader("Add Current JSON as Sample")
+		sample_name = st.text_input("Sample Name", placeholder="My custom sample")
+		if st.button("Add to Samples", use_container_width=True):
+			ok, message = add_current_json_as_sample(sample_name)
+			if ok:
+				st.success(message)
+				load_selected_sample_into_textarea()
+			else:
+				st.error(message)
+
+		if st.session_state.render_error:
+			st.error(st.session_state.render_error)
+
+	with right:
+		st.subheader("Canvas")
+		with st.container(border=True):
+			render_canvas(st.session_state.rendered_schema)
+
+		st.subheader("Current Parsed Schema")
+		st.json(st.session_state.rendered_schema)
+
+
+if __name__ == "__main__":
+	app()
