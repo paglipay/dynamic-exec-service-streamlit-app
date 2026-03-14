@@ -1,3 +1,4 @@
 streamlit
 streamlit_elements
 pyserial
+python-socketio[client]

@@ -1,9 +1,23 @@
 import json
+import queue
+import threading
+import time
 from copy import deepcopy
 from datetime import date, datetime
 from urllib import error, parse, request
 
 import streamlit as st
+
+try:
+	import socketio
+except ImportError:  # pragma: no cover
+	socketio = None
+
+
+SOCKET_MESSAGE_QUEUE: queue.Queue[dict] = queue.Queue()
+SOCKET_THREAD: threading.Thread | None = None
+SOCKET_STOP_EVENT: threading.Event | None = None
+SOCKET_LOCK = threading.Lock()
 
 
 DEFAULT_SAMPLES = [
@@ -167,6 +181,27 @@ def init_state() -> None:
 	if "render_error" not in st.session_state:
 		st.session_state.render_error = ""
 
+	if "socket_server_url" not in st.session_state:
+		st.session_state.socket_server_url = "http://localhost:5000"
+
+	if "socket_event_name" not in st.session_state:
+		st.session_state.socket_event_name = "json_schema_update"
+
+	if "socket_status" not in st.session_state:
+		st.session_state.socket_status = "Disconnected"
+
+	if "socket_connected" not in st.session_state:
+		st.session_state.socket_connected = False
+
+	if "socket_last_payload" not in st.session_state:
+		st.session_state.socket_last_payload = ""
+
+	if "socket_auto_poll" not in st.session_state:
+		st.session_state.socket_auto_poll = True
+
+	if "socket_poll_interval" not in st.session_state:
+		st.session_state.socket_poll_interval = 1
+
 
 def sample_names() -> list[str]:
 	return [sample["name"] for sample in st.session_state.samples]
@@ -222,6 +257,96 @@ def parse_and_store_render_schema() -> None:
 
 	st.session_state.rendered_schema = parsed
 	st.session_state.render_error = ""
+
+
+def _socket_worker(server_url: str, event_name: str, stop_event: threading.Event) -> None:
+	client = socketio.Client(reconnection=True, logger=False, engineio_logger=False)
+
+	def enqueue_status(message: str) -> None:
+		SOCKET_MESSAGE_QUEUE.put({"type": "status", "message": message})
+
+	def enqueue_schema_payload(payload) -> None:
+		if isinstance(payload, (dict, list)):
+			json_text = json.dumps(payload, indent=2)
+		elif isinstance(payload, str):
+			json_text = payload
+		else:
+			json_text = json.dumps({"value": payload}, indent=2)
+		SOCKET_MESSAGE_QUEUE.put({"type": "schema", "json_text": json_text})
+
+	@client.event
+	def connect():
+		enqueue_status(f"Connected to {server_url}")
+
+	@client.event
+	def disconnect():
+		enqueue_status("Disconnected")
+
+	client.on(event_name, enqueue_schema_payload)
+
+	try:
+		client.connect(server_url, transports=["websocket", "polling"], wait_timeout=10)
+		enqueue_status(f"Listening for '{event_name}' events")
+		while not stop_event.is_set():
+			time.sleep(0.2)
+	except Exception as exc:  # noqa: BLE001
+		enqueue_status(f"Socket error: {exc}")
+	finally:
+		try:
+			client.disconnect()
+		except Exception:  # noqa: BLE001
+			pass
+
+
+def start_socket_listener(server_url: str, event_name: str) -> tuple[bool, str]:
+	global SOCKET_THREAD, SOCKET_STOP_EVENT
+
+	if socketio is None:
+		return False, "python-socketio is not installed in this environment."
+
+	server_url = server_url.strip()
+	if not server_url:
+		return False, "Socket server URL is required."
+
+	stop_socket_listener()
+
+	with SOCKET_LOCK:
+		SOCKET_STOP_EVENT = threading.Event()
+		SOCKET_THREAD = threading.Thread(
+			target=_socket_worker,
+			args=(server_url, event_name.strip() or "json_schema_update", SOCKET_STOP_EVENT),
+			daemon=True,
+		)
+		SOCKET_THREAD.start()
+
+	return True, "Socket listener started."
+
+
+def stop_socket_listener() -> None:
+	global SOCKET_THREAD, SOCKET_STOP_EVENT
+	with SOCKET_LOCK:
+		if SOCKET_STOP_EVENT is not None:
+			SOCKET_STOP_EVENT.set()
+		SOCKET_THREAD = None
+		SOCKET_STOP_EVENT = None
+
+
+def drain_socket_messages() -> int:
+	processed = 0
+	while not SOCKET_MESSAGE_QUEUE.empty():
+		message = SOCKET_MESSAGE_QUEUE.get_nowait()
+		processed += 1
+		if message.get("type") == "status":
+			status_text = message.get("message", "")
+			st.session_state.socket_status = status_text
+			st.session_state.socket_connected = status_text.startswith("Connected") or status_text.startswith("Listening")
+		elif message.get("type") == "schema":
+			json_text = message.get("json_text", "")
+			st.session_state.socket_last_payload = json_text
+			st.session_state.json_text = json_text
+			parse_and_store_render_schema()
+
+	return processed
 
 
 def add_current_json_as_sample(name: str) -> tuple[bool, str]:
@@ -403,6 +528,7 @@ def render_canvas(schema: dict) -> None:
 def app() -> None:
 	st.set_page_config(page_title="Dynamic JSON Canvas", layout="wide")
 	init_state()
+	processed_socket_messages = drain_socket_messages()
 
 	st.title("Dynamic JSON Canvas Renderer")
 	st.write("Pick a sample JSON, edit it, and press Render Canvas to quickly update the canvas.")
@@ -411,6 +537,36 @@ def app() -> None:
 
 	with left:
 		st.subheader("JSON Editor")
+
+		with st.expander("Socket.IO Client", expanded=False):
+			st.text_input("Socket Server URL", key="socket_server_url")
+			st.text_input("Socket Event Name", key="socket_event_name")
+
+			button_cols = st.columns(2)
+			with button_cols[0]:
+				if st.button("Connect Socket", use_container_width=True):
+					ok, message = start_socket_listener(
+						st.session_state.socket_server_url,
+						st.session_state.socket_event_name,
+					)
+					if ok:
+						st.success(message)
+					else:
+						st.error(message)
+			with button_cols[1]:
+				if st.button("Disconnect Socket", use_container_width=True):
+					stop_socket_listener()
+					st.session_state.socket_connected = False
+					st.session_state.socket_status = "Disconnected"
+					st.info("Socket listener stopped.")
+
+			st.checkbox("Auto Poll Socket Updates", key="socket_auto_poll")
+			st.number_input("Poll Interval (seconds)", min_value=1, max_value=30, key="socket_poll_interval")
+			st.caption(f"Status: {st.session_state.socket_status}")
+			if processed_socket_messages > 0:
+				st.caption(f"Processed {processed_socket_messages} queued socket message(s) on this run.")
+			if st.session_state.socket_last_payload:
+				st.caption("Last socket payload received and applied to JSON editor.")
 
 		st.selectbox(
 			"Sample JSON",
@@ -450,6 +606,10 @@ def app() -> None:
 
 		st.subheader("Current Parsed Schema")
 		st.json(st.session_state.rendered_schema)
+
+	if st.session_state.socket_auto_poll and st.session_state.socket_connected:
+		time.sleep(int(st.session_state.socket_poll_interval))
+		st.rerun()
 
 
 if __name__ == "__main__":
