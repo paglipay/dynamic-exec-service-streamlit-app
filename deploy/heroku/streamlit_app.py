@@ -1,21 +1,21 @@
 import streamlit as st
-import requests
-import json
 
-st.set_page_config(page_title="JSON Payload Submitter")
-st.title("JSON Payload Submitter Form")
-st.write("Use this form to submit a JSON payload to a specified URL.")
+st.set_page_config(page_title="IT Support Request Form")
+st.title("IT Support Request Form")
+st.write("Please fill out the form below to submit an IT support request.")
 
-with st.form(key="json_submit_form"):
-    url = st.text_input("URL to POST JSON payload to")
-    json_text = st.text_area("JSON Payload")
-    submit_button = st.form_submit_button("Submit")
+with st.form(key="it_support_form"):
+    name = st.text_input("Name", placeholder="Enter your full name", max_chars=100, help="This field is required.")
+    department = st.text_input("Department", placeholder="Enter your department or team", help="Optional field.")
+    contact_info = st.text_input("Contact Information", placeholder="Email or phone number", help="This field is required.")
+    issue_description = st.text_area("Issue Description", placeholder="Describe the issue you're facing", help="This field is required.")
+    priority = st.selectbox("Priority Level", ["Low", "Medium", "High", "Urgent"], help="Select the priority of your request")
+    submitted = st.form_submit_button("Submit Request")
 
-if submit_button:
-    try:
-        data = json.loads(json_text)
-        response = requests.post(url, json=data)
-        st.success(f"Request successful with status code: {response.status_code}")
-        st.json(response.json())
-    except Exception as e:
-        st.error(f"Error submitting request: {e}")
+    # Check required fields
+    if submitted:
+        if not name or not contact_info or not issue_description:
+            st.error("Please fill in all required fields (Name, Contact Information, Issue Description).")
+        else:
+            st.success(f"Thank you {name}, your support request has been submitted.")
+            st.json({"Name": name, "Department": department, "Contact": contact_info, "Issue Description": issue_description, "Priority": priority})
