@@ -1,1 +1,1 @@
-web: streamlit run deploy/heroku/pages/data_dash.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true
+web: streamlit run deploy/heroku/pages/main.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true
