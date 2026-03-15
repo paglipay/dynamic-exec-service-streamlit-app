@@ -166,6 +166,14 @@ def safe_filename(value: str) -> str:
     return cleaned or "output"
 
 
+def render_filename_pattern(pattern: str, values: dict[str, str]) -> str:
+    def replacer(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return values.get(key, "")
+
+    return re.sub(r"\{([^{}]+)\}", replacer, pattern)
+
+
 sheet_file = st.file_uploader(
     "Upload spreadsheet (CSV/XLS/XLSX)",
     type=["csv", "xls", "xlsx"],
@@ -196,6 +204,21 @@ if sheet_file and template_files:
     st.dataframe(df.head())
     st.caption("Placeholders are matched exactly as <HeaderName>.")
 
+    default_name_header = headers[0] if headers else "first_col"
+    filename_pattern = st.text_input(
+        "Filename pattern",
+        value=f"{{template}}_{{{default_name_header}}}_{{row_index}}",
+        help=(
+            "Use placeholders in braces with spreadsheet headers, for example "
+            "{Name}_{Date}. Built-ins: {template}, {row_index}, {first_col}."
+        ),
+    )
+
+    st.caption(
+        "Available header placeholders: "
+        + ", ".join(f"{{{header}}}" for header in headers)
+    )
+
     generated_files: list[tuple[str, bytes]] = []
     failed_templates: list[str] = []
 
@@ -206,10 +229,20 @@ if sheet_file and template_files:
             first_col_value = to_text(row.iloc[0])
             base_name = safe_filename(first_col_value) if first_col_value else "row"
             row_tag = f"{base_name}_{row_index + 1}"
+            row_values = {header: to_text(row[header]) for header in headers}
 
             for template_file in template_files:
                 template_stem = Path(template_file.name).stem
-                out_name = f"{safe_filename(template_stem)}_{row_tag}.docx"
+                name_values = {
+                    **row_values,
+                    "template": template_stem,
+                    "row_index": str(row_index + 1),
+                    "first_col": first_col_value,
+                }
+                rendered_name = render_filename_pattern(filename_pattern, name_values)
+                if not rendered_name.strip():
+                    rendered_name = f"{template_stem}_{row_tag}"
+                out_name = f"{safe_filename(rendered_name)}.docx"
 
                 try:
                     file_bytes = filled_docx_bytes(template_file, replacements)
