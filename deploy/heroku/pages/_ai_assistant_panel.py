@@ -84,7 +84,23 @@ def _llm_config() -> tuple[str, str, str]:
     return api_key, model, base_url.rstrip("/")
 
 
-def _call_llm(history: list[dict[str, str]], page_name: str) -> tuple[str | None, str | None]:
+def _serialize_context(context_data: object | None) -> str:
+    if context_data is None:
+        return ""
+
+    try:
+        if isinstance(context_data, (dict, list)):
+            return json.dumps(context_data, ensure_ascii=True)
+        return str(context_data)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _call_llm(
+    history: list[dict[str, str]],
+    page_name: str,
+    context_data: object | None = None,
+) -> tuple[str | None, str | None]:
     api_key, model, base_url = _llm_config()
     if not api_key:
         return None, (
@@ -97,6 +113,15 @@ def _call_llm(history: list[dict[str, str]], page_name: str) -> tuple[str | None
         f"Current page: {page_name}. Give concise, actionable guidance focused "
         "on the current page workflows, inputs, and troubleshooting."
     )
+
+    context_text = _serialize_context(context_data)
+    if context_text:
+        clipped = context_text[:6000]
+        system_prompt = (
+            f"{system_prompt}\n\n"
+            "Current page context data (JSON/text):\n"
+            f"{clipped}"
+        )
 
     recent_history = history[-12:]
     messages = [{"role": "system", "content": system_prompt}]
@@ -138,7 +163,7 @@ def _call_llm(history: list[dict[str, str]], page_name: str) -> tuple[str | None
         return None, f"AI request failed: {exc}"
 
 
-def render_ai_assistant_panel(page_name: str) -> None:
+def render_ai_assistant_panel(page_name: str, context_data: object | None = None) -> None:
     _ensure_sidebar_on_right()
 
     messages_key = f"ai_messages_{page_name}"
@@ -195,7 +220,11 @@ def render_ai_assistant_panel(page_name: str) -> None:
             )
 
             with st.spinner("Assistant is thinking..."):
-                reply, llm_error = _call_llm(st.session_state[messages_key], page_name)
+                reply, llm_error = _call_llm(
+                    st.session_state[messages_key],
+                    page_name,
+                    context_data=context_data,
+                )
 
             if llm_error:
                 fallback = _assistant_reply(question, page_name)

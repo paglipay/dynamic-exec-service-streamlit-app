@@ -403,8 +403,11 @@ def render_canvas(schema: dict) -> None:
 
 def app() -> None:
 	st.set_page_config(page_title="Dynamic JSON Canvas", layout="wide")
-	render_ai_assistant_panel("Dynamic JSON Canvas")
 	init_state()
+	render_ai_assistant_panel(
+		"Dynamic JSON Canvas",
+		context_data=st.session_state.get("rendered_schema"),
+	)
 
 	st.title("Dynamic JSON Canvas Renderer")
 	st.write("Pick a sample JSON, edit it, and press Render Canvas to quickly update the canvas.")
