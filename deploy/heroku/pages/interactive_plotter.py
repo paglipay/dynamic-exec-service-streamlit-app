@@ -2,8 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from _ai_assistant_panel import render_ai_assistant_panel
 
 st.set_page_config(page_title="Interactive Plotter")
+render_ai_assistant_panel("Interactive Plotter")
 st.title("Interactive Plotter - Build Dynamic Plots")
 
 # Sample data

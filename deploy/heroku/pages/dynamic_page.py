@@ -1,9 +1,11 @@
 import json
+import re
 from copy import deepcopy
 from datetime import date, datetime
 from urllib import error, parse, request
 
 import streamlit as st
+from _ai_assistant_panel import render_ai_assistant_panel
 
 
 DEFAULT_SAMPLES = [
@@ -198,9 +200,12 @@ def validate_schema(schema: dict) -> tuple[bool, str]:
 			return False, f"Element #{idx + 1} must be an object."
 		if "type" not in element:
 			return False, f"Element #{idx + 1} is missing 'type'."
-		if element.get("type") != "button" and "key" not in element:
+		elem_type = element.get("type")
+		if elem_type == "textarea":
+			elem_type = "text_area"
+		if elem_type != "button" and "key" not in element:
 			return False, f"Element #{idx + 1} is missing 'key'."
-		if element.get("type") == "button":
+		if elem_type == "button":
 			method = str(element.get("method", "POST")).upper()
 			if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
 				return False, f"Element #{idx + 1} has invalid button method '{method}'."
@@ -222,6 +227,53 @@ def parse_and_store_render_schema() -> None:
 
 	st.session_state.rendered_schema = parsed
 	st.session_state.render_error = ""
+
+
+def assistant_context_payload() -> dict:
+	json_text = st.session_state.get("json_text", "")
+	parsed_json = None
+	json_parse_error = ""
+
+	if json_text:
+		try:
+			parsed_json = json.loads(json_text)
+		except json.JSONDecodeError as exc:
+			json_parse_error = str(exc)
+
+	return {
+		"selected_sample_name": st.session_state.get("selected_sample_name", ""),
+		"json_editor_text": json_text,
+		"json_editor_parsed": parsed_json,
+		"json_editor_parse_error": json_parse_error,
+		"rendered_schema": st.session_state.get("rendered_schema"),
+		"render_error": st.session_state.get("render_error", ""),
+	}
+
+
+def extract_schema_from_ai_message(message: str) -> tuple[dict | None, str]:
+	candidates: list[str] = []
+
+	for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", message, flags=re.IGNORECASE):
+		block = match.group(1).strip()
+		if block:
+			candidates.append(block)
+
+	cleaned_message = message.strip()
+	if cleaned_message:
+		candidates.append(cleaned_message)
+
+	for candidate in candidates:
+		try:
+			parsed = json.loads(candidate)
+		except json.JSONDecodeError:
+			continue
+
+		valid, reason = validate_schema(parsed)
+		if valid:
+			return parsed, ""
+		return None, f"AI JSON is invalid schema: {reason}"
+
+	return None, "No valid JSON schema found in the assistant response."
 
 
 def add_current_json_as_sample(name: str) -> tuple[bool, str]:
@@ -252,6 +304,8 @@ def add_current_json_as_sample(name: str) -> tuple[bool, str]:
 
 def render_dynamic_element(element: dict, idx: int, used_keys: set[str]):
 	elem_type = element.get("type", "")
+	if elem_type == "textarea":
+		elem_type = "text_area"
 	if elem_type == "button":
 		return None, None
 
@@ -403,6 +457,12 @@ def render_canvas(schema: dict) -> None:
 def app() -> None:
 	st.set_page_config(page_title="Dynamic JSON Canvas", layout="wide")
 	init_state()
+	ai_messages_key = "ai_messages_Dynamic JSON Canvas"
+	render_ai_assistant_panel(
+		"Dynamic JSON Canvas",
+		context_data=assistant_context_payload(),
+		prefer_json_schema=True,
+	)
 
 	st.title("Dynamic JSON Canvas Renderer")
 	st.write("Pick a sample JSON, edit it, and press Render Canvas to quickly update the canvas.")
@@ -411,6 +471,34 @@ def app() -> None:
 
 	with left:
 		st.subheader("JSON Editor")
+
+		if st.button("Apply Latest AI Schema", use_container_width=True):
+			messages = st.session_state.get(ai_messages_key, [])
+			last_assistant = next(
+				(
+					msg.get("content", "")
+					for msg in reversed(messages)
+					if msg.get("role") == "assistant"
+				),
+				"",
+			)
+			if not last_assistant:
+				st.error("No assistant response found yet.")
+			else:
+				parsed_schema, reason = extract_schema_from_ai_message(last_assistant)
+				if parsed_schema is None:
+					st.error(reason)
+				else:
+					st.session_state.json_text = to_json_text(parsed_schema)
+					parse_and_store_render_schema()
+					if st.session_state.render_error:
+						st.error(st.session_state.render_error)
+					else:
+						st.success("Applied JSON schema from assistant.")
+
+		st.caption(
+			"Tip: ask the assistant to return a full schema JSON, then click Apply Latest AI Schema."
+		)
 
 		st.selectbox(
 			"Sample JSON",

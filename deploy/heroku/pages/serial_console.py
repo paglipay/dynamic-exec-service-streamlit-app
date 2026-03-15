@@ -2,8 +2,10 @@ import streamlit as st
 import serial
 import serial.tools.list_ports
 import time
+from _ai_assistant_panel import render_ai_assistant_panel
 
 st.set_page_config(page_title="USB Serial Console", layout="wide")
+render_ai_assistant_panel("USB Serial Console")
 st.title("USB Serial Console")
 
 if "serial_conn" not in st.session_state:
