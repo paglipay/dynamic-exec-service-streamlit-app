@@ -7,6 +7,9 @@ from pathlib import Path
 st.set_page_config(page_title="Streamlit Multi-App Launcher")
 
 PAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages")
+if PAGE_DIR not in sys.path:
+    sys.path.insert(0, PAGE_DIR)
+
 assistant_module_path = os.path.join(PAGE_DIR, "_ai_assistant_panel.py")
 assistant_spec = importlib.util.spec_from_file_location(
     "assistant_panel", assistant_module_path
