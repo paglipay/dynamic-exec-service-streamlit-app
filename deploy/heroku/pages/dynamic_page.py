@@ -200,9 +200,12 @@ def validate_schema(schema: dict) -> tuple[bool, str]:
 			return False, f"Element #{idx + 1} must be an object."
 		if "type" not in element:
 			return False, f"Element #{idx + 1} is missing 'type'."
-		if element.get("type") != "button" and "key" not in element:
+		elem_type = element.get("type")
+		if elem_type == "textarea":
+			elem_type = "text_area"
+		if elem_type != "button" and "key" not in element:
 			return False, f"Element #{idx + 1} is missing 'key'."
-		if element.get("type") == "button":
+		if elem_type == "button":
 			method = str(element.get("method", "POST")).upper()
 			if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
 				return False, f"Element #{idx + 1} has invalid button method '{method}'."
@@ -301,6 +304,8 @@ def add_current_json_as_sample(name: str) -> tuple[bool, str]:
 
 def render_dynamic_element(element: dict, idx: int, used_keys: set[str]):
 	elem_type = element.get("type", "")
+	if elem_type == "textarea":
+		elem_type = "text_area"
 	if elem_type == "button":
 		return None, None
 
