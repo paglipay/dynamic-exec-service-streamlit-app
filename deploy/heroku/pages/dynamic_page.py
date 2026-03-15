@@ -226,6 +226,27 @@ def parse_and_store_render_schema() -> None:
 	st.session_state.render_error = ""
 
 
+def assistant_context_payload() -> dict:
+	json_text = st.session_state.get("json_text", "")
+	parsed_json = None
+	json_parse_error = ""
+
+	if json_text:
+		try:
+			parsed_json = json.loads(json_text)
+		except json.JSONDecodeError as exc:
+			json_parse_error = str(exc)
+
+	return {
+		"selected_sample_name": st.session_state.get("selected_sample_name", ""),
+		"json_editor_text": json_text,
+		"json_editor_parsed": parsed_json,
+		"json_editor_parse_error": json_parse_error,
+		"rendered_schema": st.session_state.get("rendered_schema"),
+		"render_error": st.session_state.get("render_error", ""),
+	}
+
+
 def extract_schema_from_ai_message(message: str) -> tuple[dict | None, str]:
 	candidates: list[str] = []
 
@@ -434,7 +455,7 @@ def app() -> None:
 	ai_messages_key = "ai_messages_Dynamic JSON Canvas"
 	render_ai_assistant_panel(
 		"Dynamic JSON Canvas",
-		context_data=st.session_state.get("rendered_schema"),
+		context_data=assistant_context_payload(),
 		prefer_json_schema=True,
 	)
 
