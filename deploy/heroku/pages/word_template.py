@@ -2,6 +2,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import hashlib
 from io import BytesIO
 from io import StringIO
 from pathlib import Path
@@ -190,6 +191,12 @@ def render_filename_pattern(pattern: str, values: dict[str, str]) -> str:
     return re.sub(r"\{([^{}]+)\}", replacer, pattern)
 
 
+def dataframe_signature(df: pd.DataFrame) -> str:
+    sample_csv = df.head(200).to_csv(index=False)
+    digest = hashlib.md5(sample_csv.encode("utf-8")).hexdigest()
+    return f"{df.shape[0]}x{df.shape[1]}:{digest}"
+
+
 left_col, right_col = st.columns(2)
 with left_col:
     sheet_file = st.file_uploader(
@@ -237,8 +244,81 @@ if (sheet_file or pasted_table_text.strip()) and template_files:
 
     headers = [str(col) for col in df.columns]
     st.write("### Spreadsheet Preview")
-    st.dataframe(df.head())
     st.caption("Placeholders are matched exactly as <HeaderName>.")
+
+    if len(headers) != len(set(headers)):
+        st.error(
+            "Spreadsheet has duplicate column names. "
+            "Please make headers unique before generating documents."
+        )
+        st.stop()
+
+    sig = dataframe_signature(df)
+    state_sig_key = "word_template_df_signature"
+    state_data_key = "word_template_select_df"
+
+    if st.session_state.get(state_sig_key) != sig:
+        st.session_state[state_sig_key] = sig
+        st.session_state[state_data_key] = df.copy()
+        st.session_state[state_data_key].insert(0, "Include", True)
+
+    select_df: pd.DataFrame = st.session_state[state_data_key]
+
+    action_col1, action_col2 = st.columns(2)
+    if action_col1.button("Check all rows"):
+        select_df["Include"] = True
+    if action_col2.button("Uncheck all rows"):
+        select_df["Include"] = False
+
+    st.write("#### Filters")
+    filter_columns = st.multiselect(
+        "Filter columns",
+        options=headers,
+        help="Select one or more columns to filter rows before generation.",
+    )
+
+    filter_map: dict[str, list[str]] = {}
+    for column in filter_columns:
+        column_values = sorted(
+            {to_text(v) for v in select_df[column].tolist() if to_text(v) != ""}
+        )
+        selected_values = st.multiselect(
+            f"Values for {column}",
+            options=column_values,
+            default=column_values,
+            key=f"filter_values_{column}",
+        )
+        filter_map[column] = selected_values
+
+    filtered_select_df = select_df
+    for column, allowed in filter_map.items():
+        if not allowed:
+            filtered_select_df = filtered_select_df.iloc[0:0]
+            break
+        filtered_select_df = filtered_select_df[
+            filtered_select_df[column].map(to_text).isin(allowed)
+        ]
+
+    edited_filtered_df = st.data_editor(
+        filtered_select_df,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Include": st.column_config.CheckboxColumn("Include", default=True),
+        },
+        disabled=headers,
+        key="word_template_filtered_editor",
+    )
+
+    for idx in edited_filtered_df.index:
+        st.session_state[state_data_key].at[idx, "Include"] = bool(
+            edited_filtered_df.at[idx, "Include"]
+        )
+
+    selected_count = int(st.session_state[state_data_key]["Include"].sum())
+    st.caption(
+        f"Selected rows: {selected_count} of {len(st.session_state[state_data_key])}."
+    )
 
     default_name_header = headers[0] if headers else "first_col"
     filename_pattern = st.text_input(
@@ -258,8 +338,21 @@ if (sheet_file or pasted_table_text.strip()) and template_files:
     generated_files: list[tuple[str, bytes]] = []
     failed_templates: list[str] = []
 
+    selected_df = st.session_state[state_data_key]
+    selected_df = selected_df[selected_df["Include"]].drop(columns=["Include"])
+    if filter_columns:
+        for column, allowed in filter_map.items():
+            if not allowed:
+                selected_df = selected_df.iloc[0:0]
+                break
+            selected_df = selected_df[selected_df[column].map(to_text).isin(allowed)]
+
+    if selected_df.empty:
+        st.warning("No rows selected after include checkboxes and filters.")
+        st.stop()
+
     with st.spinner("Generating documents..."):
-        for row_index, row in df.iterrows():
+        for row_index, row in selected_df.iterrows():
             replacements = {f"<{header}>": to_text(row[header]) for header in headers}
 
             first_col_value = to_text(row.iloc[0])
