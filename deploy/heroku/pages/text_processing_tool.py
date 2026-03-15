@@ -1,17 +1,19 @@
 import streamlit as st
-from textblob import TextBlob
+from textblob import TextBlob, download_corpora
+from textblob.exceptions import MissingCorpusError
 
-st.set_page_config(page_title="Text Processing Tool")
-st.title("Text Processing Tool")
-st.write("Perform text analytics, sentiment analysis, and summarization.")
 
-text = st.text_area("Enter text to analyze")
+@st.cache_resource(show_spinner=False)
+def ensure_textblob_corpora() -> bool:
+    """Download TextBlob corpora once per app process."""
+    download_corpora.download_all()
+    return True
 
-if text:
-    blob = TextBlob(text)
+
+def render_analysis(blob: TextBlob) -> None:
+    sentiment = blob.sentiment
 
     st.write("### Sentiment Analysis")
-    sentiment = blob.sentiment
     st.write(f"Polarity: {sentiment.polarity}")
     st.write(f"Subjectivity: {sentiment.subjectivity}")
 
@@ -26,5 +28,28 @@ if text:
     sentences = blob.sentences
     summary = ' '.join(str(s) for s in sentences[:3])
     st.write(summary)
+
+st.set_page_config(page_title="Text Processing Tool")
+st.title("Text Processing Tool")
+st.write("Perform text analytics, sentiment analysis, and summarization.")
+
+text = st.text_area("Enter text to analyze")
+
+if text:
+    blob = TextBlob(text)
+    try:
+        render_analysis(blob)
+    except MissingCorpusError:
+        with st.spinner("Downloading required NLP corpora (first run only)..."):
+            ensure_textblob_corpora()
+        try:
+            blob = TextBlob(text)
+            render_analysis(blob)
+            st.success("NLP corpora downloaded successfully.")
+        except MissingCorpusError:
+            st.error(
+                "Required NLP corpora are still unavailable. "
+                "Please redeploy or restart the app and try again."
+            )
 else:
     st.info("Enter some text to begin analysis.")
