@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import tempfile
 from io import BytesIO
+from io import StringIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -26,6 +27,21 @@ def load_spreadsheet(uploaded_file) -> pd.DataFrame:
     if suffix in {".xlsx", ".xls"}:
         return pd.read_excel(uploaded_file)
     raise ValueError("Unsupported spreadsheet format")
+
+
+def load_pasted_table(pasted_text: str, has_header: bool) -> pd.DataFrame:
+    text = pasted_text.strip()
+    if not text:
+        raise ValueError("No pasted data provided")
+
+    delimiter = "\t" if "\t" in text else ","
+    header = 0 if has_header else None
+    df = pd.read_csv(StringIO(text), sep=delimiter, header=header)
+
+    if not has_header:
+        df.columns = [f"Column{i + 1}" for i in range(df.shape[1])]
+
+    return df
 
 
 def to_text(value) -> str:
@@ -174,10 +190,27 @@ def render_filename_pattern(pattern: str, values: dict[str, str]) -> str:
     return re.sub(r"\{([^{}]+)\}", replacer, pattern)
 
 
-sheet_file = st.file_uploader(
-    "Upload spreadsheet (CSV/XLS/XLSX)",
-    type=["csv", "xls", "xlsx"],
-)
+left_col, right_col = st.columns(2)
+with left_col:
+    sheet_file = st.file_uploader(
+        "Upload spreadsheet (CSV/XLS/XLSX)",
+        type=["csv", "xls", "xlsx"],
+    )
+
+with right_col:
+    pasted_table_text = st.text_area(
+        "Or paste spreadsheet cells",
+        height=160,
+        placeholder=(
+            "Select cells in Excel/Sheets, copy, then paste here. "
+            "Tab-delimited copied cells are supported."
+        ),
+    )
+    pasted_has_header = st.checkbox(
+        "Pasted data includes a header row",
+        value=True,
+        disabled=not pasted_table_text.strip(),
+    )
 
 template_files = st.file_uploader(
     "Upload one or more Word templates (.docx or .doc)",
@@ -188,11 +221,14 @@ template_files = st.file_uploader(
 show_individual = st.checkbox("Show individual download buttons", value=True)
 bundle_zip = st.checkbox("Offer ZIP bundle download", value=True)
 
-if sheet_file and template_files:
+if (sheet_file or pasted_table_text.strip()) and template_files:
     try:
-        df = load_spreadsheet(sheet_file)
+        if pasted_table_text.strip():
+            df = load_pasted_table(pasted_table_text, pasted_has_header)
+        else:
+            df = load_spreadsheet(sheet_file)
     except Exception as exc:
-        st.error(f"Could not read spreadsheet: {exc}")
+        st.error(f"Could not read input data: {exc}")
         st.stop()
 
     if df.empty:
@@ -283,4 +319,4 @@ if sheet_file and template_files:
             mime="application/zip",
         )
 else:
-    st.info("Upload a spreadsheet and at least one template to begin.")
+    st.info("Upload a spreadsheet or paste cells, then add at least one template.")
