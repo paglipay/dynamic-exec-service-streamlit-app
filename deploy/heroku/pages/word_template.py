@@ -11,9 +11,11 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pandas as pd
 import streamlit as st
 from docx import Document
+from _ai_assistant_panel import render_ai_assistant_panel
 
 
 st.set_page_config(page_title="Word Template Generator")
+render_ai_assistant_panel("Word Template Generator")
 st.title("Word Template Generator")
 st.write(
     "Upload a spreadsheet and one or more Word templates with placeholders like "

@@ -4,6 +4,7 @@ from datetime import date, datetime
 from urllib import error, parse, request
 
 import streamlit as st
+from _ai_assistant_panel import render_ai_assistant_panel
 
 
 DEFAULT_SAMPLES = [
@@ -402,6 +403,7 @@ def render_canvas(schema: dict) -> None:
 
 def app() -> None:
 	st.set_page_config(page_title="Dynamic JSON Canvas", layout="wide")
+	render_ai_assistant_panel("Dynamic JSON Canvas")
 	init_state()
 
 	st.title("Dynamic JSON Canvas Renderer")

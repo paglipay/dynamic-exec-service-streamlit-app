@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 
 import streamlit as st
+from _ai_assistant_panel import render_ai_assistant_panel
 
 
 FIELD_TEMPLATES = {
@@ -298,6 +299,7 @@ def publish_app(title: str, description: str, submit_label: str, filename: str, 
 
 def app() -> None:
 	st.set_page_config(page_title="Streamlit App Maker", layout="wide")
+	render_ai_assistant_panel("Streamlit App Maker")
 	ensure_state()
 
 	st.title("Streamlit App Maker")
