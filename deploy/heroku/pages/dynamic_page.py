@@ -6,6 +6,7 @@ from urllib import error, parse, request
 
 import streamlit as st
 from _ai_assistant_panel import render_ai_assistant_panel
+from _theme import apply_page_theme
 
 
 DEFAULT_SAMPLES = [
@@ -455,7 +456,10 @@ def render_canvas(schema: dict) -> None:
 
 
 def app() -> None:
-	st.set_page_config(page_title="Dynamic JSON Canvas", layout="wide")
+	apply_page_theme(
+		"Dynamic JSON Canvas",
+		"Pick a schema, edit JSON, and render a dynamic form canvas.",
+	)
 	init_state()
 	ai_messages_key = "ai_messages_Dynamic JSON Canvas"
 	render_ai_assistant_panel(
@@ -463,9 +467,6 @@ def app() -> None:
 		context_data=assistant_context_payload(),
 		prefer_json_schema=True,
 	)
-
-	st.title("Dynamic JSON Canvas Renderer")
-	st.write("Pick a sample JSON, edit it, and press Render Canvas to quickly update the canvas.")
 
 	left, right = st.columns([1, 1.4], gap="large")
 

@@ -2,6 +2,7 @@ import streamlit as st
 from textblob import TextBlob, download_corpora
 from textblob.exceptions import MissingCorpusError
 from _ai_assistant_panel import render_ai_assistant_panel
+from _theme import apply_page_theme
 
 
 @st.cache_resource(show_spinner=False)
@@ -30,9 +31,8 @@ def render_analysis(blob: TextBlob) -> None:
     summary = ' '.join(str(s) for s in sentences[:3])
     st.write(summary)
 
-st.set_page_config(page_title="Text Processing Tool")
+apply_page_theme("Text Processing Tool", "Run sentiment, noun phrase, and summary analysis on text.")
 render_ai_assistant_panel("Text Processing Tool")
-st.title("Text Processing Tool")
 st.write("Perform text analytics, sentiment analysis, and summarization.")
 
 text = st.text_area("Enter text to analyze")

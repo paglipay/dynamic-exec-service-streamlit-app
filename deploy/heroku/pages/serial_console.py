@@ -3,10 +3,10 @@ import serial
 import serial.tools.list_ports
 import time
 from _ai_assistant_panel import render_ai_assistant_panel
+from _theme import apply_page_theme
 
-st.set_page_config(page_title="USB Serial Console", layout="wide")
+apply_page_theme("USB Serial Console", "Connect, monitor, and send data over USB serial ports.")
 render_ai_assistant_panel("USB Serial Console")
-st.title("USB Serial Console")
 
 if "serial_conn" not in st.session_state:
     st.session_state.serial_conn = None

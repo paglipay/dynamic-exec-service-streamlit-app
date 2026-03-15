@@ -4,6 +4,7 @@ import re
 
 import streamlit as st
 from _ai_assistant_panel import render_ai_assistant_panel
+from _theme import apply_page_theme
 
 
 FIELD_TEMPLATES = {
@@ -259,12 +260,11 @@ def generate_app_source(title: str, description: str, submit_label: str, fields:
 
 	lines = [
 		"import streamlit as st",
+		"from _theme import apply_page_theme",
 		"",
 		"",
 		"def app() -> None:",
-		f"    st.set_page_config(page_title={title!r})",
-		f"    st.title({title!r})",
-		f"    st.write({description!r})",
+		f"    apply_page_theme({title!r}, {description!r}, layout='centered')",
 		"",
 		"    submitted_data = {}",
 		"    with st.form(\"published_form\"):",
@@ -298,12 +298,12 @@ def publish_app(title: str, description: str, submit_label: str, filename: str, 
 
 
 def app() -> None:
-	st.set_page_config(page_title="Streamlit App Maker", layout="wide")
+	apply_page_theme(
+		"Streamlit App Maker",
+		"Build a form visually, preview it live, and publish a runnable page.",
+	)
 	render_ai_assistant_panel("Streamlit App Maker")
 	ensure_state()
-
-	st.title("Streamlit App Maker")
-	st.write("Build a form visually, preview it on the canvas, and publish it as a runnable Streamlit page.")
 
 	settings_col, canvas_col = st.columns([1, 1.3], gap="large")
 

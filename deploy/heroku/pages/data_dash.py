@@ -3,10 +3,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from _ai_assistant_panel import render_ai_assistant_panel
+from _theme import apply_page_theme
 
-st.set_page_config(page_title="Data Dashboard")
+apply_page_theme("Data Dashboard", "Visualize and analyze uploaded CSV or Excel data.")
 render_ai_assistant_panel("Data Dashboard")
-st.title("Data Dashboard - Visualize and Analyze Data")
 
 uploaded_file = st.file_uploader("Upload CSV or Excel file", type=["csv", "xlsx"])
 

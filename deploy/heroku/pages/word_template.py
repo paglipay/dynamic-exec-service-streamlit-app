@@ -12,11 +12,11 @@ import pandas as pd
 import streamlit as st
 from docx import Document
 from _ai_assistant_panel import render_ai_assistant_panel
+from _theme import apply_page_theme
 
 
-st.set_page_config(page_title="Word Template Generator")
+apply_page_theme("Word Template Generator", "Generate filled documents from spreadsheet rows and templates.")
 render_ai_assistant_panel("Word Template Generator")
-st.title("Word Template Generator")
 st.write(
     "Upload a spreadsheet and one or more Word templates with placeholders like "
     "<Name> and <Date> to generate filled documents."
