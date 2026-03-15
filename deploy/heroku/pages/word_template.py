@@ -35,16 +35,59 @@ def to_text(value) -> str:
 
 
 def replace_paragraph_text(paragraph, replacements: dict[str, str]) -> None:
-    text = paragraph.text
-    if not text:
+    if not paragraph.runs:
         return
 
-    updated = text
     for placeholder, replacement in replacements.items():
-        updated = updated.replace(placeholder, replacement)
+        # Keep replacing until this placeholder is no longer present.
+        while True:
+            full_text = "".join(run.text for run in paragraph.runs)
+            start = full_text.find(placeholder)
+            if start == -1:
+                break
 
-    if updated != text:
-        paragraph.text = updated
+            end = start + len(placeholder)
+
+            spans: list[tuple[int, int, int]] = []
+            cursor = 0
+            for idx, run in enumerate(paragraph.runs):
+                run_end = cursor + len(run.text)
+                spans.append((idx, cursor, run_end))
+                cursor = run_end
+
+            start_run = None
+            end_run = None
+            for idx, run_start, run_end in spans:
+                if start_run is None and run_start <= start < run_end:
+                    start_run = (idx, start - run_start)
+                if run_start < end <= run_end:
+                    end_run = (idx, end - run_start)
+                    break
+
+            # Fallback if a boundary lands exactly on an empty/end boundary.
+            if start_run is None or end_run is None:
+                break
+
+            start_idx, start_offset = start_run
+            end_idx, end_offset = end_run
+
+            if start_idx == end_idx:
+                run = paragraph.runs[start_idx]
+                run.text = (
+                    run.text[:start_offset] + replacement + run.text[end_offset:]
+                )
+                continue
+
+            first_run = paragraph.runs[start_idx]
+            last_run = paragraph.runs[end_idx]
+
+            prefix = first_run.text[:start_offset]
+            suffix = last_run.text[end_offset:]
+
+            first_run.text = prefix + replacement
+            for idx in range(start_idx + 1, end_idx):
+                paragraph.runs[idx].text = ""
+            last_run.text = suffix
 
 
 def apply_replacements(document: Document, replacements: dict[str, str]) -> None:
