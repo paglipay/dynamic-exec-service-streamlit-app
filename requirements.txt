@@ -5,3 +5,4 @@ seaborn
 pyserial
 openpyxl
 textblob
+python-docx
