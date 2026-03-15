@@ -1,4 +1,5 @@
 import json
+import re
 from copy import deepcopy
 from datetime import date, datetime
 from urllib import error, parse, request
@@ -225,6 +226,32 @@ def parse_and_store_render_schema() -> None:
 	st.session_state.render_error = ""
 
 
+def extract_schema_from_ai_message(message: str) -> tuple[dict | None, str]:
+	candidates: list[str] = []
+
+	for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", message, flags=re.IGNORECASE):
+		block = match.group(1).strip()
+		if block:
+			candidates.append(block)
+
+	cleaned_message = message.strip()
+	if cleaned_message:
+		candidates.append(cleaned_message)
+
+	for candidate in candidates:
+		try:
+			parsed = json.loads(candidate)
+		except json.JSONDecodeError:
+			continue
+
+		valid, reason = validate_schema(parsed)
+		if valid:
+			return parsed, ""
+		return None, f"AI JSON is invalid schema: {reason}"
+
+	return None, "No valid JSON schema found in the assistant response."
+
+
 def add_current_json_as_sample(name: str) -> tuple[bool, str]:
 	cleaned_name = name.strip()
 	if not cleaned_name:
@@ -404,9 +431,11 @@ def render_canvas(schema: dict) -> None:
 def app() -> None:
 	st.set_page_config(page_title="Dynamic JSON Canvas", layout="wide")
 	init_state()
+	ai_messages_key = "ai_messages_Dynamic JSON Canvas"
 	render_ai_assistant_panel(
 		"Dynamic JSON Canvas",
 		context_data=st.session_state.get("rendered_schema"),
+		prefer_json_schema=True,
 	)
 
 	st.title("Dynamic JSON Canvas Renderer")
@@ -416,6 +445,34 @@ def app() -> None:
 
 	with left:
 		st.subheader("JSON Editor")
+
+		if st.button("Apply Latest AI Schema", use_container_width=True):
+			messages = st.session_state.get(ai_messages_key, [])
+			last_assistant = next(
+				(
+					msg.get("content", "")
+					for msg in reversed(messages)
+					if msg.get("role") == "assistant"
+				),
+				"",
+			)
+			if not last_assistant:
+				st.error("No assistant response found yet.")
+			else:
+				parsed_schema, reason = extract_schema_from_ai_message(last_assistant)
+				if parsed_schema is None:
+					st.error(reason)
+				else:
+					st.session_state.json_text = to_json_text(parsed_schema)
+					parse_and_store_render_schema()
+					if st.session_state.render_error:
+						st.error(st.session_state.render_error)
+					else:
+						st.success("Applied JSON schema from assistant.")
+
+		st.caption(
+			"Tip: ask the assistant to return a full schema JSON, then click Apply Latest AI Schema."
+		)
 
 		st.selectbox(
 			"Sample JSON",

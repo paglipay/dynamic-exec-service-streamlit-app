@@ -100,6 +100,7 @@ def _call_llm(
     history: list[dict[str, str]],
     page_name: str,
     context_data: object | None = None,
+    prefer_json_schema: bool = False,
 ) -> tuple[str | None, str | None]:
     api_key, model, base_url = _llm_config()
     if not api_key:
@@ -113,6 +114,14 @@ def _call_llm(
         f"Current page: {page_name}. Give concise, actionable guidance focused "
         "on the current page workflows, inputs, and troubleshooting."
     )
+
+    if prefer_json_schema:
+        system_prompt = (
+            f"{system_prompt}\n"
+            "If the user asks to create, update, or fix schema data, include a valid "
+            "JSON object for the full schema in a ```json fenced block``` so the app "
+            "can apply it directly."
+        )
 
     context_text = _serialize_context(context_data)
     if context_text:
@@ -163,7 +172,11 @@ def _call_llm(
         return None, f"AI request failed: {exc}"
 
 
-def render_ai_assistant_panel(page_name: str, context_data: object | None = None) -> None:
+def render_ai_assistant_panel(
+    page_name: str,
+    context_data: object | None = None,
+    prefer_json_schema: bool = False,
+) -> None:
     _ensure_sidebar_on_right()
 
     messages_key = f"ai_messages_{page_name}"
@@ -224,6 +237,7 @@ def render_ai_assistant_panel(page_name: str, context_data: object | None = None
                     st.session_state[messages_key],
                     page_name,
                     context_data=context_data,
+                    prefer_json_schema=prefer_json_schema,
                 )
 
             if llm_error:
