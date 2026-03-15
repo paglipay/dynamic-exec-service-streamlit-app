@@ -1,0 +1,210 @@
+import re
+import shutil
+import subprocess
+import tempfile
+from io import BytesIO
+from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
+
+import pandas as pd
+import streamlit as st
+from docx import Document
+
+
+st.set_page_config(page_title="Word Template Generator")
+st.title("Word Template Generator")
+st.write(
+    "Upload a spreadsheet and one or more Word templates with placeholders like "
+    "<Name> and <Date> to generate filled documents."
+)
+
+
+def load_spreadsheet(uploaded_file) -> pd.DataFrame:
+    suffix = Path(uploaded_file.name).suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(uploaded_file)
+    if suffix in {".xlsx", ".xls"}:
+        return pd.read_excel(uploaded_file)
+    raise ValueError("Unsupported spreadsheet format")
+
+
+def to_text(value) -> str:
+    if pd.isna(value):
+        return ""
+    return str(value)
+
+
+def replace_paragraph_text(paragraph, replacements: dict[str, str]) -> None:
+    text = paragraph.text
+    if not text:
+        return
+
+    updated = text
+    for placeholder, replacement in replacements.items():
+        updated = updated.replace(placeholder, replacement)
+
+    if updated != text:
+        paragraph.text = updated
+
+
+def apply_replacements(document: Document, replacements: dict[str, str]) -> None:
+    for paragraph in document.paragraphs:
+        replace_paragraph_text(paragraph, replacements)
+
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    replace_paragraph_text(paragraph, replacements)
+
+    for section in document.sections:
+        for paragraph in section.header.paragraphs:
+            replace_paragraph_text(paragraph, replacements)
+        for paragraph in section.footer.paragraphs:
+            replace_paragraph_text(paragraph, replacements)
+
+
+def convert_doc_to_docx_bytes(template_bytes: bytes, template_name: str) -> bytes:
+    soffice = shutil.which("soffice")
+    if not soffice:
+        raise RuntimeError(
+            "Uploaded .doc templates require LibreOffice (soffice) on the server."
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        src_path = temp_path / template_name
+        src_path.write_bytes(template_bytes)
+
+        subprocess.run(
+            [
+                soffice,
+                "--headless",
+                "--convert-to",
+                "docx",
+                "--outdir",
+                str(temp_path),
+                str(src_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        converted_path = temp_path / f"{src_path.stem}.docx"
+        if not converted_path.exists():
+            raise RuntimeError(".doc to .docx conversion failed.")
+
+        return converted_path.read_bytes()
+
+
+def filled_docx_bytes(template_file, replacements: dict[str, str]) -> bytes:
+    suffix = Path(template_file.name).suffix.lower()
+    template_bytes = template_file.getvalue()
+
+    if suffix == ".docx":
+        input_bytes = template_bytes
+    elif suffix == ".doc":
+        input_bytes = convert_doc_to_docx_bytes(template_bytes, template_file.name)
+    else:
+        raise ValueError(f"Unsupported template type: {suffix}")
+
+    document = Document(BytesIO(input_bytes))
+    apply_replacements(document, replacements)
+
+    out = BytesIO()
+    document.save(out)
+    return out.getvalue()
+
+
+def safe_filename(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
+    cleaned = cleaned.strip("._")
+    return cleaned or "output"
+
+
+sheet_file = st.file_uploader(
+    "Upload spreadsheet (CSV/XLS/XLSX)",
+    type=["csv", "xls", "xlsx"],
+)
+
+template_files = st.file_uploader(
+    "Upload one or more Word templates (.docx or .doc)",
+    type=["docx", "doc"],
+    accept_multiple_files=True,
+)
+
+show_individual = st.checkbox("Show individual download buttons", value=True)
+bundle_zip = st.checkbox("Offer ZIP bundle download", value=True)
+
+if sheet_file and template_files:
+    try:
+        df = load_spreadsheet(sheet_file)
+    except Exception as exc:
+        st.error(f"Could not read spreadsheet: {exc}")
+        st.stop()
+
+    if df.empty:
+        st.warning("Spreadsheet has no rows to process.")
+        st.stop()
+
+    headers = [str(col) for col in df.columns]
+    st.write("### Spreadsheet Preview")
+    st.dataframe(df.head())
+    st.caption("Placeholders are matched exactly as <HeaderName>.")
+
+    generated_files: list[tuple[str, bytes]] = []
+    failed_templates: list[str] = []
+
+    with st.spinner("Generating documents..."):
+        for row_index, row in df.iterrows():
+            replacements = {f"<{header}>": to_text(row[header]) for header in headers}
+
+            first_col_value = to_text(row.iloc[0])
+            base_name = safe_filename(first_col_value) if first_col_value else "row"
+            row_tag = f"{base_name}_{row_index + 1}"
+
+            for template_file in template_files:
+                template_stem = Path(template_file.name).stem
+                out_name = f"{safe_filename(template_stem)}_{row_tag}.docx"
+
+                try:
+                    file_bytes = filled_docx_bytes(template_file, replacements)
+                    generated_files.append((out_name, file_bytes))
+                except Exception as exc:
+                    failed_templates.append(
+                        f"{template_file.name} (row {row_index + 1}): {exc}"
+                    )
+
+    st.success(f"Generated {len(generated_files)} document(s).")
+
+    if failed_templates:
+        st.warning("Some templates failed to generate:")
+        for item in failed_templates:
+            st.write(f"- {item}")
+
+    if show_individual and generated_files:
+        st.write("### Individual Downloads")
+        for file_name, file_bytes in generated_files:
+            st.download_button(
+                label=f"Download {file_name}",
+                data=file_bytes,
+                file_name=file_name,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key=f"dl_{file_name}",
+            )
+
+    if bundle_zip and generated_files:
+        zip_buffer = BytesIO()
+        with ZipFile(zip_buffer, "w", compression=ZIP_DEFLATED) as archive:
+            for file_name, file_bytes in generated_files:
+                archive.writestr(file_name, file_bytes)
+
+        st.download_button(
+            label="Download all as ZIP",
+            data=zip_buffer.getvalue(),
+            file_name="generated_documents.zip",
+            mime="application/zip",
+        )
+else:
+    st.info("Upload a spreadsheet and at least one template to begin.")
