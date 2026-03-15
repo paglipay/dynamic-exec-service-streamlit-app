@@ -1,9 +1,19 @@
 import json
+import queue
+import threading
+import time
 from copy import deepcopy
 from datetime import date, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import error, parse, request
 
 import streamlit as st
+
+
+HTTP_MESSAGE_QUEUE: queue.Queue[dict] = queue.Queue()
+HTTP_SERVER_THREAD: threading.Thread | None = None
+HTTP_SERVER_INSTANCE: ThreadingHTTPServer | None = None
+HTTP_LOCK = threading.Lock()
 
 
 DEFAULT_SAMPLES = [
@@ -167,6 +177,30 @@ def init_state() -> None:
 	if "render_error" not in st.session_state:
 		st.session_state.render_error = ""
 
+	if "http_listener_host" not in st.session_state:
+		st.session_state.http_listener_host = "0.0.0.0"
+
+	if "http_listener_port" not in st.session_state:
+		st.session_state.http_listener_port = 8765
+
+	if "http_listener_path" not in st.session_state:
+		st.session_state.http_listener_path = "/json-update"
+
+	if "http_listener_status" not in st.session_state:
+		st.session_state.http_listener_status = "Stopped"
+
+	if "http_listener_running" not in st.session_state:
+		st.session_state.http_listener_running = False
+
+	if "http_last_payload" not in st.session_state:
+		st.session_state.http_last_payload = ""
+
+	if "http_auto_poll" not in st.session_state:
+		st.session_state.http_auto_poll = True
+
+	if "http_poll_interval" not in st.session_state:
+		st.session_state.http_poll_interval = 1
+
 
 def sample_names() -> list[str]:
 	return [sample["name"] for sample in st.session_state.samples]
@@ -222,6 +256,134 @@ def parse_and_store_render_schema() -> None:
 
 	st.session_state.rendered_schema = parsed
 	st.session_state.render_error = ""
+
+
+def _build_json_text_from_body(raw_body: str) -> str:
+	raw_body = raw_body.strip()
+	if not raw_body:
+		raise ValueError("POST body is empty")
+
+	parsed_body = json.loads(raw_body)
+	if isinstance(parsed_body, dict):
+		if "json_text" in parsed_body and isinstance(parsed_body["json_text"], str):
+			return parsed_body["json_text"]
+		if "schema" in parsed_body:
+			return json.dumps(parsed_body["schema"], indent=2)
+	return json.dumps(parsed_body, indent=2)
+
+
+def _enqueue_http_status(message: str) -> None:
+	HTTP_MESSAGE_QUEUE.put({"type": "status", "message": message})
+
+
+def _make_listener_handler(expected_path: str):
+	class ListenerHandler(BaseHTTPRequestHandler):
+		def _send_json(self, status_code: int, payload: dict) -> None:
+			body = json.dumps(payload).encode("utf-8")
+			self.send_response(status_code)
+			self.send_header("Content-Type", "application/json")
+			self.send_header("Content-Length", str(len(body)))
+			self.end_headers()
+			self.wfile.write(body)
+
+		def do_GET(self) -> None:  # noqa: N802
+			if self.path == "/health":
+				self._send_json(200, {"status": "ok"})
+				return
+			self._send_json(404, {"error": "Not found"})
+
+		def do_POST(self) -> None:  # noqa: N802
+			request_path = parse.urlparse(self.path).path
+			if request_path != expected_path:
+				self._send_json(404, {"error": f"Use POST {expected_path}"})
+				return
+
+			try:
+				content_length = int(self.headers.get("Content-Length", "0"))
+			except ValueError:
+				content_length = 0
+
+			raw = self.rfile.read(content_length).decode("utf-8", errors="replace")
+			try:
+				json_text = _build_json_text_from_body(raw)
+			except Exception as exc:  # noqa: BLE001
+				self._send_json(400, {"error": f"Invalid payload: {exc}"})
+				return
+
+			HTTP_MESSAGE_QUEUE.put({"type": "schema", "json_text": json_text})
+			self._send_json(200, {"status": "accepted"})
+
+		def log_message(self, format: str, *args):  # noqa: A003
+			return
+
+	return ListenerHandler
+
+
+def _http_listener_worker(host: str, port: int, path: str) -> None:
+	global HTTP_SERVER_INSTANCE
+	try:
+		handler = _make_listener_handler(path)
+		httpd = ThreadingHTTPServer((host, port), handler)
+		with HTTP_LOCK:
+			HTTP_SERVER_INSTANCE = httpd
+		_enqueue_http_status(f"Listening on http://{host}:{port}{path}")
+		httpd.serve_forever(poll_interval=0.5)
+	except Exception as exc:  # noqa: BLE001
+		_enqueue_http_status(f"Listener error: {exc}")
+	finally:
+		with HTTP_LOCK:
+			HTTP_SERVER_INSTANCE = None
+
+
+def start_http_listener(host: str, port: int, path: str) -> tuple[bool, str]:
+	global HTTP_SERVER_THREAD
+	if not path.startswith("/"):
+		return False, "Path must start with '/'."
+
+	stop_http_listener()
+	try:
+		port = int(port)
+	except Exception:  # noqa: BLE001
+		return False, "Port must be a valid integer."
+
+	with HTTP_LOCK:
+		HTTP_SERVER_THREAD = threading.Thread(
+			target=_http_listener_worker,
+			args=(host.strip() or "0.0.0.0", port, path.strip() or "/json-update"),
+			daemon=True,
+		)
+		HTTP_SERVER_THREAD.start()
+
+	return True, "HTTP listener started."
+
+
+def stop_http_listener() -> None:
+	global HTTP_SERVER_THREAD
+	with HTTP_LOCK:
+		if HTTP_SERVER_INSTANCE is not None:
+			try:
+				HTTP_SERVER_INSTANCE.shutdown()
+			except Exception:  # noqa: BLE001
+				pass
+		HTTP_SERVER_THREAD = None
+
+
+def drain_http_messages() -> int:
+	processed = 0
+	while not HTTP_MESSAGE_QUEUE.empty():
+		message = HTTP_MESSAGE_QUEUE.get_nowait()
+		processed += 1
+		if message.get("type") == "status":
+			status_text = str(message.get("message", ""))
+			st.session_state.http_listener_status = status_text
+			st.session_state.http_listener_running = status_text.startswith("Listening")
+		elif message.get("type") == "schema":
+			json_text = str(message.get("json_text", ""))
+			st.session_state.http_last_payload = json_text
+			st.session_state.json_text = json_text
+			parse_and_store_render_schema()
+
+	return processed
 
 
 def add_current_json_as_sample(name: str) -> tuple[bool, str]:
@@ -403,6 +565,7 @@ def render_canvas(schema: dict) -> None:
 def app() -> None:
 	st.set_page_config(page_title="Dynamic JSON Canvas", layout="wide")
 	init_state()
+	processed_http_messages = drain_http_messages()
 
 	st.title("Dynamic JSON Canvas Renderer")
 	st.write("Pick a sample JSON, edit it, and press Render Canvas to quickly update the canvas.")
@@ -411,6 +574,44 @@ def app() -> None:
 
 	with left:
 		st.subheader("JSON Editor")
+
+		with st.expander("HTTP Update Listener", expanded=False):
+			st.text_input("Bind Host", key="http_listener_host")
+			st.number_input("Bind Port", min_value=1, max_value=65535, key="http_listener_port")
+			st.text_input("POST Path", key="http_listener_path")
+
+			listener_cols = st.columns(2)
+			with listener_cols[0]:
+				if st.button("Start Listener", use_container_width=True):
+					ok, message = start_http_listener(
+						st.session_state.http_listener_host,
+						int(st.session_state.http_listener_port),
+						st.session_state.http_listener_path,
+					)
+					if ok:
+						st.success(message)
+					else:
+						st.error(message)
+			with listener_cols[1]:
+				if st.button("Stop Listener", use_container_width=True):
+					stop_http_listener()
+					st.session_state.http_listener_running = False
+					st.session_state.http_listener_status = "Stopped"
+					st.info("HTTP listener stopped.")
+
+			st.checkbox("Auto Poll Listener", key="http_auto_poll")
+			st.number_input("Poll Interval (seconds)", min_value=1, max_value=30, key="http_poll_interval")
+			st.caption(f"Status: {st.session_state.http_listener_status}")
+			if processed_http_messages > 0:
+				st.caption(f"Processed {processed_http_messages} queued HTTP message(s) this run.")
+
+			host = st.session_state.http_listener_host.strip() or "0.0.0.0"
+			port = int(st.session_state.http_listener_port)
+			path = st.session_state.http_listener_path.strip() or "/json-update"
+			st.code(
+				f"curl -X POST http://{host}:{port}{path} -H 'Content-Type: application/json' -d '{{\"schema\": {{\"title\": \"Live\", \"elements\": []}}}}'",
+				language="bash",
+			)
 
 		st.selectbox(
 			"Sample JSON",
@@ -450,6 +651,10 @@ def app() -> None:
 
 		st.subheader("Current Parsed Schema")
 		st.json(st.session_state.rendered_schema)
+
+	if st.session_state.http_auto_poll and st.session_state.http_listener_running:
+		time.sleep(int(st.session_state.http_poll_interval))
+		st.rerun()
 
 
 if __name__ == "__main__":
