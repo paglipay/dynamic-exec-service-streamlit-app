@@ -100,6 +100,30 @@ def load_signer_from_pkcs12(p12_path: str, password: bytes | None):
         signer = load_fn(p12_path, b'')
     return signer
 
+
+def validate_pkcs12_credentials(p12_bytes: bytes, password: bytes | None):
+    """Validate PKCS#12 bytes and return a helpful error on invalid credentials."""
+    attempts = [password]
+    if password is None:
+        attempts.append(b'')
+
+    last_error = None
+    for pwd in attempts:
+        try:
+            key, cert, _ = pkcs12.load_key_and_certificates(p12_bytes, pwd)
+            if key is None:
+                raise ValueError('PKCS#12 file does not include a private key.')
+            if cert is None:
+                raise ValueError('PKCS#12 file does not include a signing certificate.')
+            return
+        except Exception as exc:
+            last_error = exc
+
+    raise ValueError(
+        'Unable to read PKCS#12 credentials. Verify the password and ensure '
+        'the file contains both a private key and certificate.'
+    ) from last_error
+
 st.title('PDF Sign App')
 
 st.markdown('''Upload a PDF and optionally a PKCS#12 certificate (.p12/.pfx) file to digitally sign your PDF. If you do not upload a certificate, an auto-generated one is used for this session.''')
@@ -131,6 +155,10 @@ if sign_button:
                     with open(p12_path, 'wb') as f:
                         f.write(create_ephemeral_pkcs12())
                     st.info('No certificate uploaded. Using an auto-generated self-signed certificate for this signing operation.')
+
+                with open(p12_path, 'rb') as p12f:
+                    p12_data = p12f.read()
+                validate_pkcs12_credentials(p12_data, p12_load_password)
 
                 # Load signer
                 signer = load_signer_from_pkcs12(p12_path, p12_load_password)
