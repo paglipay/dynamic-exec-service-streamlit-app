@@ -75,6 +75,31 @@ def create_incremental_writer_with_hybrid_support(input_stream):
 
     return IncrementalPdfFileWriter(input_stream, **kwargs)
 
+
+def load_signer_from_pkcs12(p12_path: str, password: bytes | None):
+    """Load a pyHanko signer with compatibility across pyHanko versions."""
+    load_fn = signers.SimpleSigner.load_pkcs12
+    parameters = inspect.signature(load_fn).parameters
+
+    # pyHanko signatures differ across versions, so prefer keyword args.
+    if 'passphrase' in parameters:
+        signer = load_fn(p12_path, passphrase=password)
+        if signer is None and password is None:
+            signer = load_fn(p12_path, passphrase=b'')
+        return signer
+
+    if 'pfx_passphrase' in parameters:
+        signer = load_fn(p12_path, pfx_passphrase=password)
+        if signer is None and password is None:
+            signer = load_fn(p12_path, pfx_passphrase=b'')
+        return signer
+
+    # Legacy fallback where passphrase may be positional.
+    signer = load_fn(p12_path, password)
+    if signer is None and password is None:
+        signer = load_fn(p12_path, b'')
+    return signer
+
 st.title('PDF Sign App')
 
 st.markdown('''Upload a PDF and optionally a PKCS#12 certificate (.p12/.pfx) file to digitally sign your PDF. If you do not upload a certificate, an auto-generated one is used for this session.''')
@@ -108,10 +133,7 @@ if sign_button:
                     st.info('No certificate uploaded. Using an auto-generated self-signed certificate for this signing operation.')
 
                 # Load signer
-                signer = signers.SimpleSigner.load_pkcs12(p12_path, p12_load_password)
-                # Some backends expect "no password" as b'' instead of None.
-                if signer is None and p12_load_password is None:
-                    signer = signers.SimpleSigner.load_pkcs12(p12_path, b'')
+                signer = load_signer_from_pkcs12(p12_path, p12_load_password)
                 if signer is None:
                     raise ValueError(
                         'Unable to load signing credentials from the PKCS#12 file. '
