@@ -2,7 +2,9 @@ import os
 import tempfile
 
 import streamlit as st
+from PIL import Image
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 st.title('Checklist Form to PDF (Basic Test)')
@@ -33,6 +35,12 @@ def render_components(components, key_prefix):
                 label,
                 value=component.get('default', False),
                 key=f'{key_prefix}_checkbox_{idx}',
+            )
+        elif comp_type == 'Image Upload':
+            values[label] = st.file_uploader(
+                label,
+                type=['png', 'jpg', 'jpeg'],
+                key=f'{key_prefix}_image_{idx}',
             )
     return values
 
@@ -76,6 +84,40 @@ def build_pdf(form_name, components, values):
                 checked = 'Yes' if values.get(label, False) else 'No'
                 pdf_canvas.drawString(50, y_pos, f'{label}: {checked}')
                 y_pos -= 20
+            elif comp_type == 'Image Upload':
+                uploaded_img = values.get(label)
+                y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
+                pdf_canvas.drawString(50, y_pos, f'{label}:')
+                y_pos -= 20
+
+                if uploaded_img is None:
+                    y_pos = ensure_space(pdf_canvas, y_pos, 15, page_height)
+                    pdf_canvas.drawString(70, y_pos, '(no image uploaded)')
+                    y_pos -= 20
+                else:
+                    try:
+                        image = Image.open(uploaded_img)
+                        img_width, img_height = image.size
+                        if img_width > 0:
+                            max_width = page_width - 120
+                            display_width = min(max_width, float(img_width))
+                            display_height = display_width * (float(img_height) / float(img_width))
+
+                            y_pos = ensure_space(pdf_canvas, y_pos, display_height + 10, page_height)
+                            pdf_canvas.drawImage(
+                                ImageReader(image),
+                                70,
+                                y_pos - display_height,
+                                width=display_width,
+                                height=display_height,
+                                preserveAspectRatio=True,
+                                mask='auto',
+                            )
+                            y_pos -= display_height + 15
+                    except Exception as exc:
+                        y_pos = ensure_space(pdf_canvas, y_pos, 15, page_height)
+                        pdf_canvas.drawString(70, y_pos, f'(image error: {exc})')
+                        y_pos -= 20
 
         pdf_canvas.save()
         with open(pdf_path, 'rb') as pdf_file:
@@ -133,7 +175,7 @@ st.write(f'Active form: {active_form_name}')
 if st.session_state.get('save_form_name') != active_form_name:
     st.session_state.save_form_name = active_form_name
 
-component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox'])
+component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload'])
 component_label = st.text_input('Component label', key='builder_component_label')
 checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
 save_form_name = st.text_input('Form name to save', key='save_form_name')
