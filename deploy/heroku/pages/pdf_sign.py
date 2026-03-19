@@ -3,6 +3,7 @@ from pyhanko.sign import signers
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 import tempfile
 import os
+import inspect
 from datetime import datetime, timedelta, UTC
 
 from cryptography import x509
@@ -58,6 +59,22 @@ def create_ephemeral_pkcs12() -> bytes:
         encryption_algorithm=serialization.NoEncryption(),
     )
 
+
+def create_incremental_writer_with_hybrid_support(input_stream):
+    """Create an incremental writer with hybrid-xref support when available."""
+    parameters = inspect.signature(IncrementalPdfFileWriter).parameters
+    kwargs = {}
+
+    # Older/newer pyHanko versions expose different constructor options.
+    if 'strict' in parameters:
+        kwargs['strict'] = False
+    if 'allow_hybrid_xrefs' in parameters:
+        kwargs['allow_hybrid_xrefs'] = True
+    if 'reader_kwargs' in parameters:
+        kwargs['reader_kwargs'] = {'strict': False, 'allow_hybrid_xrefs': True}
+
+    return IncrementalPdfFileWriter(input_stream, **kwargs)
+
 st.title('PDF Sign App')
 
 st.markdown('''Upload a PDF and optionally a PKCS#12 certificate (.p12/.pfx) file to digitally sign your PDF. If you do not upload a certificate, an auto-generated one is used for this session.''')
@@ -97,7 +114,7 @@ if sign_button:
                 output_path = os.path.join(tempdir, 'signed_output.pdf')
 
                 with open(pdf_path, 'rb') as inf, open(output_path, 'wb') as outf:
-                    writer = IncrementalPdfFileWriter(inf)
+                    writer = create_incremental_writer_with_hybrid_support(inf)
                     signature_meta = signers.PdfSignatureMetadata(field_name='Signature1')
                     pdf_signer = signers.PdfSigner(signature_meta=signature_meta, signer=signer)
                     pdf_signer.sign_pdf(writer, output=outf)
