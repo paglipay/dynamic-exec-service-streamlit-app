@@ -7,3 +7,4 @@ openpyxl
 textblob
 python-docx
 pyhanko
+cryptography
