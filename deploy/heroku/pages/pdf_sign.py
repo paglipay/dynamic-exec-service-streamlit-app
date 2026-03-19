@@ -87,15 +87,14 @@ sign_button = st.button('Sign PDF')
 if sign_button:
     if not uploaded_pdf:
         st.error('Please upload a PDF file to sign.')
-    elif uploaded_p12 and not p12_password:
-        st.error('Please enter the PKCS#12 password for the uploaded certificate.')
     else:
         try:
             with tempfile.TemporaryDirectory() as tempdir:
                 # Save uploaded files to disk
                 pdf_path = os.path.join(tempdir, 'input.pdf')
                 p12_path = os.path.join(tempdir, 'cert.p12')
-                p12_load_password = p12_password.encode() if uploaded_p12 else None
+                # Empty password means an unencrypted PKCS#12 bundle.
+                p12_load_password = p12_password.encode() if p12_password else None
 
                 with open(pdf_path, 'wb') as f:
                     f.write(uploaded_pdf.getbuffer())
@@ -110,6 +109,14 @@ if sign_button:
 
                 # Load signer
                 signer = signers.SimpleSigner.load_pkcs12(p12_path, p12_load_password)
+                # Some backends expect "no password" as b'' instead of None.
+                if signer is None and p12_load_password is None:
+                    signer = signers.SimpleSigner.load_pkcs12(p12_path, b'')
+                if signer is None:
+                    raise ValueError(
+                        'Unable to load signing credentials from the PKCS#12 file. '
+                        'Ensure the file includes a private key and certificate, and verify the password.'
+                    )
 
                 output_path = os.path.join(tempdir, 'signed_output.pdf')
 
