@@ -17,6 +17,71 @@ def ensure_space(pdf_canvas, y_pos, needed_height, page_height):
     return y_pos
 
 
+def render_components(components, key_prefix):
+    values = {}
+    for idx, component in enumerate(components):
+        comp_type = component.get('type')
+        label = component.get('label', f'Field {idx + 1}')
+        if comp_type == 'Text':
+            st.markdown(f'**{label}**')
+        elif comp_type == 'Text Input':
+            values[label] = st.text_input(label, key=f'{key_prefix}_text_{idx}')
+        elif comp_type == 'Textarea':
+            values[label] = st.text_area(label, key=f'{key_prefix}_textarea_{idx}')
+        elif comp_type == 'Checkbox':
+            values[label] = st.checkbox(
+                label,
+                value=component.get('default', False),
+                key=f'{key_prefix}_checkbox_{idx}',
+            )
+    return values
+
+
+def build_pdf(form_name, components, values):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        pdf_path = os.path.join(tmp_dir, 'checklist_output.pdf')
+        pdf_canvas = canvas.Canvas(pdf_path, pagesize=letter)
+        page_width, page_height = letter
+
+        y_pos = page_height - 50
+        pdf_canvas.setFont('Helvetica-Bold', 16)
+        pdf_canvas.drawCentredString(page_width / 2, y_pos, f'Checklist Form: {form_name}')
+        y_pos -= 35
+        pdf_canvas.setFont('Helvetica', 12)
+
+        for component in components:
+            comp_type = component.get('type')
+            label = component.get('label', '')
+
+            if comp_type == 'Text':
+                y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
+                pdf_canvas.drawString(50, y_pos, label)
+                y_pos -= 20
+            elif comp_type == 'Text Input':
+                y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
+                pdf_canvas.drawString(50, y_pos, f"{label}: {values.get(label, '')}")
+                y_pos -= 20
+            elif comp_type == 'Textarea':
+                y_pos = ensure_space(pdf_canvas, y_pos, 15, page_height)
+                pdf_canvas.drawString(50, y_pos, f'{label}:')
+                y_pos -= 15
+                lines = (values.get(label, '') or '').split('\n')
+                for line in lines:
+                    y_pos = ensure_space(pdf_canvas, y_pos, 15, page_height)
+                    pdf_canvas.drawString(70, y_pos, line)
+                    y_pos -= 15
+                y_pos -= 5
+            elif comp_type == 'Checkbox':
+                y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
+                checked = 'Yes' if values.get(label, False) else 'No'
+                pdf_canvas.drawString(50, y_pos, f'{label}: {checked}')
+                y_pos -= 20
+
+        pdf_canvas.save()
+        with open(pdf_path, 'rb') as pdf_file:
+            return pdf_file.read()
+
+
 def init_state():
     if 'forms' not in st.session_state:
         st.session_state.forms = {}
@@ -106,76 +171,20 @@ if st.session_state.builder_components:
             st.write(f"{index}. [{component['type']}] {component['label']}")
 
 st.subheader('Render and Export')
-render_name = st.selectbox('Form to render', [''] + list(st.session_state.forms.keys()), key='render_form_name')
 
-if render_name:
-    render_form = st.session_state.forms[render_name]
-    values = {}
+if not st.session_state.builder_components:
+    st.info('Add at least one component in Form Builder to preview and export.')
+else:
+    st.write('Live preview of the current form you are building:')
+    live_values = render_components(st.session_state.builder_components, 'live_render')
 
-    for idx, component in enumerate(render_form.get('components', [])):
-        comp_type = component.get('type')
-        label = component.get('label', f'Field {idx + 1}')
-        if comp_type == 'Text':
-            st.markdown(f'**{label}**')
-        elif comp_type == 'Text Input':
-            values[label] = st.text_input(label, key=f'render_text_{render_name}_{idx}')
-        elif comp_type == 'Textarea':
-            values[label] = st.text_area(label, key=f'render_textarea_{render_name}_{idx}')
-        elif comp_type == 'Checkbox':
-            values[label] = st.checkbox(
-                label,
-                value=component.get('default', False),
-                key=f'render_checkbox_{render_name}_{idx}',
-            )
-
-    if st.button('Generate PDF'):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            pdf_path = os.path.join(tmp_dir, 'checklist_output.pdf')
-            pdf_canvas = canvas.Canvas(pdf_path, pagesize=letter)
-            page_width, page_height = letter
-
-            y_pos = page_height - 50
-            pdf_canvas.setFont('Helvetica-Bold', 16)
-            pdf_canvas.drawCentredString(page_width / 2, y_pos, f'Checklist Form: {render_name}')
-            y_pos -= 35
-            pdf_canvas.setFont('Helvetica', 12)
-
-            for component in render_form.get('components', []):
-                comp_type = component.get('type')
-                label = component.get('label', '')
-
-                if comp_type == 'Text':
-                    y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
-                    pdf_canvas.drawString(50, y_pos, label)
-                    y_pos -= 20
-                elif comp_type == 'Text Input':
-                    y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
-                    pdf_canvas.drawString(50, y_pos, f"{label}: {values.get(label, '')}")
-                    y_pos -= 20
-                elif comp_type == 'Textarea':
-                    y_pos = ensure_space(pdf_canvas, y_pos, 15, page_height)
-                    pdf_canvas.drawString(50, y_pos, f'{label}:')
-                    y_pos -= 15
-                    lines = (values.get(label, '') or '').split('\n')
-                    for line in lines:
-                        y_pos = ensure_space(pdf_canvas, y_pos, 15, page_height)
-                        pdf_canvas.drawString(70, y_pos, line)
-                        y_pos -= 15
-                    y_pos -= 5
-                elif comp_type == 'Checkbox':
-                    y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
-                    checked = 'Yes' if values.get(label, False) else 'No'
-                    pdf_canvas.drawString(50, y_pos, f'{label}: {checked}')
-                    y_pos -= 20
-
-            pdf_canvas.save()
-            with open(pdf_path, 'rb') as pdf_file:
-                pdf_data = pdf_file.read()
-
-            st.success('PDF generated.')
-            st.download_button(
-                'Download PDF',
-                data=pdf_data,
-                file_name=f'{render_name}_basic.pdf',
-                mime='application/pdf',
-            )
+    export_name = save_form_name.strip() or active_form_name
+    if st.button('Generate PDF from Current Form'):
+        pdf_data = build_pdf(export_name, st.session_state.builder_components, live_values)
+        st.success('PDF generated from current form data.')
+        st.download_button(
+            'Download PDF',
+            data=pdf_data,
+            file_name=f'{export_name}_basic.pdf',
+            mime='application/pdf',
+        )
