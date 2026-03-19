@@ -65,10 +65,13 @@ active_form_name = st.session_state.builder_form_name
 st.subheader('Form Builder')
 st.write(f'Active form: {active_form_name}')
 
+if st.session_state.get('save_form_name') != active_form_name:
+    st.session_state.save_form_name = active_form_name
+
 component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox'])
 component_label = st.text_input('Component label', key='builder_component_label')
 checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
-save_form_name = st.text_input('Form name to save', value=active_form_name, key='save_form_name')
+save_form_name = st.text_input('Form name to save', key='save_form_name')
 
 if st.button('Add Component'):
     if not component_label.strip():
