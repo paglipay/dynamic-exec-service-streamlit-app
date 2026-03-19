@@ -1,5 +1,6 @@
 import os
 import tempfile
+import json
 
 import streamlit as st
 from PIL import Image
@@ -150,23 +151,40 @@ def load_builder_from_form(form_name):
         st.session_state.builder_form_name = form_name
 
 
+def parse_imported_form(file_data):
+    payload = json.loads(file_data.decode('utf-8'))
+    if not isinstance(payload, dict):
+        raise ValueError('Imported JSON must be an object.')
+
+    components = payload.get('components')
+    if not isinstance(components, list):
+        raise ValueError('Imported JSON must include a components array.')
+
+    allowed_types = {'Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload'}
+    cleaned = []
+    for item in components:
+        if not isinstance(item, dict):
+            raise ValueError('Each component must be an object.')
+        comp_type = item.get('type')
+        label = item.get('label')
+        if comp_type not in allowed_types:
+            raise ValueError(f'Unsupported component type: {comp_type}')
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError('Each component must include a non-empty label.')
+
+        entry = {'type': comp_type, 'label': label.strip()}
+        if comp_type == 'Checkbox':
+            entry['default'] = bool(item.get('default', False))
+        cleaned.append(entry)
+
+    imported_name = payload.get('name', '')
+    if not isinstance(imported_name, str):
+        imported_name = ''
+
+    return imported_name.strip(), cleaned
+
+
 init_state()
-
-st.sidebar.header('Form Templates')
-existing_names = list(st.session_state.forms.keys())
-selected_name = st.sidebar.selectbox('Select existing form', [''] + existing_names, key='selected_form_name')
-
-if selected_name and st.session_state.builder_form_name != selected_name:
-    load_builder_from_form(selected_name)
-
-new_name = st.sidebar.text_input('Or create new form name', key='new_form_name')
-if st.sidebar.button('Use New Form'):
-    if not new_name.strip():
-        st.sidebar.error('Please enter a form name.')
-    else:
-        st.session_state.builder_form_name = new_name.strip()
-        st.session_state.builder_components = []
-        st.sidebar.success(f'Editing new form: {new_name.strip()}')
 
 active_form_name = st.session_state.builder_form_name
 if st.session_state.get('save_form_name') != active_form_name:
@@ -176,7 +194,34 @@ builder_tab, render_tab = st.tabs(['Form Builder', 'Render and Export'])
 
 with builder_tab:
     st.subheader('Form Builder')
+
+    form_names = list(st.session_state.forms.keys())
+    if active_form_name not in form_names:
+        form_names = [active_form_name] + form_names
+
+    selected_builder_form = st.selectbox(
+        'Select form to build',
+        form_names,
+        index=form_names.index(active_form_name),
+        key='builder_form_select',
+    )
+
+    if selected_builder_form != st.session_state.builder_form_name:
+        load_builder_from_form(selected_builder_form)
+        st.session_state.save_form_name = selected_builder_form
+
+    active_form_name = st.session_state.builder_form_name
     st.write(f'Active form: {active_form_name}')
+
+    new_name = st.text_input('Create new form', key='new_form_name')
+    if st.button('Use New Form'):
+        if not new_name.strip():
+            st.error('Please enter a form name.')
+        else:
+            st.session_state.builder_form_name = new_name.strip()
+            st.session_state.builder_components = []
+            st.session_state.save_form_name = new_name.strip()
+            st.success(f'Editing new form: {new_name.strip()}')
 
     component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload'])
     component_label = st.text_input('Component label', key='builder_component_label')
@@ -214,6 +259,88 @@ with builder_tab:
                 st.write(f"{index}. [{component['type']}] {component['label']} (default={component.get('default', False)})")
             else:
                 st.write(f"{index}. [{component['type']}] {component['label']}")
+
+        st.markdown('---')
+        st.write('Edit / Delete / Reorder Components')
+
+        component_options = [
+            f"{idx + 1}. [{item.get('type')}] {item.get('label', '')}"
+            for idx, item in enumerate(st.session_state.builder_components)
+        ]
+        selected_component_label = st.selectbox('Select component', component_options, key='manage_component_select')
+        selected_idx = component_options.index(selected_component_label)
+        selected_component = st.session_state.builder_components[selected_idx]
+
+        edit_label = st.text_input(
+            'Edit label',
+            value=selected_component.get('label', ''),
+            key=f'edit_component_label_{selected_idx}',
+        )
+        edit_default = False
+        if selected_component.get('type') == 'Checkbox':
+            edit_default = st.checkbox(
+                'Checkbox default',
+                value=selected_component.get('default', False),
+                key=f'edit_component_default_{selected_idx}',
+            )
+
+        action_cols = st.columns(4)
+        with action_cols[0]:
+            if st.button('Update Component'):
+                if not edit_label.strip():
+                    st.error('Label cannot be empty.')
+                else:
+                    st.session_state.builder_components[selected_idx]['label'] = edit_label.strip()
+                    if selected_component.get('type') == 'Checkbox':
+                        st.session_state.builder_components[selected_idx]['default'] = edit_default
+                    st.success('Component updated.')
+        with action_cols[1]:
+            if st.button('Delete Component'):
+                st.session_state.builder_components.pop(selected_idx)
+                st.success('Component deleted.')
+        with action_cols[2]:
+            if st.button('Move Up') and selected_idx > 0:
+                comps = st.session_state.builder_components
+                comps[selected_idx - 1], comps[selected_idx] = comps[selected_idx], comps[selected_idx - 1]
+                st.success('Component moved up.')
+        with action_cols[3]:
+            if st.button('Move Down') and selected_idx < len(st.session_state.builder_components) - 1:
+                comps = st.session_state.builder_components
+                comps[selected_idx + 1], comps[selected_idx] = comps[selected_idx], comps[selected_idx + 1]
+                st.success('Component moved down.')
+
+    st.markdown('---')
+    st.write('Export / Import Form Definition')
+
+    export_form_name = st.session_state.save_form_name.strip() or active_form_name
+    export_payload = {
+        'name': export_form_name,
+        'components': list(st.session_state.builder_components),
+    }
+    st.download_button(
+        'Export Form JSON',
+        data=json.dumps(export_payload, indent=2).encode('utf-8'),
+        file_name=f'{export_form_name}.json',
+        mime='application/json',
+    )
+
+    import_file = st.file_uploader('Import form JSON', type=['json'], key='import_form_json')
+    import_target_name = st.text_input('Imported form name override (optional)', key='import_form_name_override')
+    if st.button('Import Form'):
+        if import_file is None:
+            st.error('Choose a JSON file to import.')
+        else:
+            try:
+                imported_name, imported_components = parse_imported_form(import_file.getvalue())
+                target_name = import_target_name.strip() or imported_name or f"temp_form_{st.session_state.temp_form_counter}"
+                if target_name.startswith('temp_form_') and target_name not in st.session_state.forms:
+                    st.session_state.temp_form_counter += 1
+                st.session_state.forms[target_name] = {'components': imported_components}
+                load_builder_from_form(target_name)
+                st.session_state.save_form_name = target_name
+                st.success(f'Imported form: {target_name}')
+            except Exception as exc:
+                st.error(f'Import failed: {exc}')
 
 with render_tab:
     st.subheader('Render and Export')
