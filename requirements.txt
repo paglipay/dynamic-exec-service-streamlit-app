@@ -6,3 +6,4 @@ pyserial
 openpyxl
 textblob
 python-docx
+pyhanko
