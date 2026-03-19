@@ -13,6 +13,14 @@ from reportlab.lib.utils import ImageReader
 
 st.title('Build a Checklist Form to PDF Sign App')
 
+
+def trigger_rerun():
+    # Streamlit >=1.27 uses st.rerun(); older versions expose experimental_rerun.
+    if hasattr(st, 'rerun'):
+        st.rerun()
+    elif hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
+
 # Initialize session state for forms storage
 if 'forms' not in st.session_state:
     st.session_state.forms = {}
@@ -37,7 +45,7 @@ if create_new and new_form_name:
     else:
         st.session_state.forms[new_form_name] = {'inputs': [], 'texts': [], 'textareas': [], 'images': []}
         st.sidebar.success(f'Created form "{new_form_name}"')
-        st.experimental_rerun()
+        trigger_rerun()
 
 if selected_form:
     form_data = st.session_state.forms[selected_form]
@@ -62,25 +70,25 @@ if add_element == 'Text':
     text_label = st.text_input('Enter text to display')
     if st.button('Add Text') and text_label:
         st.session_state.text_fields.append({'label': text_label})
-        st.experimental_rerun()
+        trigger_rerun()
 
 if add_element == 'Text Input':
     input_label = st.text_input('Input field label')
     if st.button('Add Input Field') and input_label:
         st.session_state.input_fields.append({'label': input_label})
-        st.experimental_rerun()
+        trigger_rerun()
 
 if add_element == 'Textarea':
     textarea_label = st.text_input('Textarea label')
     if st.button('Add Textarea') and textarea_label:
         st.session_state.textarea_fields.append({'label': textarea_label})
-        st.experimental_rerun()
+        trigger_rerun()
 
 if add_element == 'Image Upload':
     image_label = st.text_input('Image field label')
     if st.button('Add Image Upload') and image_label:
         st.session_state.image_fields.append({'label': image_label})
-        st.experimental_rerun()
+        trigger_rerun()
 
 if selected_form or new_form_name:
     save_name = selected_form if selected_form else new_form_name
@@ -92,7 +100,7 @@ if selected_form or new_form_name:
             'images': st.session_state.image_fields
         }
         st.success(f'Form "{save_name}" saved!')
-        st.experimental_rerun()
+        trigger_rerun()
 
 st.header('Render Form')
 
