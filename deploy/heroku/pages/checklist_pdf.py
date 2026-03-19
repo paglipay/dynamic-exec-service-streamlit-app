@@ -187,6 +187,9 @@ def parse_imported_form(file_data):
 init_state()
 
 active_form_name = st.session_state.builder_form_name
+if 'pending_save_form_name' in st.session_state:
+    st.session_state.save_form_name = st.session_state.pending_save_form_name
+    del st.session_state.pending_save_form_name
 if st.session_state.get('save_form_name') != active_form_name:
     st.session_state.save_form_name = active_form_name
 
@@ -208,7 +211,7 @@ with builder_tab:
 
     if selected_builder_form != st.session_state.builder_form_name:
         load_builder_from_form(selected_builder_form)
-        st.session_state.save_form_name = selected_builder_form
+        st.session_state.pending_save_form_name = selected_builder_form
 
     active_form_name = st.session_state.builder_form_name
     st.write(f'Active form: {active_form_name}')
@@ -220,7 +223,7 @@ with builder_tab:
         else:
             st.session_state.builder_form_name = new_name.strip()
             st.session_state.builder_components = []
-            st.session_state.save_form_name = new_name.strip()
+            st.session_state.pending_save_form_name = new_name.strip()
             st.success(f'Editing new form: {new_name.strip()}')
 
     component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload'])
@@ -337,7 +340,7 @@ with builder_tab:
                     st.session_state.temp_form_counter += 1
                 st.session_state.forms[target_name] = {'components': imported_components}
                 load_builder_from_form(target_name)
-                st.session_state.save_form_name = target_name
+                st.session_state.pending_save_form_name = target_name
                 st.success(f'Imported form: {target_name}')
             except Exception as exc:
                 st.error(f'Import failed: {exc}')
