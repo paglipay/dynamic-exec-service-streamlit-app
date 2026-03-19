@@ -169,64 +169,68 @@ if st.sidebar.button('Use New Form'):
         st.sidebar.success(f'Editing new form: {new_name.strip()}')
 
 active_form_name = st.session_state.builder_form_name
-st.subheader('Form Builder')
-st.write(f'Active form: {active_form_name}')
-
 if st.session_state.get('save_form_name') != active_form_name:
     st.session_state.save_form_name = active_form_name
 
-component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload'])
-component_label = st.text_input('Component label', key='builder_component_label')
-checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
-save_form_name = st.text_input('Form name to save', key='save_form_name')
+builder_tab, render_tab = st.tabs(['Form Builder', 'Render and Export'])
 
-if st.button('Add Component'):
-    if not component_label.strip():
-        st.error('Component label is required.')
-    else:
-        entry = {'type': component_type, 'label': component_label.strip()}
-        if component_type == 'Checkbox':
-            entry['default'] = checkbox_default
-        st.session_state.builder_components.append(entry)
-        st.success(f'Added {component_type}: {component_label.strip()}')
+with builder_tab:
+    st.subheader('Form Builder')
+    st.write(f'Active form: {active_form_name}')
 
-if st.button('Save Form'):
-    target_name = save_form_name.strip()
-    if not target_name:
-        st.error('Enter a form name to save.')
-    else:
-        previous_name = active_form_name
-        st.session_state.forms[target_name] = {'components': list(st.session_state.builder_components)}
+    component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload'])
+    component_label = st.text_input('Component label', key='builder_component_label')
+    checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
+    save_form_name = st.text_input('Form name to save', key='save_form_name')
 
-        if previous_name != target_name and previous_name.startswith('temp_form_'):
-            st.session_state.forms.pop(previous_name, None)
-
-        st.session_state.builder_form_name = target_name
-        st.success(f'Saved form: {target_name}')
-
-if st.session_state.builder_components:
-    st.write('Current components:')
-    for index, component in enumerate(st.session_state.builder_components, start=1):
-        if component['type'] == 'Checkbox':
-            st.write(f"{index}. [{component['type']}] {component['label']} (default={component.get('default', False)})")
+    if st.button('Add Component'):
+        if not component_label.strip():
+            st.error('Component label is required.')
         else:
-            st.write(f"{index}. [{component['type']}] {component['label']}")
+            entry = {'type': component_type, 'label': component_label.strip()}
+            if component_type == 'Checkbox':
+                entry['default'] = checkbox_default
+            st.session_state.builder_components.append(entry)
+            st.success(f'Added {component_type}: {component_label.strip()}')
 
-st.subheader('Render and Export')
+    if st.button('Save Form'):
+        target_name = save_form_name.strip()
+        if not target_name:
+            st.error('Enter a form name to save.')
+        else:
+            previous_name = active_form_name
+            st.session_state.forms[target_name] = {'components': list(st.session_state.builder_components)}
 
-if not st.session_state.builder_components:
-    st.info('Add at least one component in Form Builder to preview and export.')
-else:
-    st.write('Live preview of the current form you are building:')
-    live_values = render_components(st.session_state.builder_components, 'live_render')
+            if previous_name != target_name and previous_name.startswith('temp_form_'):
+                st.session_state.forms.pop(previous_name, None)
 
-    export_name = save_form_name.strip() or active_form_name
-    if st.button('Generate PDF from Current Form'):
-        pdf_data = build_pdf(export_name, st.session_state.builder_components, live_values)
-        st.success('PDF generated from current form data.')
-        st.download_button(
-            'Download PDF',
-            data=pdf_data,
-            file_name=f'{export_name}_basic.pdf',
-            mime='application/pdf',
-        )
+            st.session_state.builder_form_name = target_name
+            st.success(f'Saved form: {target_name}')
+
+    if st.session_state.builder_components:
+        st.write('Current components:')
+        for index, component in enumerate(st.session_state.builder_components, start=1):
+            if component['type'] == 'Checkbox':
+                st.write(f"{index}. [{component['type']}] {component['label']} (default={component.get('default', False)})")
+            else:
+                st.write(f"{index}. [{component['type']}] {component['label']}")
+
+with render_tab:
+    st.subheader('Render and Export')
+
+    if not st.session_state.builder_components:
+        st.info('Add at least one component in Form Builder to preview and export.')
+    else:
+        st.write('Live preview of the current form you are building:')
+        live_values = render_components(st.session_state.builder_components, 'live_render')
+
+        export_name = st.session_state.save_form_name.strip() or active_form_name
+        if st.button('Generate PDF from Current Form'):
+            pdf_data = build_pdf(export_name, st.session_state.builder_components, live_values)
+            st.success('PDF generated from current form data.')
+            st.download_button(
+                'Download PDF',
+                data=pdf_data,
+                file_name=f'{export_name}_basic.pdf',
+                mime='application/pdf',
+            )
