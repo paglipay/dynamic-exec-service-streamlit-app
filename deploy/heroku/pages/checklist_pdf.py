@@ -25,6 +25,16 @@ def init_state():
     if 'builder_form_name' not in st.session_state:
         st.session_state.builder_form_name = ''
 
+    if 'temp_form_counter' not in st.session_state:
+        st.session_state.temp_form_counter = 1
+
+    if not st.session_state.builder_form_name:
+        temp_name = f"temp_form_{st.session_state.temp_form_counter}"
+        st.session_state.temp_form_counter += 1
+        st.session_state.forms[temp_name] = {'components': []}
+        st.session_state.builder_form_name = temp_name
+        st.session_state.builder_components = []
+
 
 def load_builder_from_form(form_name):
     form = st.session_state.forms.get(form_name)
@@ -53,16 +63,15 @@ if st.sidebar.button('Use New Form'):
 
 active_form_name = st.session_state.builder_form_name
 st.subheader('Form Builder')
-st.write(f'Active form: {active_form_name or "(none selected)"}')
+st.write(f'Active form: {active_form_name}')
 
 component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox'])
 component_label = st.text_input('Component label', key='builder_component_label')
 checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
+save_form_name = st.text_input('Form name to save', value=active_form_name, key='save_form_name')
 
 if st.button('Add Component'):
-    if not active_form_name:
-        st.error('Select or create a form first.')
-    elif not component_label.strip():
+    if not component_label.strip():
         st.error('Component label is required.')
     else:
         entry = {'type': component_type, 'label': component_label.strip()}
@@ -72,11 +81,18 @@ if st.button('Add Component'):
         st.success(f'Added {component_type}: {component_label.strip()}')
 
 if st.button('Save Form'):
-    if not active_form_name:
-        st.error('Select or create a form first.')
+    target_name = save_form_name.strip()
+    if not target_name:
+        st.error('Enter a form name to save.')
     else:
-        st.session_state.forms[active_form_name] = {'components': list(st.session_state.builder_components)}
-        st.success(f'Saved form: {active_form_name}')
+        previous_name = active_form_name
+        st.session_state.forms[target_name] = {'components': list(st.session_state.builder_components)}
+
+        if previous_name != target_name and previous_name.startswith('temp_form_'):
+            st.session_state.forms.pop(previous_name, None)
+
+        st.session_state.builder_form_name = target_name
+        st.success(f'Saved form: {target_name}')
 
 if st.session_state.builder_components:
     st.write('Current components:')
