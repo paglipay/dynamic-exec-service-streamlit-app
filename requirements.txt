@@ -8,3 +8,4 @@ textblob
 python-docx
 pyhanko
 cryptography
+reportlab
