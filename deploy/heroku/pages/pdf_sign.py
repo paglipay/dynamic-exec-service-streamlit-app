@@ -1,7 +1,6 @@
 import streamlit as st
 from pyhanko.sign import signers
-from pyhanko.sign.fields import SigFieldSpec
-from pyhanko_certvalidator import ValidationContext
+from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 import tempfile
 import os
 from datetime import datetime, timedelta, UTC
@@ -95,19 +94,13 @@ if sign_button:
                 # Load signer
                 signer = signers.SimpleSigner.load_pkcs12(p12_path, p12_load_password)
 
-                # Validation context (optional, can customize trust roots)
-                val_context = ValidationContext(trust_roots=None)
-
                 output_path = os.path.join(tempdir, 'signed_output.pdf')
 
                 with open(pdf_path, 'rb') as inf, open(output_path, 'wb') as outf:
-                    signers.sign_pdf(
-                        inf,
-                        signer=signer,
-                        signature_field_spec=SigFieldSpec(sig_field_name='Signature1'),
-                        output=outf,
-                        validation_context=val_context
-                    )
+                    writer = IncrementalPdfFileWriter(inf)
+                    signature_meta = signers.PdfSignatureMetadata(field_name='Signature1')
+                    pdf_signer = signers.PdfSigner(signature_meta=signature_meta, signer=signer)
+                    pdf_signer.sign_pdf(writer, output=outf)
 
                 # Read signed PDF for download
                 with open(output_path, 'rb') as f:
