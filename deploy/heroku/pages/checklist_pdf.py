@@ -43,6 +43,11 @@ def render_components(components, key_prefix):
                 type=['png', 'jpg', 'jpeg'],
                 key=f'{key_prefix}_image_{idx}',
             )
+        elif comp_type == 'Camera Input':
+            values[label] = st.camera_input(
+                label,
+                key=f'{key_prefix}_camera_{idx}',
+            )
     return values
 
 
@@ -85,7 +90,7 @@ def build_pdf(form_name, components, values):
                 checked = 'Yes' if values.get(label, False) else 'No'
                 pdf_canvas.drawString(50, y_pos, f'{label}: {checked}')
                 y_pos -= 20
-            elif comp_type == 'Image Upload':
+            elif comp_type in ('Image Upload', 'Camera Input'):
                 uploaded_img = values.get(label)
                 y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
                 pdf_canvas.drawString(50, y_pos, f'{label}:')
@@ -160,7 +165,7 @@ def parse_imported_form(file_data):
     if not isinstance(components, list):
         raise ValueError('Imported JSON must include a components array.')
 
-    allowed_types = {'Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload'}
+    allowed_types = {'Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'}
     cleaned = []
     for item in components:
         if not isinstance(item, dict):
@@ -226,7 +231,7 @@ with builder_tab:
             st.session_state.pending_save_form_name = new_name.strip()
             st.success(f'Editing new form: {new_name.strip()}')
 
-    component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload'])
+    component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'])
     component_label = st.text_input('Component label', key='builder_component_label')
     checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
     save_form_name = st.text_input('Form name to save', key='save_form_name')
