@@ -1,12 +1,17 @@
 import os
 import tempfile
 import json
+from io import BytesIO
 
 import streamlit as st
 from PIL import Image
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
+try:
+    from pdf2image import convert_from_bytes
+except ImportError:
+    convert_from_bytes = None
 
 st.title('Checklist Form to PDF (Basic Test)')
 st.caption('Simplified page for testing core functionality: build form, enter values, download unsigned PDF.')
@@ -137,6 +142,26 @@ def build_pdf(form_name, components, values):
             return pdf_file.read()
 
 
+def pdf_to_images(pdf_data):
+    """Convert PDF bytes to images for preview.
+    
+    Args:
+        pdf_data: Binary PDF data
+        
+    Returns:
+        List of PIL Image objects, one per page
+    """
+    if convert_from_bytes is None:
+        return None
+    
+    try:
+        images = convert_from_bytes(pdf_data, dpi=150)
+        return images
+    except Exception as exc:
+        st.warning(f"Could not generate preview: {exc}")
+        return None
+
+
 def init_state():
     if 'forms' not in st.session_state:
         st.session_state.forms = {}
@@ -147,6 +172,11 @@ def init_state():
 
     if 'temp_form_counter' not in st.session_state:
         st.session_state.temp_form_counter = 1
+
+    if 'generated_pdf_data' not in st.session_state:
+        st.session_state.generated_pdf_data = None
+    if 'generated_pdf_name' not in st.session_state:
+        st.session_state.generated_pdf_name = 'form.pdf'
 
     if not st.session_state.builder_form_name:
         temp_name = f"temp_form_{st.session_state.temp_form_counter}"
@@ -369,12 +399,50 @@ with render_tab:
         live_values = render_components(st.session_state.builder_components, 'live_render')
 
         export_name = st.session_state.save_form_name.strip() or active_form_name
-        if st.button('Generate PDF from Current Form'):
-            pdf_data = build_pdf(export_name, st.session_state.builder_components, live_values)
-            st.success('PDF generated from current form data.')
+        
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button('📄 Generate PDF Preview', use_container_width=True):
+                pdf_data = build_pdf(export_name, st.session_state.builder_components, live_values)
+                st.session_state.generated_pdf_data = pdf_data
+                st.session_state.generated_pdf_name = export_name
+                st.success('✅ PDF generated! See preview below.')
+        
+        with col2:
+            if st.button('🔄 Clear Preview', use_container_width=True):
+                st.session_state.generated_pdf_data = None
+                st.rerun() if hasattr(st, 'rerun') else st.experimental_rerun()
+        
+        # Display PDF preview if available
+        if st.session_state.generated_pdf_data:
+            st.markdown('---')
+            st.subheader('📋 PDF Preview')
+            
+            preview_images = pdf_to_images(st.session_state.generated_pdf_data)
+            
+            if preview_images:
+                st.write(f'Preview: {len(preview_images)} page(s)')
+                
+                # Display all pages in tabs or in a scrollable view
+                if len(preview_images) == 1:
+                    st.image(preview_images[0], use_column_width=True, caption='Page 1')
+                else:
+                    # Create tabs for multiple pages
+                    page_tabs = st.tabs([f"Page {i+1}" for i in range(len(preview_images))])
+                    for idx, tab in enumerate(page_tabs):
+                        with tab:
+                            st.image(preview_images[idx], use_column_width=True, caption=f'Page {idx + 1}')
+            else:
+                st.info('PDF preview not available. Install poppler for preview support.')
+                st.write('To enable previews, install poppler-utils:')
+                st.code('apt-get install poppler-utils', language='bash')
+            
+            st.markdown('---')
+            st.subheader('💾 Download PDF')
             st.download_button(
-                'Download PDF',
-                data=pdf_data,
-                file_name=f'{export_name}_basic.pdf',
+                '⬇️ Download PDF',
+                data=st.session_state.generated_pdf_data,
+                file_name=f'{st.session_state.generated_pdf_name}_basic.pdf',
                 mime='application/pdf',
+                use_container_width=True,
             )

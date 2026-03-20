@@ -13,3 +13,4 @@ pyhanko-certvalidator
 cryptography
 reportlab
 Pillow
+pdf2image
