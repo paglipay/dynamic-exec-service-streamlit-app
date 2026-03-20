@@ -308,6 +308,38 @@ TYPE_ICONS = {
     'Camera Input': '📷',
 }
 
+@st.dialog('📋 PDF Preview', width='large')
+def show_pdf_preview_modal():
+    pdf_name = st.session_state.get('generated_pdf_name', 'form')
+    pdf_data = st.session_state.get('generated_pdf_data')
+    if not pdf_data:
+        st.warning('No PDF generated yet.')
+        return
+
+    preview_images = pdf_to_images(pdf_data)
+    if preview_images:
+        st.caption(f'{len(preview_images)} page(s)')
+        if len(preview_images) == 1:
+            st.image(preview_images[0], use_column_width=True, caption='Page 1')
+        else:
+            page_tabs = st.tabs([f'Page {i + 1}' for i in range(len(preview_images))])
+            for idx, tab in enumerate(page_tabs):
+                with tab:
+                    st.image(preview_images[idx], use_column_width=True, caption=f'Page {idx + 1}')
+    else:
+        st.info('PDF image preview not available — install poppler-utils to enable it.')
+        st.code('sudo apt-get install poppler-utils && pip install pdf2image', language='bash')
+
+    st.markdown('---')
+    st.download_button(
+        '⬇️ Download PDF',
+        data=pdf_data,
+        file_name=f'{pdf_name}_basic.pdf',
+        mime='application/pdf',
+        use_container_width=True,
+    )
+
+
 # Responsive layout: tabs on narrow, 2-col on medium, 3-col on wide
 _screen_width = (
     streamlit_js_eval(js_expressions='window.innerWidth', key='screen_width_checklist')
@@ -583,41 +615,12 @@ with render_tab:
 
         col1, col2 = st.columns(2)
         with col1:
-            if st.button('📄 Generate PDF Preview', use_container_width=True):
+            if st.button('📄 Generate & Preview PDF', use_container_width=True):
                 pdf_data = build_pdf(export_name, st.session_state.builder_components, live_values)
                 st.session_state.generated_pdf_data = pdf_data
                 st.session_state.generated_pdf_name = export_name
-                st.success('✅ PDF generated! See preview below.')
+                show_pdf_preview_modal()
         with col2:
-            if st.button('🔄 Clear Preview', use_container_width=True):
-                st.session_state.generated_pdf_data = None
-                trigger_rerun()
-
-        if st.session_state.generated_pdf_data:
-            st.markdown('---')
-            st.subheader('📋 PDF Preview')
-
-            preview_images = pdf_to_images(st.session_state.generated_pdf_data)
-
-            if preview_images:
-                st.caption(f'{len(preview_images)} page(s)')
-                if len(preview_images) == 1:
-                    st.image(preview_images[0], use_column_width=True, caption='Page 1')
-                else:
-                    page_tabs = st.tabs([f'Page {i + 1}' for i in range(len(preview_images))])
-                    for idx, tab in enumerate(page_tabs):
-                        with tab:
-                            st.image(preview_images[idx], use_column_width=True, caption=f'Page {idx + 1}')
-            else:
-                st.info('PDF preview not available — install poppler-utils to enable image previews.')
-                st.code('sudo apt-get install poppler-utils && pip install pdf2image', language='bash')
-
-            st.markdown('---')
-            st.subheader('💾 Download PDF')
-            st.download_button(
-                '⬇️ Download PDF',
-                data=st.session_state.generated_pdf_data,
-                file_name=f'{st.session_state.generated_pdf_name}_basic.pdf',
-                mime='application/pdf',
-                use_container_width=True,
-            )
+            if st.session_state.generated_pdf_data:
+                if st.button('👁️ View Last Preview', use_container_width=True):
+                    show_pdf_preview_modal()
