@@ -12,6 +12,13 @@ st.title('Checklist Form to PDF (Basic Test)')
 st.caption('Simplified page for testing core functionality: build form, enter values, download unsigned PDF.')
 
 
+def trigger_rerun():
+    if hasattr(st, 'rerun'):
+        st.rerun()
+    elif hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
+
+
 def ensure_space(pdf_canvas, y_pos, needed_height, page_height):
     if y_pos - needed_height < 50:
         pdf_canvas.showPage()
@@ -211,7 +218,6 @@ with builder_tab:
         'Select form to build',
         form_names,
         index=form_names.index(active_form_name),
-        key='builder_form_select',
     )
 
     if selected_builder_form != st.session_state.builder_form_name:
@@ -230,6 +236,7 @@ with builder_tab:
             st.session_state.builder_components = []
             st.session_state.pending_save_form_name = new_name.strip()
             st.success(f'Editing new form: {new_name.strip()}')
+            trigger_rerun()
 
     component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'])
     component_label = st.text_input('Component label', key='builder_component_label')
@@ -259,6 +266,7 @@ with builder_tab:
 
             st.session_state.builder_form_name = target_name
             st.success(f'Saved form: {target_name}')
+            trigger_rerun()
 
     if st.session_state.builder_components:
         st.write('Current components:')
@@ -347,6 +355,7 @@ with builder_tab:
                 load_builder_from_form(target_name)
                 st.session_state.pending_save_form_name = target_name
                 st.success(f'Imported form: {target_name}')
+                trigger_rerun()
             except Exception as exc:
                 st.error(f'Import failed: {exc}')
 
