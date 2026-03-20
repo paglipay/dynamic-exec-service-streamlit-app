@@ -361,6 +361,29 @@ with forms_tab:
 
     form_names = list(st.session_state.forms.keys())
 
+    # Import form JSON (first)
+    st.markdown('**📤 Import Form**')
+    import_file = st.file_uploader('Import form JSON', type=['json'], key='import_form_json')
+    import_target_name = st.text_input('Imported form name override (optional)', key='import_form_name_override')
+    if st.button('📤 Import Form', use_container_width=True):
+        if import_file is None:
+            st.error('Choose a JSON file to import.')
+        else:
+            try:
+                imported_name, imported_components = parse_imported_form(import_file.getvalue())
+                target_name = import_target_name.strip() or imported_name or f"imported_form_{st.session_state.temp_form_counter}"
+                if not imported_name and not import_target_name.strip():
+                    st.session_state.temp_form_counter += 1
+                st.session_state.forms[target_name] = {'components': imported_components}
+                load_builder_from_form(target_name)
+                st.session_state.pending_save_form_name = target_name
+                st.success(f'✅ Imported form: "{target_name}".')
+                trigger_rerun()
+            except Exception as exc:
+                st.error(f'Import failed: {exc}')
+
+    st.markdown('---')
+
     # Form list with stats
     if form_names:
         st.markdown(f'**{len(form_names)} form(s) in session:**')
@@ -444,8 +467,8 @@ with forms_tab:
 
     st.markdown('---')
 
-    # Export / Import
-    st.markdown('**⬇️ Export / 📤 Import Form Definition**')
+    # Export
+    st.markdown('**⬇️ Export Form**')
     export_form_name = st.session_state.save_form_name.strip() or st.session_state.builder_form_name
     export_payload = {
         'name': export_form_name,
@@ -458,25 +481,6 @@ with forms_tab:
         mime='application/json',
         use_container_width=True,
     )
-
-    import_file = st.file_uploader('Import form JSON', type=['json'], key='import_form_json')
-    import_target_name = st.text_input('Imported form name override (optional)', key='import_form_name_override')
-    if st.button('📤 Import Form', use_container_width=True):
-        if import_file is None:
-            st.error('Choose a JSON file to import.')
-        else:
-            try:
-                imported_name, imported_components = parse_imported_form(import_file.getvalue())
-                target_name = import_target_name.strip() or imported_name or f"imported_form_{st.session_state.temp_form_counter}"
-                if not imported_name and not import_target_name.strip():
-                    st.session_state.temp_form_counter += 1
-                st.session_state.forms[target_name] = {'components': imported_components}
-                load_builder_from_form(target_name)
-                st.session_state.pending_save_form_name = target_name
-                st.success(f'✅ Imported form: "{target_name}".')
-                trigger_rerun()
-            except Exception as exc:
-                st.error(f'Import failed: {exc}')
 
 # ── Tab 2: Form Builder ───────────────────────────────────────────────────────
 with builder_tab:
