@@ -7,6 +7,7 @@ import streamlit as st
 from PIL import Image
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 try:
     from pdf2image import convert_from_bytes
@@ -30,6 +31,45 @@ def ensure_space(pdf_canvas, y_pos, needed_height, page_height):
         pdf_canvas.setFont('Helvetica', 12)
         return page_height - 50
     return y_pos
+
+
+def wrap_text(text, font_name, font_size, max_width):
+    """Word-wrap text into lines that each fit within max_width points."""
+    words = (text or '').split(' ')
+    lines = []
+    current_line = ''
+    for word in words:
+        candidate = f'{current_line} {word}'.strip() if current_line else word
+        if stringWidth(candidate, font_name, font_size) <= max_width:
+            current_line = candidate
+        else:
+            if current_line:
+                lines.append(current_line)
+            # Force-break a single word that is wider than max_width
+            if stringWidth(word, font_name, font_size) > max_width:
+                partial = ''
+                for ch in word:
+                    if stringWidth(partial + ch, font_name, font_size) <= max_width:
+                        partial += ch
+                    else:
+                        if partial:
+                            lines.append(partial)
+                        partial = ch
+                current_line = partial
+            else:
+                current_line = word
+    if current_line:
+        lines.append(current_line)
+    return lines if lines else ['']
+
+
+def draw_wrapped(pdf_canvas, x, y, text, font_name, font_size, max_width, line_height, page_height):
+    """Draw word-wrapped text, returning the updated y position."""
+    for line in wrap_text(text, font_name, font_size, max_width):
+        y = ensure_space(pdf_canvas, y, line_height, page_height)
+        pdf_canvas.drawString(x, y, line)
+        y -= line_height
+    return y
 
 
 def render_components(components, key_prefix):
@@ -69,10 +109,21 @@ def build_pdf(form_name, components, values):
         pdf_canvas = canvas.Canvas(pdf_path, pagesize=letter)
         page_width, page_height = letter
 
+        # Margins: 50pt left, 50pt right
+        left_margin = 50
+        indent = 70
+        right_margin = 50
+        body_max_w = page_width - left_margin - right_margin   # 512 pt
+        indent_max_w = page_width - indent - right_margin      # 492 pt
+        line_h = 15
+
         y_pos = page_height - 50
         pdf_canvas.setFont('Helvetica-Bold', 16)
-        pdf_canvas.drawCentredString(page_width / 2, y_pos, f'Checklist Form: {form_name}')
-        y_pos -= 35
+        # Wrap long form titles in the header
+        for title_line in wrap_text(f'Checklist Form: {form_name}', 'Helvetica-Bold', 16, body_max_w):
+            pdf_canvas.drawCentredString(page_width / 2, y_pos, title_line)
+            y_pos -= 22
+        y_pos -= 10
         pdf_canvas.setFont('Helvetica', 12)
 
         for component in components:
@@ -80,51 +131,57 @@ def build_pdf(form_name, components, values):
             label = component.get('label', '')
 
             if comp_type == 'Text':
-                y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
-                pdf_canvas.drawString(50, y_pos, label)
-                y_pos -= 20
+                pdf_canvas.setFont('Helvetica-Bold', 12)
+                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, label,
+                                     'Helvetica-Bold', 12, body_max_w, line_h, page_height)
+                pdf_canvas.setFont('Helvetica', 12)
+                y_pos -= 4
+
             elif comp_type == 'Text Input':
-                y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
-                pdf_canvas.drawString(50, y_pos, f"{label}: {values.get(label, '')}")
-                y_pos -= 20
+                # Draw "Label:" on its own line, then the value indented
+                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}:',
+                                     'Helvetica', 12, body_max_w, line_h, page_height)
+                value_text = values.get(label, '') or ''
+                y_pos = draw_wrapped(pdf_canvas, indent, y_pos, value_text,
+                                     'Helvetica', 12, indent_max_w, line_h, page_height)
+                y_pos -= 4
+
             elif comp_type == 'Textarea':
-                y_pos = ensure_space(pdf_canvas, y_pos, 15, page_height)
-                pdf_canvas.drawString(50, y_pos, f'{label}:')
-                y_pos -= 15
-                lines = (values.get(label, '') or '').split('\n')
-                for line in lines:
-                    y_pos = ensure_space(pdf_canvas, y_pos, 15, page_height)
-                    pdf_canvas.drawString(70, y_pos, line)
-                    y_pos -= 15
-                y_pos -= 5
+                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}:',
+                                     'Helvetica', 12, body_max_w, line_h, page_height)
+                raw_lines = (values.get(label, '') or '').split('\n')
+                for raw_line in raw_lines:
+                    y_pos = draw_wrapped(pdf_canvas, indent, y_pos, raw_line,
+                                        'Helvetica', 12, indent_max_w, line_h, page_height)
+                y_pos -= 8
+
             elif comp_type == 'Checkbox':
-                y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
                 checked = 'Yes' if values.get(label, False) else 'No'
-                pdf_canvas.drawString(50, y_pos, f'{label}: {checked}')
-                y_pos -= 20
+                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}: {checked}',
+                                     'Helvetica', 12, body_max_w, line_h, page_height)
+                y_pos -= 4
+
             elif comp_type in ('Image Upload', 'Camera Input'):
                 uploaded_img = values.get(label)
-                y_pos = ensure_space(pdf_canvas, y_pos, 20, page_height)
-                pdf_canvas.drawString(50, y_pos, f'{label}:')
-                y_pos -= 20
+                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}:',
+                                     'Helvetica', 12, body_max_w, line_h, page_height)
 
                 if uploaded_img is None:
-                    y_pos = ensure_space(pdf_canvas, y_pos, 15, page_height)
-                    pdf_canvas.drawString(70, y_pos, '(no image uploaded)')
-                    y_pos -= 20
+                    y_pos = draw_wrapped(pdf_canvas, indent, y_pos, '(no image uploaded)',
+                                        'Helvetica', 12, indent_max_w, line_h, page_height)
                 else:
                     try:
                         image = Image.open(uploaded_img)
                         img_width, img_height = image.size
                         if img_width > 0:
-                            max_width = page_width - 120
-                            display_width = min(max_width, float(img_width))
+                            max_img_w = page_width - indent - right_margin
+                            display_width = min(max_img_w, float(img_width))
                             display_height = display_width * (float(img_height) / float(img_width))
 
                             y_pos = ensure_space(pdf_canvas, y_pos, display_height + 10, page_height)
                             pdf_canvas.drawImage(
                                 ImageReader(image),
-                                70,
+                                indent,
                                 y_pos - display_height,
                                 width=display_width,
                                 height=display_height,
@@ -133,9 +190,9 @@ def build_pdf(form_name, components, values):
                             )
                             y_pos -= display_height + 15
                     except Exception as exc:
-                        y_pos = ensure_space(pdf_canvas, y_pos, 15, page_height)
-                        pdf_canvas.drawString(70, y_pos, f'(image error: {exc})')
-                        y_pos -= 20
+                        y_pos = draw_wrapped(pdf_canvas, indent, y_pos, f'(image error: {exc})',
+                                            'Helvetica', 12, indent_max_w, line_h, page_height)
+                y_pos -= 4
 
         pdf_canvas.save()
         with open(pdf_path, 'rb') as pdf_file:
