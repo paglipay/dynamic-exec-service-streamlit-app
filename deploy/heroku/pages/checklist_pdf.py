@@ -15,6 +15,11 @@ try:
 except ImportError:
     convert_from_bytes = None
 
+try:
+    from streamlit_js_eval import streamlit_js_eval
+except ImportError:
+    streamlit_js_eval = None
+
 require_authentication('Checklist Form to PDF')
 st.title('Checklist Form to PDF (Basic Test)')
 st.caption('Simplified page for testing core functionality: build form, enter values, download unsigned PDF.')
@@ -303,7 +308,21 @@ TYPE_ICONS = {
     'Camera Input': '📷',
 }
 
-forms_tab, builder_tab, render_tab = st.tabs(['📂 My Forms', '📝 Form Builder', '📋 Render & Export'])
+# Responsive layout: tabs on narrow, 2-col on medium, 3-col on wide
+_screen_width = (
+    streamlit_js_eval(js_expressions='window.innerWidth', key='screen_width_checklist')
+    if streamlit_js_eval
+    else None
+)
+
+if _screen_width is None or _screen_width < 640:
+    forms_tab, builder_tab, render_tab = st.tabs(['📂 My Forms', '📝 Form Builder', '📋 Render & Export'])
+elif _screen_width < 1024:
+    _layout_cols = st.columns(2)
+    forms_tab, builder_tab = _layout_cols
+    render_tab = st.container()
+else:
+    forms_tab, builder_tab, render_tab = st.columns(3)
 
 # ── Tab 1: My Forms ───────────────────────────────────────────────────────────
 with forms_tab:
