@@ -1,5 +1,6 @@
 import json
 import os
+import traceback
 from typing import Any
 
 import streamlit as st
@@ -122,6 +123,8 @@ def _run_login(authenticator) -> tuple[str | None, bool | None, str | None]:
         lambda: authenticator.login(location="main"),
         lambda: authenticator.login("Login", "main"),
         lambda: authenticator.login(location="main", fields={"Form name": "Login", "Username": "Username", "Password": "Password", "Login": "Log in"}),
+        lambda: authenticator.login("main"),
+        lambda: authenticator.login(),
     ]
 
     last_error = None
@@ -136,7 +139,7 @@ def _run_login(authenticator) -> tuple[str | None, bool | None, str | None]:
                     result.get("authentication_status"),
                     result.get("username"),
                 )
-        except TypeError as exc:
+        except (TypeError, ValueError) as exc:
             last_error = exc
             continue
 
@@ -162,15 +165,89 @@ def require_authentication(page_name: str, required_roles: list[str] | None = No
     if not _get_bool_setting(AUTH_ENABLED_SETTING, True):
         return
 
+    # --- staged execution with per-step debug ---
+    stage = "initializing"
+    exc_info = None
+    credentials = None
+    authenticator = None
+    name = authentication_status = username = None
+
     try:
+        stage = "loading credentials"
         credentials = _build_credentials()
+
+        stage = "building authenticator"
         authenticator = _build_authenticator(credentials)
+
+        stage = "rendering login widget"
         name, authentication_status, username = _run_login(authenticator)
     except Exception as exc:
-        st.error(f"Authentication setup error: {exc}")
+        exc_info = exc
+
+    if exc_info is not None:
+        st.error(f"Authentication setup error (stage: **{stage}**): {exc_info}")
+
+        with st.expander("🔍 Auth debug info", expanded=True):
+            # Library versions
+            try:
+                import importlib.metadata as _meta
+                stauth_ver = _meta.version("streamlit-authenticator")
+            except Exception:
+                stauth_ver = "unknown"
+            try:
+                import importlib.metadata as _meta
+                st_ver = _meta.version("streamlit")
+            except Exception:
+                st_ver = "unknown"
+            st.markdown(f"- **streamlit** version: `{st_ver}`")
+            st.markdown(f"- **streamlit-authenticator** version: `{stauth_ver}`")
+
+            # Which env vars are present
+            st.markdown("**Environment variable presence:**")
+            for var in [
+                AUTH_ENABLED_SETTING,
+                CREDENTIALS_SETTING,
+                USERS_SETTING,
+                COOKIE_KEY_SETTING,
+                COOKIE_NAME_SETTING,
+                COOKIE_EXPIRY_SETTING,
+            ]:
+                env_val = os.getenv(var)
+                secret_val = None
+                try:
+                    secret_val = st.secrets.get(var)
+                except Exception:
+                    pass
+                has_env = bool(env_val and str(env_val).strip())
+                has_secret = bool(secret_val and str(secret_val).strip())
+                source = []
+                if has_env:
+                    source.append("env")
+                if has_secret:
+                    source.append("secrets")
+                status = f"✅ set via {', '.join(source)}" if source else "❌ not set"
+                st.markdown(f"  - `{var}`: {status}")
+
+            # Credential structure (if loaded)
+            if credentials is not None:
+                usernames_loaded = list(credentials.get("usernames", {}).keys())
+                st.markdown(f"**Credentials loaded:** {len(usernames_loaded)} user(s): `{usernames_loaded}`")
+            else:
+                st.markdown("**Credentials:** not loaded (failed during credential-loading stage)")
+
+            # Authenticator (if built)
+            if authenticator is not None:
+                st.markdown(f"**Authenticator built:** yes (`{type(authenticator).__name__}`)")
+            else:
+                st.markdown("**Authenticator:** not built")
+
+            # Full traceback
+            st.markdown("**Full traceback:**")
+            st.code(traceback.format_exc(), language="text")
+
         st.info(
             "Configure auth with environment variables or Streamlit secrets: "
-            f"{CREDENTIALS_SETTING} or {USERS_SETTING}, plus {COOKIE_KEY_SETTING}."
+            f"`{CREDENTIALS_SETTING}` or `{USERS_SETTING}`, plus `{COOKIE_KEY_SETTING}`."
         )
         st.stop()
 
