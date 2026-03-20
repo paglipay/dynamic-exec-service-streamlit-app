@@ -2,6 +2,7 @@ import streamlit as st
 from textblob import TextBlob, download_corpora
 from textblob.exceptions import MissingCorpusError
 from _ai_assistant_panel import render_ai_assistant_panel
+from _auth_guard import require_authentication
 
 
 @st.cache_resource(show_spinner=False)
@@ -31,6 +32,7 @@ def render_analysis(blob: TextBlob) -> None:
     st.write(summary)
 
 st.set_page_config(page_title="Text Processing Tool")
+require_authentication("Text Processing Tool")
 render_ai_assistant_panel("Text Processing Tool")
 st.title("Text Processing Tool")
 st.write("Perform text analytics, sentiment analysis, and summarization.")

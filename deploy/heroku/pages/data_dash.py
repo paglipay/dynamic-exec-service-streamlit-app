@@ -3,8 +3,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from _ai_assistant_panel import render_ai_assistant_panel
+from _auth_guard import require_authentication
 
 st.set_page_config(page_title="Data Dashboard")
+require_authentication("Data Dashboard")
 render_ai_assistant_panel("Data Dashboard")
 st.title("Data Dashboard - Visualize and Analyze Data")
 

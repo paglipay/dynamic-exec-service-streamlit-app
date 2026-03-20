@@ -1,7 +1,9 @@
 import streamlit as st
 import requests
+from _auth_guard import require_authentication
 
 st.set_page_config(page_title="API Explorer")
+require_authentication("API Explorer")
 st.title("API Explorer - Test and interact with APIs")
 
 url = st.text_input("API URL", "https://jsonplaceholder.typicode.com/posts")

@@ -1,0 +1,284 @@
+import json
+import os
+import traceback
+from typing import Any
+
+import streamlit as st
+
+try:
+    import streamlit_authenticator as stauth
+except ImportError:  # pragma: no cover - depends on runtime installation
+    stauth = None
+
+
+AUTH_ENABLED_SETTING = "STREAMLIT_AUTH_ENABLED"
+CREDENTIALS_SETTING = "STREAMLIT_AUTH_CREDENTIALS_JSON"
+USERS_SETTING = "STREAMLIT_AUTH_USERS_JSON"
+COOKIE_NAME_SETTING = "STREAMLIT_AUTH_COOKIE_NAME"
+COOKIE_KEY_SETTING = "STREAMLIT_AUTH_COOKIE_KEY"
+COOKIE_EXPIRY_SETTING = "STREAMLIT_AUTH_COOKIE_EXPIRY_DAYS"
+
+
+def _get_setting(name: str, default: Any = None) -> Any:
+    env_value = os.getenv(name)
+    if env_value is not None and str(env_value).strip():
+        return env_value
+
+    try:
+        secret_value = st.secrets.get(name, default)
+        if secret_value is not None and str(secret_value).strip():
+            return secret_value
+    except Exception:
+        pass
+
+    return default
+
+
+def _get_bool_setting(name: str, default: bool) -> bool:
+    raw_value = _get_setting(name)
+    if raw_value is None:
+        return default
+    if isinstance(raw_value, bool):
+        return raw_value
+    return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_json_setting(name: str) -> Any:
+    raw_value = _get_setting(name)
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, (dict, list)):
+        return raw_value
+    return json.loads(str(raw_value))
+
+
+def _build_credentials() -> dict[str, Any]:
+    credentials = _load_json_setting(CREDENTIALS_SETTING)
+    if isinstance(credentials, dict) and "usernames" in credentials:
+        return credentials
+
+    users = _load_json_setting(USERS_SETTING)
+    if isinstance(users, list):
+        usernames: dict[str, dict[str, Any]] = {}
+        for user in users:
+            if not isinstance(user, dict):
+                raise ValueError(f"{USERS_SETTING} must contain objects.")
+            username = str(user.get("username", "")).strip()
+            name = str(user.get("name", username)).strip()
+            password = str(user.get("password", "")).strip()
+            if not username or not password:
+                raise ValueError("Each auth user must include username and hashed password.")
+
+            user_entry: dict[str, Any] = {
+                "name": name or username,
+                "password": password,
+            }
+            if user.get("email"):
+                user_entry["email"] = user["email"]
+            if user.get("roles"):
+                user_entry["roles"] = user["roles"]
+            usernames[username] = user_entry
+        return {"usernames": usernames}
+
+    raise ValueError(
+        "Authentication is enabled but no credentials are configured. "
+        f"Set {CREDENTIALS_SETTING} with a credentials object or {USERS_SETTING} with a user list."
+    )
+
+
+def _build_authenticator(credentials: dict[str, Any]):
+    if stauth is None:
+        raise RuntimeError(
+            "streamlit-authenticator is not installed. Add it to requirements.txt before enabling auth."
+        )
+
+    cookie_name = str(_get_setting(COOKIE_NAME_SETTING, "streamlit_auth")).strip()
+    cookie_key = str(_get_setting(COOKIE_KEY_SETTING, "")).strip()
+    if not cookie_key:
+        raise ValueError(
+            f"Authentication is enabled but {COOKIE_KEY_SETTING} is not configured."
+        )
+
+    expiry_raw = _get_setting(COOKIE_EXPIRY_SETTING, 7)
+    cookie_expiry_days = float(expiry_raw)
+
+    try:
+        return stauth.Authenticate(
+            credentials=credentials,
+            cookie_name=cookie_name,
+            cookie_key=cookie_key,
+            cookie_expiry_days=cookie_expiry_days,
+        )
+    except TypeError:
+        return stauth.Authenticate(
+            credentials,
+            cookie_name,
+            cookie_key,
+            cookie_expiry_days,
+        )
+
+
+def _run_login(authenticator) -> tuple[str | None, bool | None, str | None]:
+    # Each lambda is tried in order; we stop at the FIRST one that does not raise,
+    # because a successful call renders the form — calling more would create
+    # duplicate st.form keys on the page.
+    attempts = [
+        lambda: authenticator.login(location="main"),
+        lambda: authenticator.login("Login", "main"),
+        lambda: authenticator.login(location="main", fields={"Form name": "Login", "Username": "Username", "Password": "Password", "Login": "Log in"}),
+        lambda: authenticator.login("main"),
+        lambda: authenticator.login(),
+    ]
+
+    last_error = None
+    for attempt in attempts:
+        try:
+            result = attempt()
+            # Form rendered successfully.
+            # streamlit-authenticator >= 0.4.x writes results to st.session_state
+            # instead of returning them, so always prefer session_state as the
+            # authoritative source, falling back to the return value if absent.
+            name = st.session_state.get("name") or (result[0] if isinstance(result, tuple) and len(result) == 3 else None)
+            auth_status = st.session_state.get("authentication_status") if "authentication_status" in st.session_state else (result[1] if isinstance(result, tuple) and len(result) == 3 else None)
+            username = st.session_state.get("username") or (result[2] if isinstance(result, tuple) and len(result) == 3 else None)
+
+            if isinstance(result, dict):
+                name = name or result.get("name")
+                auth_status = result.get("authentication_status") if auth_status is None else auth_status
+                username = username or result.get("username")
+
+            return (name, auth_status, username)
+        except (TypeError, ValueError) as exc:
+            last_error = exc
+            continue
+
+    raise RuntimeError(f"Unsupported streamlit-authenticator login API: {last_error}")
+
+
+def _render_logout(authenticator) -> None:
+    """Render logout button with fallback API support."""
+    attempts = [
+        lambda: authenticator.logout("Logout"),
+        lambda: authenticator.logout(button_name="Logout"),
+        lambda: authenticator.logout(),
+    ]
+
+    for attempt in attempts:
+        try:
+            attempt()
+            return
+        except (TypeError, ValueError):
+            continue
+
+
+def require_authentication(page_name: str, required_roles: list[str] | None = None) -> None:
+    if not _get_bool_setting(AUTH_ENABLED_SETTING, True):
+        return
+
+    # --- staged execution with per-step debug ---
+    stage = "initializing"
+    exc_info = None
+    credentials = None
+    authenticator = None
+    name = authentication_status = username = None
+
+    try:
+        stage = "loading credentials"
+        credentials = _build_credentials()
+
+        stage = "building authenticator"
+        authenticator = _build_authenticator(credentials)
+
+        stage = "rendering login widget"
+        name, authentication_status, username = _run_login(authenticator)
+    except Exception as exc:
+        exc_info = exc
+
+    if exc_info is not None:
+        st.error(f"Authentication setup error (stage: **{stage}**): {exc_info}")
+
+        with st.expander("🔍 Auth debug info", expanded=True):
+            # Library versions
+            try:
+                import importlib.metadata as _meta
+                stauth_ver = _meta.version("streamlit-authenticator")
+            except Exception:
+                stauth_ver = "unknown"
+            try:
+                import importlib.metadata as _meta
+                st_ver = _meta.version("streamlit")
+            except Exception:
+                st_ver = "unknown"
+            st.markdown(f"- **streamlit** version: `{st_ver}`")
+            st.markdown(f"- **streamlit-authenticator** version: `{stauth_ver}`")
+
+            # Which env vars are present
+            st.markdown("**Environment variable presence:**")
+            for var in [
+                AUTH_ENABLED_SETTING,
+                CREDENTIALS_SETTING,
+                USERS_SETTING,
+                COOKIE_KEY_SETTING,
+                COOKIE_NAME_SETTING,
+                COOKIE_EXPIRY_SETTING,
+            ]:
+                env_val = os.getenv(var)
+                secret_val = None
+                try:
+                    secret_val = st.secrets.get(var)
+                except Exception:
+                    pass
+                has_env = bool(env_val and str(env_val).strip())
+                has_secret = bool(secret_val and str(secret_val).strip())
+                source = []
+                if has_env:
+                    source.append("env")
+                if has_secret:
+                    source.append("secrets")
+                status = f"✅ set via {', '.join(source)}" if source else "❌ not set"
+                st.markdown(f"  - `{var}`: {status}")
+
+            # Credential structure (if loaded)
+            if credentials is not None:
+                usernames_loaded = list(credentials.get("usernames", {}).keys())
+                st.markdown(f"**Credentials loaded:** {len(usernames_loaded)} user(s): `{usernames_loaded}`")
+            else:
+                st.markdown("**Credentials:** not loaded (failed during credential-loading stage)")
+
+            # Authenticator (if built)
+            if authenticator is not None:
+                st.markdown(f"**Authenticator built:** yes (`{type(authenticator).__name__}`)")
+            else:
+                st.markdown("**Authenticator:** not built")
+
+            # Full traceback
+            st.markdown("**Full traceback:**")
+            st.code(traceback.format_exc(), language="text")
+
+        st.info(
+            "Configure auth with environment variables or Streamlit secrets: "
+            f"`{CREDENTIALS_SETTING}` or `{USERS_SETTING}`, plus `{COOKIE_KEY_SETTING}`."
+        )
+        st.stop()
+
+    if authentication_status is None:
+        st.warning(f"Please log in to access {page_name}.")
+        st.stop()
+
+    if authentication_status is False:
+        st.error("Username/password is incorrect.")
+        st.stop()
+
+    user_record = credentials.get("usernames", {}).get(username or "", {})
+    user_roles = user_record.get("roles", []) or []
+    if required_roles and not set(required_roles).intersection(user_roles):
+        st.error("You are logged in but do not have access to this page.")
+        _render_logout(authenticator)
+        st.stop()
+
+    st.session_state["auth_name"] = name
+    st.session_state["auth_username"] = username
+    st.session_state["auth_roles"] = user_roles
+
+    st.sidebar.caption(f"Signed in as {name or username}")
+    _render_logout(authenticator)

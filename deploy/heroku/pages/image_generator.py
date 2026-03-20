@@ -1,8 +1,10 @@
 import streamlit as st
 from PIL import Image, ImageEnhance, ImageFilter
 import io
+from _auth_guard import require_authentication
 
 st.set_page_config(page_title="Image Generator or Editor")
+require_authentication("Image Generator or Editor")
 st.title("AI Image Generator and Editor")
 
 mode = st.radio("Select mode", ["Generate Image from Prompt", "Upload and Edit Image"])

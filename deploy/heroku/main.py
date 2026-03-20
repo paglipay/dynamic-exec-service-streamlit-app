@@ -10,6 +10,12 @@ PAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages")
 if PAGE_DIR not in sys.path:
     sys.path.insert(0, PAGE_DIR)
 
+auth_module_path = os.path.join(PAGE_DIR, "_auth_guard.py")
+auth_spec = importlib.util.spec_from_file_location("auth_guard", auth_module_path)
+auth_mod = importlib.util.module_from_spec(auth_spec)
+auth_spec.loader.exec_module(auth_mod)
+require_authentication = auth_mod.require_authentication
+
 assistant_module_path = os.path.join(PAGE_DIR, "_ai_assistant_panel.py")
 assistant_spec = importlib.util.spec_from_file_location(
     "assistant_panel", assistant_module_path
@@ -18,6 +24,7 @@ assistant_mod = importlib.util.module_from_spec(assistant_spec)
 assistant_spec.loader.exec_module(assistant_mod)
 render_ai_assistant_panel = assistant_mod.render_ai_assistant_panel
 
+require_authentication("Multi-App Launcher")
 render_ai_assistant_panel("Multi-App Launcher")
 
 st.title("Streamlit Multi-App Launcher")
@@ -36,12 +43,12 @@ if selected_app:
 
     st.write(f"## Showing {selected_app}")
 
-    # Read and display source code
-    with open(app_path, 'r', encoding='utf-8') as f:
-        code = f.read()
-    st.code(code, language='python')
+    if os.getenv("STREAMLIT_SHOW_SOURCE_CODE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        with st.expander("Source code", expanded=False):
+            with open(app_path, 'r', encoding='utf-8') as f:
+                code = f.read()
+            st.code(code, language='python')
 
-    # Import and run app
     try:
         spec = importlib.util.spec_from_file_location("mod", app_path)
         mod = importlib.util.module_from_spec(spec)

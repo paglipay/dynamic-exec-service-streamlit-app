@@ -3,8 +3,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from _ai_assistant_panel import render_ai_assistant_panel
+from _auth_guard import require_authentication
 
 st.set_page_config(page_title="Interactive Plotter")
+require_authentication("Interactive Plotter")
 render_ai_assistant_panel("Interactive Plotter")
 st.title("Interactive Plotter - Build Dynamic Plots")
 

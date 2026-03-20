@@ -12,9 +12,11 @@ import pandas as pd
 import streamlit as st
 from docx import Document
 from _ai_assistant_panel import render_ai_assistant_panel
+from _auth_guard import require_authentication
 
 
 st.set_page_config(page_title="Word Template Generator")
+require_authentication("Word Template Generator")
 render_ai_assistant_panel("Word Template Generator")
 st.title("Word Template Generator")
 st.write(

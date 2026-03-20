@@ -2,8 +2,10 @@ import streamlit as st
 import requests
 import json
 from _ai_assistant_panel import render_ai_assistant_panel
+from _auth_guard import require_authentication
 
 st.set_page_config(page_title="JSON Payload Submitter")
+require_authentication("JSON Submitter")
 render_ai_assistant_panel("JSON Submitter")
 st.title("JSON Payload Submitter Form")
 st.write("Use this form to submit a JSON payload to a specified URL.")
