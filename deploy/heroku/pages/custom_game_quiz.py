@@ -1,6 +1,8 @@
 import streamlit as st
+from _auth_guard import require_authentication
 
 st.set_page_config(page_title="Custom Game Quiz")
+require_authentication("Custom Game Quiz")
 st.title("Interactive Quiz Game")
 
 questions = [

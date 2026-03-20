@@ -1,6 +1,8 @@
 import streamlit as st
 import subprocess
+from _auth_guard import require_authentication
 
+require_authentication('Python Terminal App', required_roles=['admin'])
 st.title('Python Terminal App')
 
 st.markdown('''This app allows you to run Python scripts interactively as a terminal session.''')

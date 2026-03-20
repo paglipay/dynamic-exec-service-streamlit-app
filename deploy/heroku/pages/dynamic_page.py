@@ -6,6 +6,7 @@ from urllib import error, parse, request
 
 import streamlit as st
 from _ai_assistant_panel import render_ai_assistant_panel
+from _auth_guard import require_authentication
 
 
 DEFAULT_SAMPLES = [
@@ -456,6 +457,7 @@ def render_canvas(schema: dict) -> None:
 
 def app() -> None:
 	st.set_page_config(page_title="Dynamic JSON Canvas", layout="wide")
+	require_authentication("Dynamic JSON Canvas", required_roles=['admin'])
 	init_state()
 	ai_messages_key = "ai_messages_Dynamic JSON Canvas"
 	render_ai_assistant_panel(

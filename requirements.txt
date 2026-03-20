@@ -14,3 +14,4 @@ cryptography
 reportlab
 Pillow
 pdf2image
+streamlit-authenticator

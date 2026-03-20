@@ -9,11 +9,13 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
+from _auth_guard import require_authentication
 try:
     from pdf2image import convert_from_bytes
 except ImportError:
     convert_from_bytes = None
 
+require_authentication('Checklist Form to PDF')
 st.title('Checklist Form to PDF (Basic Test)')
 st.caption('Simplified page for testing core functionality: build form, enter values, download unsigned PDF.')
 

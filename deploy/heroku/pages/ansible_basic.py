@@ -1,6 +1,8 @@
 import streamlit as st
+from _auth_guard import require_authentication
 
 st.set_page_config(page_title="Ansible Demo")
+require_authentication("Ansible Demo")
 st.title("Ansible Basic Configuration Demo")
 
 device_type = st.selectbox("Select Device Type", ["Cisco Router", "Cisco Switch", "Linux Server", "Windows Server"])

@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
+from _auth_guard import require_authentication
 
 
 def create_ephemeral_pkcs12() -> bytes:
@@ -124,6 +125,8 @@ def validate_pkcs12_credentials(p12_bytes: bytes, password: bytes | None):
         'the file contains both a private key and certificate.'
     ) from last_error
 
+import streamlit as st
+require_authentication('PDF Sign App', required_roles=['admin'])
 st.title('PDF Sign App')
 
 st.markdown('''Upload a PDF and optionally a PKCS#12 certificate (.p12/.pfx) file to digitally sign your PDF. If you do not upload a certificate, an auto-generated one is used for this session.''')
