@@ -159,6 +159,7 @@ def _render_logout(authenticator) -> None:
     """Render logout button with fallback API support."""
     attempts = [
         lambda: authenticator.logout("Logout"),
+        lambda: authenticator.logout(button_name="Logout"),
         lambda: authenticator.logout(),
     ]
 
