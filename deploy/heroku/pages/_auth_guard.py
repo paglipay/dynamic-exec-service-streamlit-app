@@ -134,18 +134,20 @@ def _run_login(authenticator) -> tuple[str | None, bool | None, str | None]:
     for attempt in attempts:
         try:
             result = attempt()
-            # Form rendered successfully — extract what we can.
-            # result may be None on first load (pre-submission), which is valid.
-            if isinstance(result, tuple) and len(result) == 3:
-                return result
+            # Form rendered successfully.
+            # streamlit-authenticator >= 0.4.x writes results to st.session_state
+            # instead of returning them, so always prefer session_state as the
+            # authoritative source, falling back to the return value if absent.
+            name = st.session_state.get("name") or (result[0] if isinstance(result, tuple) and len(result) == 3 else None)
+            auth_status = st.session_state.get("authentication_status") if "authentication_status" in st.session_state else (result[1] if isinstance(result, tuple) and len(result) == 3 else None)
+            username = st.session_state.get("username") or (result[2] if isinstance(result, tuple) and len(result) == 3 else None)
+
             if isinstance(result, dict):
-                return (
-                    result.get("name"),
-                    result.get("authentication_status"),
-                    result.get("username"),
-                )
-            # None or unexpected return — form is rendered, just waiting for input.
-            return (None, None, None)
+                name = name or result.get("name")
+                auth_status = result.get("authentication_status") if auth_status is None else auth_status
+                username = username or result.get("username")
+
+            return (name, auth_status, username)
         except (TypeError, ValueError) as exc:
             last_error = exc
             continue
