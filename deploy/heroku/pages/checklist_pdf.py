@@ -318,7 +318,7 @@ _screen_width = (
 if _screen_width is None or _screen_width < 640:
     forms_tab, builder_tab, render_tab = st.tabs(['📂 My Forms', '📝 Form Builder', '📋 Render & Export'])
 else:
-    _col1, _col2 = st.columns(2)
+    _col1, _col2 = st.columns([1, 2])
     forms_tab = _col1
     with _col2:
         builder_tab, render_tab = st.tabs(['📝 Form Builder', '📋 Render & Export'])
