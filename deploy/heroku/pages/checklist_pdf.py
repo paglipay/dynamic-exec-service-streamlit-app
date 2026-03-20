@@ -235,79 +235,198 @@ if 'pending_save_form_name' in st.session_state:
 if st.session_state.get('save_form_name') != active_form_name:
     st.session_state.save_form_name = active_form_name
 
-builder_tab, render_tab = st.tabs(['Form Builder', 'Render and Export'])
+TYPE_ICONS = {
+    'Text': '📝',
+    'Text Input': '✏️',
+    'Textarea': '📄',
+    'Checkbox': '☑️',
+    'Image Upload': '🖼️',
+    'Camera Input': '📷',
+}
 
-with builder_tab:
-    st.subheader('Form Builder')
+forms_tab, builder_tab, render_tab = st.tabs(['📂 My Forms', '📝 Form Builder', '📋 Render & Export'])
+
+# ── Tab 1: My Forms ───────────────────────────────────────────────────────────
+with forms_tab:
+    st.subheader('📂 My Forms')
 
     form_names = list(st.session_state.forms.keys())
-    if active_form_name not in form_names:
-        form_names = [active_form_name] + form_names
 
-    selected_builder_form = st.selectbox(
-        'Select form to build',
-        form_names,
-        index=form_names.index(active_form_name),
-    )
+    # Form list with stats
+    if form_names:
+        st.markdown(f'**{len(form_names)} form(s) in session:**')
+        for name in form_names:
+            comps = st.session_state.forms[name].get('components', [])
+            count = len(comps)
+            active_badge = ' ← **active**' if name == st.session_state.builder_form_name else ''
+            st.markdown(f'- 📋 **{name}** — {count} component(s){active_badge}')
+    else:
+        st.info('No forms yet. Create one below.')
 
-    if selected_builder_form != st.session_state.builder_form_name:
-        load_builder_from_form(selected_builder_form)
-        st.session_state.pending_save_form_name = selected_builder_form
+    st.markdown('---')
 
-    active_form_name = st.session_state.builder_form_name
-    st.write(f'Active form: {active_form_name}')
-
-    new_name = st.text_input('Create new form', key='new_form_name')
-    if st.button('Use New Form'):
+    # Create new form
+    st.markdown('**➕ Create New Form**')
+    new_name = st.text_input('Form name', key='new_form_name', placeholder='e.g. Site Inspection Checklist')
+    if st.button('Create Form', use_container_width=True):
         if not new_name.strip():
             st.error('Please enter a form name.')
+        elif new_name.strip() in st.session_state.forms:
+            st.error(f'A form named "{new_name.strip()}" already exists.')
         else:
-            st.session_state.builder_form_name = new_name.strip()
+            name_to_create = new_name.strip()
+            st.session_state.forms[name_to_create] = {'components': []}
+            st.session_state.builder_form_name = name_to_create
             st.session_state.builder_components = []
-            st.session_state.pending_save_form_name = new_name.strip()
-            st.success(f'Editing new form: {new_name.strip()}')
+            st.session_state.pending_save_form_name = name_to_create
+            st.success(f'✅ Created "{name_to_create}". Go to 📝 Form Builder to add components.')
             trigger_rerun()
 
-    component_type = st.selectbox('Component type', ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'])
-    component_label = st.text_input('Component label', key='builder_component_label')
-    checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
-    save_form_name = st.text_input('Form name to save', key='save_form_name')
+    st.markdown('---')
 
-    if st.button('Add Component'):
-        if not component_label.strip():
-            st.error('Component label is required.')
-        else:
-            entry = {'type': component_type, 'label': component_label.strip()}
-            if component_type == 'Checkbox':
-                entry['default'] = checkbox_default
-            st.session_state.builder_components.append(entry)
-            st.success(f'Added {component_type}: {component_label.strip()}')
-
-    if st.button('Save Form'):
-        target_name = save_form_name.strip()
-        if not target_name:
-            st.error('Enter a form name to save.')
-        else:
-            previous_name = active_form_name
-            st.session_state.forms[target_name] = {'components': list(st.session_state.builder_components)}
-
-            if previous_name != target_name and previous_name.startswith('temp_form_'):
-                st.session_state.forms.pop(previous_name, None)
-
-            st.session_state.builder_form_name = target_name
-            st.success(f'Saved form: {target_name}')
+    if form_names:
+        # Load / switch active form
+        st.markdown('**📂 Load Form into Builder**')
+        selected_form = st.selectbox(
+            'Select form',
+            form_names,
+            index=form_names.index(st.session_state.builder_form_name) if st.session_state.builder_form_name in form_names else 0,
+            key='forms_tab_select',
+        )
+        if st.button('Load Form', use_container_width=True):
+            load_builder_from_form(selected_form)
+            st.session_state.pending_save_form_name = selected_form
+            st.success(f'✅ Loaded "{selected_form}" into the builder.')
             trigger_rerun()
-
-    if st.session_state.builder_components:
-        st.write('Current components:')
-        for index, component in enumerate(st.session_state.builder_components, start=1):
-            if component['type'] == 'Checkbox':
-                st.write(f"{index}. [{component['type']}] {component['label']} (default={component.get('default', False)})")
-            else:
-                st.write(f"{index}. [{component['type']}] {component['label']}")
 
         st.markdown('---')
-        st.write('Edit / Delete / Reorder Components')
+
+        # Duplicate form
+        st.markdown('**📋 Duplicate Form**')
+        dup_source = st.selectbox('Form to duplicate', form_names, key='dup_source_select')
+        dup_name = st.text_input('Name for the duplicate', key='dup_form_name_input', placeholder='e.g. My Form (copy)')
+        if st.button('Duplicate Form', use_container_width=True):
+            if not dup_name.strip():
+                st.error('Enter a name for the duplicate.')
+            elif dup_name.strip() in st.session_state.forms:
+                st.error(f'A form named "{dup_name.strip()}" already exists.')
+            else:
+                src_comps = st.session_state.forms[dup_source].get('components', [])
+                st.session_state.forms[dup_name.strip()] = {'components': list(src_comps)}
+                st.success(f'✅ Duplicated "{dup_source}" → "{dup_name.strip()}".')
+                trigger_rerun()
+
+        st.markdown('---')
+
+        # Delete form
+        st.markdown('**🗑️ Delete Form**')
+        del_form = st.selectbox('Form to delete', form_names, key='del_form_select')
+        if st.button('Delete Form', use_container_width=True, type='primary'):
+            if len(form_names) == 1:
+                st.error('Cannot delete the only form. Create another one first.')
+            else:
+                st.session_state.forms.pop(del_form, None)
+                if del_form == st.session_state.builder_form_name:
+                    remaining = list(st.session_state.forms.keys())
+                    load_builder_from_form(remaining[0])
+                    st.session_state.pending_save_form_name = remaining[0]
+                st.success(f'🗑️ Deleted "{del_form}".')
+                trigger_rerun()
+
+    st.markdown('---')
+
+    # Export / Import
+    st.markdown('**⬇️ Export / 📤 Import Form Definition**')
+    export_form_name = st.session_state.save_form_name.strip() or st.session_state.builder_form_name
+    export_payload = {
+        'name': export_form_name,
+        'components': list(st.session_state.builder_components),
+    }
+    st.download_button(
+        '⬇️ Export Active Form as JSON',
+        data=json.dumps(export_payload, indent=2).encode('utf-8'),
+        file_name=f'{export_form_name}.json',
+        mime='application/json',
+        use_container_width=True,
+    )
+
+    import_file = st.file_uploader('Import form JSON', type=['json'], key='import_form_json')
+    import_target_name = st.text_input('Imported form name override (optional)', key='import_form_name_override')
+    if st.button('📤 Import Form', use_container_width=True):
+        if import_file is None:
+            st.error('Choose a JSON file to import.')
+        else:
+            try:
+                imported_name, imported_components = parse_imported_form(import_file.getvalue())
+                target_name = import_target_name.strip() or imported_name or f"imported_form_{st.session_state.temp_form_counter}"
+                if not imported_name and not import_target_name.strip():
+                    st.session_state.temp_form_counter += 1
+                st.session_state.forms[target_name] = {'components': imported_components}
+                load_builder_from_form(target_name)
+                st.session_state.pending_save_form_name = target_name
+                st.success(f'✅ Imported form: "{target_name}".')
+                trigger_rerun()
+            except Exception as exc:
+                st.error(f'Import failed: {exc}')
+
+# ── Tab 2: Form Builder ───────────────────────────────────────────────────────
+with builder_tab:
+    active_form_name = st.session_state.builder_form_name
+    comp_count = len(st.session_state.builder_components)
+
+    st.subheader('📝 Form Builder')
+    st.info(f'Active form: **{active_form_name}** — {comp_count} component(s). Manage or switch forms in the 📂 My Forms tab.')
+
+    save_form_name = st.text_input('Form name to save', key='save_form_name')
+
+    st.markdown('---')
+    st.markdown('**➕ Add Component**')
+    component_type = st.selectbox(
+        'Component type',
+        ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'],
+        format_func=lambda t: f'{TYPE_ICONS.get(t, "")} {t}',
+    )
+    component_label = st.text_input('Component label', key='builder_component_label', placeholder='e.g. Inspector Name')
+    checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
+
+    add_col, save_col = st.columns(2)
+    with add_col:
+        if st.button('➕ Add Component', use_container_width=True):
+            if not component_label.strip():
+                st.error('Component label is required.')
+            else:
+                entry = {'type': component_type, 'label': component_label.strip()}
+                if component_type == 'Checkbox':
+                    entry['default'] = checkbox_default
+                st.session_state.builder_components.append(entry)
+                st.success(f'✅ Added {TYPE_ICONS.get(component_type, "")} {component_type}: {component_label.strip()}')
+    with save_col:
+        if st.button('💾 Save Form', use_container_width=True):
+            target_name = save_form_name.strip()
+            if not target_name:
+                st.error('Enter a form name to save.')
+            else:
+                previous_name = active_form_name
+                st.session_state.forms[target_name] = {'components': list(st.session_state.builder_components)}
+                if previous_name != target_name and previous_name.startswith('temp_form_'):
+                    st.session_state.forms.pop(previous_name, None)
+                st.session_state.builder_form_name = target_name
+                st.success(f'✅ Saved form: "{target_name}".')
+                trigger_rerun()
+
+    if st.session_state.builder_components:
+        st.markdown('---')
+        st.markdown(f'**Components ({comp_count})**')
+
+        for index, component in enumerate(st.session_state.builder_components, start=1):
+            icon = TYPE_ICONS.get(component['type'], '•')
+            if component['type'] == 'Checkbox':
+                st.write(f"{index}. {icon} **{component['label']}** `{component['type']}` (default={component.get('default', False)})")
+            else:
+                st.write(f"{index}. {icon} **{component['label']}** `{component['type']}`")
+
+        st.markdown('---')
+        st.markdown('**Edit / Delete / Reorder**')
 
         component_options = [
             f"{idx + 1}. [{item.get('type')}] {item.get('label', '')}"
@@ -332,111 +451,90 @@ with builder_tab:
 
         action_cols = st.columns(4)
         with action_cols[0]:
-            if st.button('Update Component'):
+            if st.button('✏️ Update', use_container_width=True):
                 if not edit_label.strip():
                     st.error('Label cannot be empty.')
                 else:
                     st.session_state.builder_components[selected_idx]['label'] = edit_label.strip()
                     if selected_component.get('type') == 'Checkbox':
                         st.session_state.builder_components[selected_idx]['default'] = edit_default
-                    st.success('Component updated.')
+                    st.success('✅ Updated.')
         with action_cols[1]:
-            if st.button('Delete Component'):
+            if st.button('🗑️ Delete', use_container_width=True):
                 st.session_state.builder_components.pop(selected_idx)
-                st.success('Component deleted.')
+                st.success('🗑️ Deleted.')
         with action_cols[2]:
-            if st.button('Move Up') and selected_idx > 0:
+            if st.button('⬆️ Up', use_container_width=True) and selected_idx > 0:
                 comps = st.session_state.builder_components
                 comps[selected_idx - 1], comps[selected_idx] = comps[selected_idx], comps[selected_idx - 1]
-                st.success('Component moved up.')
+                st.success('⬆️ Moved up.')
         with action_cols[3]:
-            if st.button('Move Down') and selected_idx < len(st.session_state.builder_components) - 1:
+            if st.button('⬇️ Down', use_container_width=True) and selected_idx < len(st.session_state.builder_components) - 1:
                 comps = st.session_state.builder_components
                 comps[selected_idx + 1], comps[selected_idx] = comps[selected_idx], comps[selected_idx + 1]
-                st.success('Component moved down.')
+                st.success('⬇️ Moved down.')
 
-    st.markdown('---')
-    st.write('Export / Import Form Definition')
-
-    export_form_name = st.session_state.save_form_name.strip() or active_form_name
-    export_payload = {
-        'name': export_form_name,
-        'components': list(st.session_state.builder_components),
-    }
-    st.download_button(
-        'Export Form JSON',
-        data=json.dumps(export_payload, indent=2).encode('utf-8'),
-        file_name=f'{export_form_name}.json',
-        mime='application/json',
-    )
-
-    import_file = st.file_uploader('Import form JSON', type=['json'], key='import_form_json')
-    import_target_name = st.text_input('Imported form name override (optional)', key='import_form_name_override')
-    if st.button('Import Form'):
-        if import_file is None:
-            st.error('Choose a JSON file to import.')
-        else:
-            try:
-                imported_name, imported_components = parse_imported_form(import_file.getvalue())
-                target_name = import_target_name.strip() or imported_name or f"temp_form_{st.session_state.temp_form_counter}"
-                if target_name.startswith('temp_form_') and target_name not in st.session_state.forms:
-                    st.session_state.temp_form_counter += 1
-                st.session_state.forms[target_name] = {'components': imported_components}
-                load_builder_from_form(target_name)
-                st.session_state.pending_save_form_name = target_name
-                st.success(f'Imported form: {target_name}')
-                trigger_rerun()
-            except Exception as exc:
-                st.error(f'Import failed: {exc}')
-
+# ── Tab 3: Render & Export ────────────────────────────────────────────────────
 with render_tab:
-    st.subheader('Render and Export')
+    active_form_name = st.session_state.builder_form_name
+    comp_count = len(st.session_state.builder_components)
+
+    st.subheader('📋 Render & Export')
 
     if not st.session_state.builder_components:
-        st.info('Add at least one component in Form Builder to preview and export.')
+        st.info('Add at least one component in the 📝 Form Builder tab to fill and export.')
     else:
-        st.write('Live preview of the current form you are building:')
+        st.markdown(f'### {active_form_name}')
+        st.caption(f'{comp_count} field(s) — fill in the form below, then generate a PDF preview.')
+        st.markdown('---')
+
         live_values = render_components(st.session_state.builder_components, 'live_render')
 
+        st.markdown('---')
+
         export_name = st.session_state.save_form_name.strip() or active_form_name
-        
-        col1, col2 = st.columns([1, 1])
+
+        # Validation: warn about empty text fields
+        empty_fields = [
+            comp.get('label', '')
+            for comp in st.session_state.builder_components
+            if comp.get('type') in ('Text Input', 'Textarea')
+            and not (live_values.get(comp.get('label', ''), '') or '').strip()
+        ]
+        if empty_fields:
+            st.warning(f'⚠️ {len(empty_fields)} field(s) are empty: {", ".join(empty_fields)}. You can still generate the PDF.')
+
+        col1, col2 = st.columns(2)
         with col1:
             if st.button('📄 Generate PDF Preview', use_container_width=True):
                 pdf_data = build_pdf(export_name, st.session_state.builder_components, live_values)
                 st.session_state.generated_pdf_data = pdf_data
                 st.session_state.generated_pdf_name = export_name
                 st.success('✅ PDF generated! See preview below.')
-        
         with col2:
             if st.button('🔄 Clear Preview', use_container_width=True):
                 st.session_state.generated_pdf_data = None
-                st.rerun() if hasattr(st, 'rerun') else st.experimental_rerun()
-        
-        # Display PDF preview if available
+                trigger_rerun()
+
         if st.session_state.generated_pdf_data:
             st.markdown('---')
             st.subheader('📋 PDF Preview')
-            
+
             preview_images = pdf_to_images(st.session_state.generated_pdf_data)
-            
+
             if preview_images:
-                st.write(f'Preview: {len(preview_images)} page(s)')
-                
-                # Display all pages in tabs or in a scrollable view
+                st.caption(f'{len(preview_images)} page(s)')
                 if len(preview_images) == 1:
                     st.image(preview_images[0], use_column_width=True, caption='Page 1')
                 else:
-                    # Create tabs for multiple pages
-                    page_tabs = st.tabs([f"Page {i+1}" for i in range(len(preview_images))])
+                    page_tabs = st.tabs([f'Page {i + 1}' for i in range(len(preview_images))])
                     for idx, tab in enumerate(page_tabs):
                         with tab:
                             st.image(preview_images[idx], use_column_width=True, caption=f'Page {idx + 1}')
             else:
-                st.info('PDF preview not available. Install poppler for preview support.')
-                st.write('To enable previews, install poppler-utils:')
-                st.code('apt-get install poppler-utils', language='bash')
-            
+                st.info('PDF preview not available — install poppler-utils to enable image previews.')
+                st.code('sudo apt-get install poppler-utils && pip install pdf2image', language='bash')
+
             st.markdown('---')
             st.subheader('💾 Download PDF')
             st.download_button(
