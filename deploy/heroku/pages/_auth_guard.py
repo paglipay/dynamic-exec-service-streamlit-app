@@ -144,16 +144,17 @@ def _run_login(authenticator) -> tuple[str | None, bool | None, str | None]:
 
 
 def _render_logout(authenticator) -> None:
+    """Render logout button with fallback API support."""
     attempts = [
-        lambda: authenticator.logout("Logout", "sidebar"),
-        lambda: authenticator.logout(location="sidebar"),
-        lambda: authenticator.logout("Logout", "main"),
+        lambda: authenticator.logout("Logout"),
+        lambda: authenticator.logout(),
     ]
+
     for attempt in attempts:
         try:
             attempt()
             return
-        except TypeError:
+        except (TypeError, ValueError):
             continue
 
 
@@ -192,6 +193,5 @@ def require_authentication(page_name: str, required_roles: list[str] | None = No
     st.session_state["auth_username"] = username
     st.session_state["auth_roles"] = user_roles
 
-    with st.sidebar:
-        st.caption(f"Signed in as {name or username}")
-        _render_logout(authenticator)
+    st.sidebar.caption(f"Signed in as {name or username}")
+    _render_logout(authenticator)
