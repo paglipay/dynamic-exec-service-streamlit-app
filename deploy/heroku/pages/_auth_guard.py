@@ -119,6 +119,9 @@ def _build_authenticator(credentials: dict[str, Any]):
 
 
 def _run_login(authenticator) -> tuple[str | None, bool | None, str | None]:
+    # Each lambda is tried in order; we stop at the FIRST one that does not raise,
+    # because a successful call renders the form — calling more would create
+    # duplicate st.form keys on the page.
     attempts = [
         lambda: authenticator.login(location="main"),
         lambda: authenticator.login("Login", "main"),
@@ -131,6 +134,8 @@ def _run_login(authenticator) -> tuple[str | None, bool | None, str | None]:
     for attempt in attempts:
         try:
             result = attempt()
+            # Form rendered successfully — extract what we can.
+            # result may be None on first load (pre-submission), which is valid.
             if isinstance(result, tuple) and len(result) == 3:
                 return result
             if isinstance(result, dict):
@@ -139,6 +144,8 @@ def _run_login(authenticator) -> tuple[str | None, bool | None, str | None]:
                     result.get("authentication_status"),
                     result.get("username"),
                 )
+            # None or unexpected return — form is rendered, just waiting for input.
+            return (None, None, None)
         except (TypeError, ValueError) as exc:
             last_error = exc
             continue
