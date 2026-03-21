@@ -1,0 +1,111 @@
+{
+  "name": "IT Support Request",
+  "form_columns": 4,
+  "components": [
+
+    { "type": "Text", "label": "=== Requestor Information ===", "span": 4 },
+
+    { "type": "Text Input", "label": "Full Name", "default_value": "Juan Dela Cruz", "span": 2 },
+    { "type": "Text Input", "label": "Email Address", "default_value": "juan.delacruz@example.com", "span": 2 },
+
+    { "type": "Text Input", "label": "Department", "default_value": "Finance", "span": 2 },
+    { "type": "Text Input", "label": "Phone Number", "default_value": "+63 917 123 4567", "span": 2 },
+
+    { "type": "Text Input", "label": "Office Location / Building", "default_value": "HQ - 12F", "span": 2 },
+    { "type": "Dropdown", "label": "Work Type", "options": ["Onsite", "Remote", "Hybrid"], "default_value": "Hybrid", "span": 2 },
+
+
+    { "type": "Text", "label": "=== Request Details ===", "span": 4 },
+
+    { "type": "Dropdown", "label": "Request Type", "options": ["Incident", "Service Request", "Access Request", "Hardware Request", "Software Request"], "default_value": "Service Request", "span": 2 },
+    { "type": "Dropdown", "label": "Category", "options": ["Network", "System", "Application", "Email", "Security", "Other"], "default_value": "Application", "span": 2 },
+
+    { "type": "Text Input", "label": "Short Summary", "default_value": "Cannot connect to VPN after password reset", "span": 4 },
+
+    { "type": "Textarea", "label": "Detailed Description of Issue / Request", "default_value": "User cannot authenticate to VPN client after changing AD password. Error shows authentication failed. Issue started this morning.", "span": 4 },
+
+
+    { "type": "Text", "label": "=== Impact & Priority ===", "span": 4 },
+
+    { "type": "Dropdown", "label": "Impact", "options": ["Low (Single User)", "Medium (Team)", "High (Department)", "Critical (Organization-wide)"], "default_value": "Low (Single User)", "span": 2 },
+    { "type": "Dropdown", "label": "Urgency", "options": ["Low", "Medium", "High", "Immediate"], "default_value": "High", "span": 2 },
+
+    { "type": "Dropdown", "label": "Suggested Priority", "options": ["P4 - Low", "P3 - Normal", "P2 - High", "P1 - Critical"], "default_value": "P2 - High", "span": 2 },
+    { "type": "Checkbox", "label": "Is this blocking work?", "default": false, "span": 2 },
+
+
+    { "type": "Text", "label": "=== Affected Systems / Assets ===", "span": 4 },
+
+    { "type": "Text Input", "label": "Hostname / Device Name", "default_value": "FIN-LAP-221", "span": 2 },
+    { "type": "Text Input", "label": "IP Address", "default_value": "10.20.31.44", "span": 2 },
+
+    { "type": "Text Input", "label": "Application / System Name", "default_value": "FortiClient VPN", "span": 2 },
+    { "type": "Dropdown", "label": "Environment", "options": ["Production", "Staging", "Development", "Test"], "default_value": "Production", "span": 2 },
+
+    { "type": "Textarea", "label": "Additional Asset Details", "default_value": "Windows 11 Pro, joined to corporate domain.", "span": 4 },
+
+
+    { "type": "Text", "label": "=== Access & Permissions (if applicable) ===", "span": 4 },
+
+    { "type": "Text Input", "label": "System / Resource Requested", "default_value": "VPN Gateway", "span": 2 },
+    { "type": "Text Input", "label": "Access Level Needed", "default_value": "Standard User", "span": 2 },
+
+    { "type": "Checkbox", "label": "Manager Approval Obtained", "default": false, "span": 2 },
+    { "type": "Text Input", "label": "Manager Name", "default_value": "Maria Santos", "span": 2 },
+
+
+    { "type": "Text", "label": "=== Hardware / Software Requests ===", "span": 4 },
+
+    { "type": "Dropdown", "label": "Request Item Type", "options": ["Laptop", "Desktop", "Monitor", "Peripheral", "Software License"], "default_value": "Software License", "span": 2 },
+    { "type": "Text Input", "label": "Requested Item Details", "default_value": "Additional VPN client seat", "span": 2 },
+
+    { "type": "Textarea", "label": "Justification / Business Need", "default_value": "Required for secure remote access to finance systems during month-end close.", "span": 4 },
+
+
+    { "type": "Text", "label": "=== Troubleshooting Performed ===", "span": 4 },
+
+    { "type": "Checkbox", "label": "Restarted Device", "default": false, "span": 1 },
+    { "type": "Checkbox", "label": "Checked Network Connection", "default": false, "span": 1 },
+    { "type": "Checkbox", "label": "Reinstalled Application", "default": false, "span": 1 },
+    { "type": "Checkbox", "label": "Cleared Cache / Temp Images", "default": false, "span": 1 },
+
+    { "type": "Textarea", "label": "Additional Troubleshooting Notes", "default_value": "User already rebooted and retried with updated password; issue persists.", "span": 4 },
+
+
+    { "type": "Text", "label": "=== Attachments & Evidence ===", "span": 4 },
+
+    { "type": "Image Upload", "label": "Upload Screenshots / Images", "span": 2 },
+    { "type": "Image Upload", "label": "Upload Logs / Documents", "span": 2 },
+
+    { "type": "Camera Input", "label": "Capture Photo (if applicable)", "span": 4 },
+
+
+    { "type": "Text", "label": "=== Scheduling ===", "span": 4 },
+
+    { "type": "Date Picker", "label": "Preferred Resolution Date", "default_value": "2026-03-25", "span": 2 },
+    { "type": "Text Input", "label": "Preferred Contact Time", "default_value": "09:00 AM - 11:00 AM", "span": 2 },
+
+
+    { "type": "Text", "label": "=== Internal Use (IT Team) ===", "span": 4 },
+
+    { "type": "Dropdown", "label": "Assigned Team", "options": ["Network", "Systems", "Security", "Help Desk", "DevOps"], "default_value": "Help Desk", "span": 2 },
+    { "type": "Text Input", "label": "Assigned Technician", "default_value": "A. Reyes", "span": 2 },
+
+    { "type": "Dropdown", "label": "Status", "options": ["New", "In Progress", "Pending", "Resolved", "Closed"], "default_value": "New", "span": 2 },
+    { "type": "Dropdown", "label": "Resolution Code", "options": ["Fixed", "Workaround", "User Error", "Duplicate", "Cannot Reproduce"], "default_value": "Workaround", "span": 2 },
+
+    { "type": "Textarea", "label": "Resolution Notes", "default_value": "Password sync pending between identity provider and VPN gateway.", "span": 4 },
+
+
+    { "type": "Text", "label": "=== Final Confirmation ===", "span": 4 },
+
+    { "type": "Checkbox", "label": "User Confirms Issue Resolved", "default": false, "span": 2 },
+    { "type": "Checkbox", "label": "Ticket Reviewed and Closed", "default": false, "span": 2 },
+
+    { "type": "Signature", "label": "User Signature", "default_value": "Juan Dela Cruz", "span": 2 },
+    { "type": "Signature", "label": "Technician Signature", "default_value": "A. Reyes", "span": 2 }
+
+  ],
+  "email_recipients_text": "",
+  "email_optional_message": ""
+}
