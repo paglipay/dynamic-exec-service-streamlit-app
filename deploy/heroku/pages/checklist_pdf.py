@@ -1958,7 +1958,7 @@ def show_pdf_preview_modal():
     recipient_emails, invalid_entries = parse_email_list(recipients_raw)
     can_send = delivery_status == 'ready' and bool(recipient_emails) and not invalid_entries
 
-    button_col1, button_col2 = st.columns(2)
+    button_col1, button_col2, button_col3 = st.columns([1, 1, 1.4])
     with button_col1:
         st.download_button(
             '⬇️ Download PDF',
@@ -1973,6 +1973,12 @@ def show_pdf_preview_modal():
             use_container_width=True,
             disabled=not can_send,
         )
+    with button_col3:
+        st.markdown('**Recipients**')
+        if recipient_emails:
+            st.caption('\n'.join(recipient_emails))
+        else:
+            st.caption('No valid recipients selected.')
 
     if invalid_entries:
         st.error(f'Invalid email(s): {", ".join(invalid_entries)}')
