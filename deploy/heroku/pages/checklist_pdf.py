@@ -165,6 +165,7 @@ def _render_one_component(component, key_prefix, idx, values):
         values[label] = st.file_uploader(
             label,
             type=['png', 'jpg', 'jpeg'],
+            accept_multiple_files=True,
             key=f'{key_prefix}_image_{idx}',
         )
     elif comp_type == 'Camera Input':
@@ -275,9 +276,7 @@ def build_pdf(form_name, components, values, form_columns=1):
             content_width = max(80, cell_width - 8)
             block = {
                 'lines': [],
-                'image': None,
-                'image_width': 0,
-                'image_height': 0,
+                'images': [],
             }
 
             if comp_type == 'Text':
@@ -300,31 +299,46 @@ def build_pdf(form_name, components, values, form_columns=1):
 
             elif comp_type in ('Image Upload', 'Camera Input'):
                 block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
-                uploaded_img = values.get(label)
-                if uploaded_img is None:
+                uploaded_value = values.get(label)
+                images_to_render = []
+                if comp_type == 'Image Upload':
+                    if isinstance(uploaded_value, list):
+                        images_to_render = [item for item in uploaded_value if item is not None]
+                    elif uploaded_value is not None:
+                        images_to_render = [uploaded_value]
+                else:
+                    if uploaded_value is not None:
+                        images_to_render = [uploaded_value]
+
+                if not images_to_render:
                     block['lines'].extend(_text_block_lines('(no image uploaded)', 'Helvetica', 12, content_width))
                 else:
-                    try:
-                        image = Image.open(uploaded_img)
-                        img_width, img_height = image.size
-                        if img_width > 0:
-                            max_img_w = content_width
-                            display_width = min(max_img_w, float(img_width))
-                            display_height = display_width * (float(img_height) / float(img_width))
-                            display_height = min(display_height, 180.0)
-                            block['image'] = image
-                            block['image_width'] = display_width
-                            block['image_height'] = display_height
-                        else:
-                            block['lines'].extend(_text_block_lines('(image has invalid size)', 'Helvetica', 12, content_width))
-                    except Exception as exc:
-                        block['lines'].extend(_text_block_lines(f'(image error: {exc})', 'Helvetica', 12, content_width))
+                    for image_idx, uploaded_img in enumerate(images_to_render, start=1):
+                        if comp_type == 'Image Upload' and len(images_to_render) > 1:
+                            block['lines'].extend(_text_block_lines(f'Image {image_idx}:', 'Helvetica', 11, content_width))
+                        try:
+                            image = Image.open(uploaded_img)
+                            img_width, img_height = image.size
+                            if img_width > 0:
+                                max_img_w = content_width
+                                display_width = min(max_img_w, float(img_width))
+                                display_height = display_width * (float(img_height) / float(img_width))
+                                display_height = min(display_height, 180.0)
+                                block['images'].append({
+                                    'image': image,
+                                    'width': display_width,
+                                    'height': display_height,
+                                })
+                            else:
+                                block['lines'].extend(_text_block_lines('(image has invalid size)', 'Helvetica', 12, content_width))
+                        except Exception as exc:
+                            block['lines'].extend(_text_block_lines(f'(image error: {exc})', 'Helvetica', 12, content_width))
 
             if not block['lines']:
                 block['lines'].append(('', 'Helvetica', 12))
 
             text_height = len(block['lines']) * line_h
-            image_height = (block['image_height'] + 6) if block['image'] is not None else 0
+            image_height = sum(item['height'] + 6 for item in block['images'])
             block['height'] = text_height + image_height + 6
             return block
 
@@ -359,16 +373,17 @@ def build_pdf(form_name, components, values, form_columns=1):
                     pdf_canvas.drawString(cell_x, text_y, line_text)
                     text_y -= line_h
 
-                if block['image'] is not None:
+                for image_item in block['images']:
                     pdf_canvas.drawImage(
-                        ImageReader(block['image']),
+                        ImageReader(image_item['image']),
                         cell_x,
-                        text_y - block['image_height'],
-                        width=block['image_width'],
-                        height=block['image_height'],
+                        text_y - image_item['height'],
+                        width=image_item['width'],
+                        height=image_item['height'],
                         preserveAspectRatio=True,
                         mask='auto',
                     )
+                    text_y -= image_item['height'] + 6
 
             y_pos -= row_height + 6
 
