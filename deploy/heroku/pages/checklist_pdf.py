@@ -347,7 +347,15 @@ def _sanitize_table_editor_value(value, col_type, options=None):
         return bool(value)
 
     if col_type == 'Date Picker':
-        return value if value not in ('', None) else None
+        if value in ('', None):
+            return None
+        # Convert date object back to ISO string format for storage
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        # Already a string, return as-is
+        return str(value) if value else None
 
     if col_type == 'Dropdown':
         cleaned_options = _clean_dropdown_options(options or []) or ['Option 1']
@@ -472,7 +480,14 @@ def _render_table_component(component, key_prefix, idx, values):
         editor_row = {}
         for column in editor_columns:
             col_name = column.get('name', 'Column')
-            editor_row[col_name] = row_entry.get(col_name, _table_default_cell_value(column))
+            col_type = column.get('type', 'Text Input')
+            raw_value = row_entry.get(col_name, _table_default_cell_value(column))
+            
+            # Convert string dates to date objects for Date Picker columns
+            if col_type == 'Date Picker' and raw_value not in (None, ''):
+                raw_value = _parse_date_value(raw_value)
+            
+            editor_row[col_name] = raw_value
         editor_rows.append(editor_row)
 
     if not editor_rows:
