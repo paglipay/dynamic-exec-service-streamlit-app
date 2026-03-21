@@ -225,96 +225,152 @@ def render_components(components, key_prefix, form_columns=1):
     return values
 
 
-def build_pdf(form_name, components, values):
+def build_pdf(form_name, components, values, form_columns=1):
     with tempfile.TemporaryDirectory() as tmp_dir:
         pdf_path = os.path.join(tmp_dir, 'checklist_output.pdf')
         pdf_canvas = canvas.Canvas(pdf_path, pagesize=letter)
         page_width, page_height = letter
 
-        # Margins: 50pt left, 50pt right
         left_margin = 50
-        indent = 70
         right_margin = 50
-        body_max_w = page_width - left_margin - right_margin   # 512 pt
-        indent_max_w = page_width - indent - right_margin      # 492 pt
+        body_max_w = page_width - left_margin - right_margin
+        col_gap = 10
         line_h = 15
+        top_margin = 50
+        bottom_margin = 50
 
-        y_pos = page_height - 50
-        pdf_canvas.setFont('Helvetica-Bold', 16)
-        # Wrap long form titles in the header
-        for title_line in wrap_text(f'Checklist Form: {form_name}', 'Helvetica-Bold', 16, body_max_w):
-            pdf_canvas.drawCentredString(page_width / 2, y_pos, title_line)
-            y_pos -= 22
-        y_pos -= 10
-        pdf_canvas.setFont('Helvetica', 12)
+        total_columns = _coerce_layout_columns(form_columns)
 
-        for component in components:
+        def _build_rows():
+            rows = []
+            current_row = []
+            used = 0
+            for component in components:
+                comp_type = component.get('type')
+                span = _coerce_span(component.get('span'), total_columns, comp_type)
+
+                if used + span > total_columns and current_row:
+                    rows.append(current_row)
+                    current_row = []
+                    used = 0
+
+                current_row.append((component, span, used))
+                used += span
+
+                if used >= total_columns:
+                    rows.append(current_row)
+                    current_row = []
+                    used = 0
+
+            if current_row:
+                rows.append(current_row)
+            return rows
+
+        def _text_block_lines(text, font_name, font_size, max_width):
+            return [(line, font_name, font_size) for line in wrap_text(text, font_name, font_size, max_width)]
+
+        def _component_block(component, cell_width):
             comp_type = component.get('type')
             label = component.get('label', '')
+            content_width = max(80, cell_width - 8)
+            block = {
+                'lines': [],
+                'image': None,
+                'image_width': 0,
+                'image_height': 0,
+            }
 
             if comp_type == 'Text':
-                pdf_canvas.setFont('Helvetica-Bold', 12)
-                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, label,
-                                     'Helvetica-Bold', 12, body_max_w, line_h, page_height)
-                pdf_canvas.setFont('Helvetica', 12)
-                y_pos -= 4
+                block['lines'].extend(_text_block_lines(label, 'Helvetica-Bold', 12, content_width))
 
             elif comp_type == 'Text Input':
-                # Draw "Label:" on its own line, then the value indented
-                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}:',
-                                     'Helvetica', 12, body_max_w, line_h, page_height)
-                value_text = values.get(label, '') or ''
-                y_pos = draw_wrapped(pdf_canvas, indent, y_pos, value_text,
-                                     'Helvetica', 12, indent_max_w, line_h, page_height)
-                y_pos -= 4
+                block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
+                value_text = str(values.get(label, '') or '')
+                block['lines'].extend(_text_block_lines(value_text, 'Helvetica', 12, content_width))
 
             elif comp_type == 'Textarea':
-                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}:',
-                                     'Helvetica', 12, body_max_w, line_h, page_height)
-                raw_lines = (values.get(label, '') or '').split('\n')
+                block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
+                raw_lines = str(values.get(label, '') or '').split('\n')
                 for raw_line in raw_lines:
-                    y_pos = draw_wrapped(pdf_canvas, indent, y_pos, raw_line,
-                                        'Helvetica', 12, indent_max_w, line_h, page_height)
-                y_pos -= 8
+                    block['lines'].extend(_text_block_lines(raw_line, 'Helvetica', 12, content_width))
 
             elif comp_type == 'Checkbox':
                 checked = 'Yes' if values.get(label, False) else 'No'
-                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}: {checked}',
-                                     'Helvetica', 12, body_max_w, line_h, page_height)
-                y_pos -= 4
+                block['lines'].extend(_text_block_lines(f'{label}: {checked}', 'Helvetica', 12, content_width))
 
             elif comp_type in ('Image Upload', 'Camera Input'):
+                block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
                 uploaded_img = values.get(label)
-                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}:',
-                                     'Helvetica', 12, body_max_w, line_h, page_height)
-
                 if uploaded_img is None:
-                    y_pos = draw_wrapped(pdf_canvas, indent, y_pos, '(no image uploaded)',
-                                        'Helvetica', 12, indent_max_w, line_h, page_height)
+                    block['lines'].extend(_text_block_lines('(no image uploaded)', 'Helvetica', 12, content_width))
                 else:
                     try:
                         image = Image.open(uploaded_img)
                         img_width, img_height = image.size
                         if img_width > 0:
-                            max_img_w = page_width - indent - right_margin
+                            max_img_w = content_width
                             display_width = min(max_img_w, float(img_width))
                             display_height = display_width * (float(img_height) / float(img_width))
-
-                            y_pos = ensure_space(pdf_canvas, y_pos, display_height + 10, page_height)
-                            pdf_canvas.drawImage(
-                                ImageReader(image),
-                                indent,
-                                y_pos - display_height,
-                                width=display_width,
-                                height=display_height,
-                                preserveAspectRatio=True,
-                                mask='auto',
-                            )
-                            y_pos -= display_height + 15
+                            display_height = min(display_height, 180.0)
+                            block['image'] = image
+                            block['image_width'] = display_width
+                            block['image_height'] = display_height
+                        else:
+                            block['lines'].extend(_text_block_lines('(image has invalid size)', 'Helvetica', 12, content_width))
                     except Exception as exc:
-                        y_pos = draw_wrapped(pdf_canvas, indent, y_pos, f'(image error: {exc})',
-                                            'Helvetica', 12, indent_max_w, line_h, page_height)
-                y_pos -= 4
+                        block['lines'].extend(_text_block_lines(f'(image error: {exc})', 'Helvetica', 12, content_width))
+
+            if not block['lines']:
+                block['lines'].append(('', 'Helvetica', 12))
+
+            text_height = len(block['lines']) * line_h
+            image_height = (block['image_height'] + 6) if block['image'] is not None else 0
+            block['height'] = text_height + image_height + 6
+            return block
+
+        y_pos = page_height - top_margin
+        pdf_canvas.setFont('Helvetica-Bold', 16)
+        for title_line in wrap_text(f'Checklist Form: {form_name}', 'Helvetica-Bold', 16, body_max_w):
+            pdf_canvas.drawCentredString(page_width / 2, y_pos, title_line)
+            y_pos -= 22
+        y_pos -= 10
+
+        unit_w = (body_max_w - (col_gap * (total_columns - 1))) / float(total_columns)
+        rows = _build_rows()
+
+        for row in rows:
+            rendered_cells = []
+            row_height = line_h
+            for component, span, col_start in row:
+                cell_x = left_margin + col_start * (unit_w + col_gap)
+                cell_w = unit_w * span + col_gap * (span - 1)
+                block = _component_block(component, cell_w)
+                rendered_cells.append((cell_x, cell_w, block))
+                row_height = max(row_height, block['height'])
+
+            if y_pos - row_height < bottom_margin:
+                pdf_canvas.showPage()
+                y_pos = page_height - top_margin
+
+            for cell_x, _cell_w, block in rendered_cells:
+                text_y = y_pos
+                for line_text, font_name, font_size in block['lines']:
+                    pdf_canvas.setFont(font_name, font_size)
+                    pdf_canvas.drawString(cell_x, text_y, line_text)
+                    text_y -= line_h
+
+                if block['image'] is not None:
+                    pdf_canvas.drawImage(
+                        ImageReader(block['image']),
+                        cell_x,
+                        text_y - block['image_height'],
+                        width=block['image_width'],
+                        height=block['image_height'],
+                        preserveAspectRatio=True,
+                        mask='auto',
+                    )
+
+            y_pos -= row_height + 6
 
         pdf_canvas.save()
         with open(pdf_path, 'rb') as pdf_file:
@@ -1488,7 +1544,12 @@ with render_tab:
         col1, col2 = st.columns(2)
         with col1:
             if st.button('📄 Generate & Preview PDF', use_container_width=True):
-                pdf_data = build_pdf(export_name, st.session_state.builder_components, live_values)
+                pdf_data = build_pdf(
+                    export_name,
+                    st.session_state.builder_components,
+                    live_values,
+                    form_columns=st.session_state.get('builder_layout_columns', 1),
+                )
                 st.session_state.generated_pdf_data = pdf_data
                 st.session_state.generated_pdf_name = export_name
                 show_pdf_preview_modal()
