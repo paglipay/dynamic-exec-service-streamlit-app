@@ -898,8 +898,10 @@ def init_state():
                 active_form = normalize_form_data(st.session_state.forms.get(active_form_name, {}))
                 active_form['components'] = list(st.session_state.builder_components)
                 st.session_state.forms[active_form_name] = active_form
+                st.session_state.builder_layout_columns = _coerce_layout_columns(active_form.get('form_columns', 1))
                 st.session_state.email_recipients_text, st.session_state.email_optional_message = get_form_email_settings(active_form)
             else:
+                st.session_state.builder_layout_columns = 1
                 st.session_state.email_recipients_text = st.session_state.profile_email_recipients_text
                 st.session_state.email_optional_message = st.session_state.profile_email_optional_message
         else:
@@ -969,6 +971,7 @@ def parse_imported_form(file_data):
         raise ValueError('Imported JSON must include a components array.')
 
     allowed_types = {'Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'}
+    imported_form_columns = _coerce_layout_columns(payload.get('form_columns', 1))
     cleaned = []
     for item in components:
         if not isinstance(item, dict):
@@ -983,6 +986,7 @@ def parse_imported_form(file_data):
         entry = {'type': comp_type, 'label': label.strip()}
         if comp_type == 'Checkbox':
             entry['default'] = bool(item.get('default', False))
+        entry['span'] = _coerce_span(item.get('span'), imported_form_columns, comp_type)
         cleaned.append(entry)
 
     imported_name = payload.get('name', '')
@@ -996,7 +1000,7 @@ def parse_imported_form(file_data):
     if not isinstance(imported_message, str):
         imported_message = ''
 
-    return imported_name.strip(), cleaned, imported_recipients, imported_message
+    return imported_name.strip(), cleaned, imported_recipients, imported_message, imported_form_columns
 
 
 init_state()
@@ -1127,12 +1131,13 @@ with forms_tab:
             st.error('Choose a JSON file to import.')
         else:
             try:
-                imported_name, imported_components, imported_recipients, imported_message = parse_imported_form(import_file.getvalue())
+                imported_name, imported_components, imported_recipients, imported_message, imported_form_columns = parse_imported_form(import_file.getvalue())
                 target_name = import_target_name.strip() or imported_name or f"imported_form_{st.session_state.temp_form_counter}"
                 if not imported_name and not import_target_name.strip():
                     st.session_state.temp_form_counter += 1
                 st.session_state.forms[target_name] = normalize_form_data({
                     'components': imported_components,
+                    'form_columns': imported_form_columns,
                     'email_recipients_text': imported_recipients,
                     'email_optional_message': imported_message,
                 })
@@ -1171,6 +1176,7 @@ with forms_tab:
             name_to_create = new_name.strip()
             st.session_state.forms[name_to_create] = normalize_form_data({})
             st.session_state.builder_form_name = name_to_create
+            st.session_state.builder_layout_columns = 1
             st.session_state.builder_components = []
             st.session_state.email_recipients_text = st.session_state.profile_email_recipients_text
             st.session_state.email_optional_message = st.session_state.profile_email_optional_message
@@ -1212,6 +1218,7 @@ with forms_tab:
                 source_form = normalize_form_data(st.session_state.forms.get(dup_source, {}))
                 st.session_state.forms[dup_name.strip()] = normalize_form_data({
                     'components': list(source_form.get('components', [])),
+                    'form_columns': source_form.get('form_columns', 1),
                     'email_recipients_text': source_form.get('email_recipients_text', ''),
                     'email_optional_message': source_form.get('email_optional_message', ''),
                 })
@@ -1244,6 +1251,7 @@ with forms_tab:
     export_form_name = st.session_state.save_form_name.strip() or st.session_state.builder_form_name
     export_payload = {
         'name': export_form_name,
+        'form_columns': _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
         'components': list(st.session_state.builder_components),
         'email_recipients_text': st.session_state.get('email_recipients_text', ''),
         'email_optional_message': st.session_state.get('email_optional_message', ''),
@@ -1265,6 +1273,16 @@ with builder_tab:
     st.info(f'Active form: **{active_form_name}** — {comp_count} component(s). Manage or switch forms in the 📂 My Forms tab.')
 
     save_form_name = st.text_input('Form name to save', key='save_form_name')
+
+    st.markdown('---')
+    st.markdown('**📐 Layout**')
+    st.caption('Desktop layout supports 1 to 4 columns. On mobile, fields stack to one column.')
+    st.select_slider(
+        'Columns per row',
+        options=[1, 2, 3, 4],
+        key='builder_layout_columns',
+        on_change=persist_forms_state,
+    )
 
     st.markdown('---')
     st.markdown('**✉️ Sign and Email Settings**')
@@ -1298,6 +1316,20 @@ with builder_tab:
         ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'],
         format_func=lambda t: f'{TYPE_ICONS.get(t, "")} {t}',
     )
+    selected_layout_columns = _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1))
+    suggested_span = _default_span_for_type(component_type, selected_layout_columns)
+    if selected_layout_columns == 1:
+        component_span = 1
+        st.caption('Component width: full row (1 of 1).')
+    else:
+        component_span = st.slider(
+            'Component width (columns)',
+            min_value=1,
+            max_value=selected_layout_columns,
+            value=suggested_span,
+            key='builder_component_span',
+            help='How many columns this component should span in the current form layout.',
+        )
     component_label = st.text_input('Component label', key='builder_component_label', placeholder='e.g. Inspector Name')
     checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
 
@@ -1310,6 +1342,7 @@ with builder_tab:
                 entry = {'type': component_type, 'label': component_label.strip()}
                 if component_type == 'Checkbox':
                     entry['default'] = checkbox_default
+                entry['span'] = _coerce_span(component_span, selected_layout_columns, component_type)
                 st.session_state.builder_components.append(entry)
                 persist_forms_state()
                 st.success(f'✅ Added {TYPE_ICONS.get(component_type, "")} {component_type}: {component_label.strip()}')
@@ -1322,6 +1355,7 @@ with builder_tab:
                 previous_name = active_form_name
                 st.session_state.forms[target_name] = normalize_form_data({
                     'components': list(st.session_state.builder_components),
+                    'form_columns': _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
                     'email_recipients_text': st.session_state.get('email_recipients_text', ''),
                     'email_optional_message': st.session_state.get('email_optional_message', ''),
                 })
@@ -1338,10 +1372,11 @@ with builder_tab:
 
         for index, component in enumerate(st.session_state.builder_components, start=1):
             icon = TYPE_ICONS.get(component['type'], '•')
+            span = _coerce_span(component.get('span'), _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)), component.get('type'))
             if component['type'] == 'Checkbox':
-                st.write(f"{index}. {icon} **{component['label']}** `{component['type']}` (default={component.get('default', False)})")
+                st.write(f"{index}. {icon} **{component['label']}** `{component['type']}` (span {span}) (default={component.get('default', False)})")
             else:
-                st.write(f"{index}. {icon} **{component['label']}** `{component['type']}`")
+                st.write(f"{index}. {icon} **{component['label']}** `{component['type']}` (span {span})")
 
         st.markdown('---')
         st.markdown('**Edit / Delete / Reorder**')
@@ -1360,12 +1395,27 @@ with builder_tab:
             key=f'edit_component_label_{selected_idx}',
         )
         edit_default = False
+        edit_span = _coerce_span(
+            selected_component.get('span'),
+            _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
+            selected_component.get('type'),
+        )
         if selected_component.get('type') == 'Checkbox':
             edit_default = st.checkbox(
                 'Checkbox default',
                 value=selected_component.get('default', False),
                 key=f'edit_component_default_{selected_idx}',
             )
+        if _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)) > 1:
+            edit_span = st.slider(
+                'Component width (columns)',
+                min_value=1,
+                max_value=_coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
+                value=edit_span,
+                key=f'edit_component_span_{selected_idx}',
+            )
+        else:
+            st.caption('Component width: full row (1 of 1).')
 
         action_cols = st.columns(4)
         with action_cols[0]:
@@ -1374,6 +1424,11 @@ with builder_tab:
                     st.error('Label cannot be empty.')
                 else:
                     st.session_state.builder_components[selected_idx]['label'] = edit_label.strip()
+                    st.session_state.builder_components[selected_idx]['span'] = _coerce_span(
+                        edit_span,
+                        _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
+                        selected_component.get('type'),
+                    )
                     if selected_component.get('type') == 'Checkbox':
                         st.session_state.builder_components[selected_idx]['default'] = edit_default
                     persist_forms_state()
@@ -1410,7 +1465,11 @@ with render_tab:
         st.caption(f'{comp_count} field(s) — fill in the form below, then generate a PDF preview.')
         st.markdown('---')
 
-        live_values = render_components(st.session_state.builder_components, 'live_render')
+        live_values = render_components(
+            st.session_state.builder_components,
+            'live_render',
+            form_columns=st.session_state.get('builder_layout_columns', 1),
+        )
 
         st.markdown('---')
 
