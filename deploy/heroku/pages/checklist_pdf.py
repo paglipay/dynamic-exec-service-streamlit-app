@@ -264,8 +264,11 @@ def _build_default_table_row(columns):
 
 
 def _sanitize_table_editor_value(value, col_type, options=None):
-    if isinstance(value, float) and math.isnan(value):
-        value = None
+    try:
+        if math.isnan(value):
+            value = None
+    except (TypeError, AttributeError):
+        pass
 
     if col_type == 'Checkbox':
         return bool(value)
@@ -611,6 +614,7 @@ def build_pdf(form_name, components, values, form_columns=1):
             block = {
                 'lines': [],
                 'images': [],
+                'table': None,
             }
 
             if comp_type == 'Text':
@@ -691,68 +695,79 @@ def build_pdf(form_name, components, values, form_columns=1):
                 if not isinstance(row_values, list) or not row_values:
                     block['lines'].extend(_text_block_lines('(no rows added)', 'Helvetica', 12, content_width))
                 else:
-                    for row_index, row_data in enumerate(row_values, start=1):
+                    table_columns = [column.get('name', 'Column') for column in columns]
+                    table_col_count = max(1, len(table_columns))
+                    table_width = content_width
+                    col_width = table_width / float(table_col_count)
+                    table_font_size = 9
+                    table_line_h = 11
+
+                    header_cells = [
+                        wrap_text(col_name, 'Helvetica-Bold', table_font_size, max(20, col_width - 6))
+                        for col_name in table_columns
+                    ]
+                    header_height = max(1, max(len(lines) for lines in header_cells)) * table_line_h + 4
+
+                    table_rows = []
+                    table_row_heights = []
+
+                    for row_data in row_values:
                         if not isinstance(row_data, dict):
                             row_data = {}
-                        block['lines'].extend(_text_block_lines(f'Row {row_index}:', 'Helvetica-Bold', 11, content_width))
 
+                        rendered_row = []
+                        max_lines = 1
                         for column in columns:
                             col_name = column.get('name', 'Column')
                             col_type = column.get('type', 'Text Input')
                             cell_value = row_data.get(col_name)
 
-                            if col_type in ('Image Upload', 'Camera Input'):
-                                block['lines'].extend(_text_block_lines(f'{col_name}:', 'Helvetica', 11, content_width))
-                                images_to_render = []
-                                if col_type == 'Image Upload':
-                                    if isinstance(cell_value, list):
-                                        images_to_render = [item for item in cell_value if item is not None]
-                                    elif cell_value is not None:
-                                        images_to_render = [cell_value]
-                                elif cell_value is not None:
-                                    images_to_render = [cell_value]
-
-                                if not images_to_render:
-                                    block['lines'].extend(_text_block_lines('(no image uploaded)', 'Helvetica', 11, content_width))
-                                else:
-                                    for img_idx, uploaded_img in enumerate(images_to_render, start=1):
-                                        if len(images_to_render) > 1:
-                                            block['lines'].extend(_text_block_lines(f'Image {img_idx}:', 'Helvetica', 10, content_width))
-                                        try:
-                                            image = Image.open(uploaded_img)
-                                            img_width, img_height = image.size
-                                            if img_width > 0:
-                                                display_width = min(content_width, float(img_width))
-                                                display_height = display_width * (float(img_height) / float(img_width))
-                                                display_height = min(display_height, 140.0)
-                                                block['images'].append({
-                                                    'image': image,
-                                                    'width': display_width,
-                                                    'height': display_height,
-                                                })
-                                            else:
-                                                block['lines'].extend(_text_block_lines('(image has invalid size)', 'Helvetica', 11, content_width))
-                                        except Exception as exc:
-                                            block['lines'].extend(_text_block_lines(f'(image error: {exc})', 'Helvetica', 11, content_width))
-                            elif col_type == 'Checkbox':
-                                checked = 'Yes' if bool(cell_value) else 'No'
-                                block['lines'].extend(_text_block_lines(f'{col_name}: {checked}', 'Helvetica', 11, content_width))
+                            if col_type == 'Checkbox':
+                                display_text = 'Yes' if bool(cell_value) else 'No'
                             elif col_type == 'Date Picker':
-                                value_text = ''
-                                if cell_value is not None:
-                                    value_text = cell_value.isoformat() if hasattr(cell_value, 'isoformat') else str(cell_value)
-                                block['lines'].extend(_text_block_lines(f'{col_name}: {value_text}', 'Helvetica', 11, content_width))
-                            elif col_type == 'Textarea':
-                                block['lines'].extend(_text_block_lines(f'{col_name}:', 'Helvetica', 11, content_width))
-                                for raw_line in str(cell_value or '').split('\n'):
-                                    block['lines'].extend(_text_block_lines(raw_line, 'Helvetica', 11, content_width))
+                                if cell_value is None:
+                                    display_text = ''
+                                else:
+                                    display_text = cell_value.isoformat() if hasattr(cell_value, 'isoformat') else str(cell_value)
+                            elif col_type in ('Image Upload', 'Camera Input'):
+                                if cell_value is None:
+                                    display_text = ''
+                                else:
+                                    display_text = '(image attached)'
                             else:
-                                block['lines'].extend(_text_block_lines(f'{col_name}: {str(cell_value or "")}', 'Helvetica', 11, content_width))
+                                display_text = str(cell_value or '')
+
+                            wrapped = []
+                            for raw_line in display_text.split('\n'):
+                                wrapped.extend(wrap_text(raw_line, 'Helvetica', table_font_size, max(20, col_width - 6)))
+                            if not wrapped:
+                                wrapped = ['']
+
+                            max_lines = max(max_lines, len(wrapped))
+                            rendered_row.append(wrapped)
+
+                        table_rows.append(rendered_row)
+                        table_row_heights.append(max_lines * table_line_h + 4)
+
+                    table_height = header_height + sum(table_row_heights)
+                    block['table'] = {
+                        'width': table_width,
+                        'columns': table_columns,
+                        'col_width': col_width,
+                        'header_cells': header_cells,
+                        'header_height': header_height,
+                        'rows': table_rows,
+                        'row_heights': table_row_heights,
+                        'font_size': table_font_size,
+                        'line_height': table_line_h,
+                    }
 
             if not block['lines']:
                 block['lines'].append(('', 'Helvetica', 12))
 
             text_height = len(block['lines']) * line_h
+            if block.get('table') is not None:
+                text_height += block['table']['header_height'] + sum(block['table']['row_heights']) + 6
             image_height = sum(item['height'] + 6 for item in block['images'])
             block['height'] = text_height + image_height + 6
             return block
@@ -787,6 +802,57 @@ def build_pdf(form_name, components, values, form_columns=1):
                     pdf_canvas.setFont(font_name, font_size)
                     pdf_canvas.drawString(cell_x, text_y, line_text)
                     text_y -= line_h
+
+                table_block = block.get('table')
+                if table_block is not None:
+                    table_top = text_y - 2
+                    table_left = cell_x
+                    table_width = table_block['width']
+                    col_width = table_block['col_width']
+                    header_height = table_block['header_height']
+                    row_heights = table_block['row_heights']
+                    total_table_height = header_height + sum(row_heights)
+                    table_bottom = table_top - total_table_height
+
+                    pdf_canvas.setLineWidth(0.6)
+                    pdf_canvas.rect(table_left, table_bottom, table_width, total_table_height)
+
+                    for col_idx in range(1, len(table_block['columns'])):
+                        x_line = table_left + (col_idx * col_width)
+                        pdf_canvas.line(x_line, table_top, x_line, table_bottom)
+
+                    header_bottom = table_top - header_height
+                    pdf_canvas.line(table_left, header_bottom, table_left + table_width, header_bottom)
+
+                    running_y = header_bottom
+                    for row_height in row_heights[:-1]:
+                        running_y -= row_height
+                        pdf_canvas.line(table_left, running_y, table_left + table_width, running_y)
+
+                    header_text_y = table_top - table_block['line_height']
+                    for col_idx, header_lines in enumerate(table_block['header_cells']):
+                        text_x = table_left + (col_idx * col_width) + 3
+                        line_y = header_text_y
+                        pdf_canvas.setFont('Helvetica-Bold', table_block['font_size'])
+                        for header_line in header_lines:
+                            pdf_canvas.drawString(text_x, line_y, header_line)
+                            line_y -= table_block['line_height']
+
+                    row_top = header_bottom
+                    for row_idx, row_cells in enumerate(table_block['rows']):
+                        row_height = row_heights[row_idx]
+                        for col_idx, cell_lines in enumerate(row_cells):
+                            text_x = table_left + (col_idx * col_width) + 3
+                            line_y = row_top - table_block['line_height']
+                            pdf_canvas.setFont('Helvetica', table_block['font_size'])
+                            for cell_line in cell_lines:
+                                if line_y < row_top - row_height + 2:
+                                    break
+                                pdf_canvas.drawString(text_x, line_y, cell_line)
+                                line_y -= table_block['line_height']
+                        row_top -= row_height
+
+                    text_y = table_bottom - 6
 
                 for image_item in block['images']:
                     pdf_canvas.drawImage(
