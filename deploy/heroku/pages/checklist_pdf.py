@@ -374,6 +374,87 @@ def parse_email_list(raw_text):
     return unique_emails, invalid
 
 
+def normalize_form_data(form_data):
+    if not isinstance(form_data, dict):
+        form_data = {}
+
+    components = form_data.get('components', [])
+    email_recipients_text = form_data.get('email_recipients_text', '')
+    email_optional_message = form_data.get('email_optional_message', '')
+
+    if not isinstance(components, list):
+        components = []
+    if not isinstance(email_recipients_text, str):
+        email_recipients_text = ''
+    if not isinstance(email_optional_message, str):
+        email_optional_message = ''
+
+    return {
+        'components': list(components),
+        'email_recipients_text': email_recipients_text,
+        'email_optional_message': email_optional_message,
+    }
+
+
+def normalize_forms_map(forms):
+    if not isinstance(forms, dict):
+        return {}
+
+    normalized = {}
+    for name, form_data in forms.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        normalized[name] = normalize_form_data(form_data)
+    return normalized
+
+
+def get_profile_email_defaults():
+    recipients = st.session_state.get('profile_email_recipients_text', '')
+    message = st.session_state.get('profile_email_optional_message', '')
+
+    if not isinstance(recipients, str):
+        recipients = ''
+    if not isinstance(message, str):
+        message = ''
+
+    return recipients, message
+
+
+def get_form_email_settings(form_data):
+    form_state = normalize_form_data(form_data)
+    profile_recipients, profile_message = get_profile_email_defaults()
+
+    recipients = form_state.get('email_recipients_text', '')
+    message = form_state.get('email_optional_message', '')
+
+    if not recipients.strip():
+        recipients = profile_recipients
+    if not message.strip():
+        message = profile_message
+
+    return recipients, message
+
+
+def sync_active_form_state():
+    form_name = st.session_state.get('builder_form_name', '')
+    if not isinstance(form_name, str) or not form_name.strip():
+        return
+
+    forms = normalize_forms_map(st.session_state.get('forms', {}))
+    active_form = normalize_form_data(forms.get(form_name, {}))
+    active_form['components'] = list(st.session_state.get('builder_components', []))
+    active_form['email_recipients_text'] = st.session_state.get('email_recipients_text', '')
+    active_form['email_optional_message'] = st.session_state.get('email_optional_message', '')
+    forms[form_name] = active_form
+    st.session_state.forms = forms
+
+
+def sync_email_settings_to_profile():
+    st.session_state.profile_email_recipients_text = st.session_state.get('email_recipients_text', '')
+    st.session_state.profile_email_optional_message = st.session_state.get('email_optional_message', '')
+    persist_forms_state()
+
+
 def _load_json_data(raw_value):
     if raw_value is None:
         return None, None
@@ -667,21 +748,27 @@ def load_persisted_forms(username):
     if not isinstance(doc, dict):
         return None
 
-    forms = doc.get('forms', {})
+    forms = normalize_forms_map(doc.get('forms', {}))
     builder_components = doc.get('builder_components', [])
     builder_form_name = doc.get('builder_form_name', '')
+    email_recipients_text = doc.get('email_recipients_text', '')
+    email_optional_message = doc.get('email_optional_message', '')
 
-    if not isinstance(forms, dict):
-        forms = {}
     if not isinstance(builder_components, list):
         builder_components = []
     if not isinstance(builder_form_name, str):
         builder_form_name = ''
+    if not isinstance(email_recipients_text, str):
+        email_recipients_text = ''
+    if not isinstance(email_optional_message, str):
+        email_optional_message = ''
 
     return {
         'forms': forms,
         'builder_components': builder_components,
         'builder_form_name': builder_form_name,
+        'profile_email_recipients_text': email_recipients_text,
+        'profile_email_optional_message': email_optional_message,
     }
 
 
@@ -694,12 +781,16 @@ def persist_forms_state():
     if collection is None:
         return
 
+    sync_active_form_state()
+
     payload = {
         'username': username,
         'page': PERSISTENCE_PAGE_KEY,
         'forms': st.session_state.get('forms', {}),
         'builder_components': st.session_state.get('builder_components', []),
         'builder_form_name': st.session_state.get('builder_form_name', ''),
+        'email_recipients_text': st.session_state.get('profile_email_recipients_text', ''),
+        'email_optional_message': st.session_state.get('profile_email_optional_message', ''),
         'updated_at': datetime.now(timezone.utc),
     }
 
@@ -722,13 +813,29 @@ def init_state():
     if st.session_state.forms_loaded_for_user != current_user:
         persisted = load_persisted_forms(current_user)
         if persisted:
-            st.session_state.forms = persisted.get('forms', {})
+            st.session_state.forms = normalize_forms_map(persisted.get('forms', {}))
             st.session_state.builder_components = persisted.get('builder_components', [])
             st.session_state.builder_form_name = persisted.get('builder_form_name', '')
+            st.session_state.profile_email_recipients_text = persisted.get('profile_email_recipients_text', '')
+            st.session_state.profile_email_optional_message = persisted.get('profile_email_optional_message', '')
+
+            active_form_name = st.session_state.builder_form_name
+            if active_form_name:
+                active_form = normalize_form_data(st.session_state.forms.get(active_form_name, {}))
+                active_form['components'] = list(st.session_state.builder_components)
+                st.session_state.forms[active_form_name] = active_form
+                st.session_state.email_recipients_text, st.session_state.email_optional_message = get_form_email_settings(active_form)
+            else:
+                st.session_state.email_recipients_text = st.session_state.profile_email_recipients_text
+                st.session_state.email_optional_message = st.session_state.profile_email_optional_message
         else:
             st.session_state.forms = {}
             st.session_state.builder_components = []
             st.session_state.builder_form_name = ''
+            st.session_state.profile_email_recipients_text = ''
+            st.session_state.profile_email_optional_message = ''
+            st.session_state.email_recipients_text = ''
+            st.session_state.email_optional_message = ''
         st.session_state.forms_loaded_for_user = current_user
 
     if 'forms' not in st.session_state:
@@ -737,6 +844,10 @@ def init_state():
         st.session_state.builder_components = []
     if 'builder_form_name' not in st.session_state:
         st.session_state.builder_form_name = ''
+    if 'profile_email_recipients_text' not in st.session_state:
+        st.session_state.profile_email_recipients_text = ''
+    if 'profile_email_optional_message' not in st.session_state:
+        st.session_state.profile_email_optional_message = ''
 
     if 'temp_form_counter' not in st.session_state:
         st.session_state.temp_form_counter = 1
@@ -753,17 +864,21 @@ def init_state():
     if not st.session_state.builder_form_name:
         temp_name = f"temp_form_{st.session_state.temp_form_counter}"
         st.session_state.temp_form_counter += 1
-        st.session_state.forms[temp_name] = {'components': []}
+        st.session_state.forms[temp_name] = normalize_form_data({})
         st.session_state.builder_form_name = temp_name
         st.session_state.builder_components = []
+        st.session_state.email_recipients_text = st.session_state.profile_email_recipients_text
+        st.session_state.email_optional_message = st.session_state.profile_email_optional_message
         persist_forms_state()
 
 
 def load_builder_from_form(form_name):
-    form = st.session_state.forms.get(form_name)
-    if form:
+    form = normalize_form_data(st.session_state.forms.get(form_name, {}))
+    if form_name:
+        st.session_state.forms[form_name] = form
         st.session_state.builder_components = list(form.get('components', []))
         st.session_state.builder_form_name = form_name
+        st.session_state.email_recipients_text, st.session_state.email_optional_message = get_form_email_settings(form)
 
 
 def parse_imported_form(file_data):
@@ -796,7 +911,14 @@ def parse_imported_form(file_data):
     if not isinstance(imported_name, str):
         imported_name = ''
 
-    return imported_name.strip(), cleaned
+    imported_recipients = payload.get('email_recipients_text', '')
+    imported_message = payload.get('email_optional_message', '')
+    if not isinstance(imported_recipients, str):
+        imported_recipients = ''
+    if not isinstance(imported_message, str):
+        imported_message = ''
+
+    return imported_name.strip(), cleaned, imported_recipients, imported_message
 
 
 init_state()
@@ -927,11 +1049,15 @@ with forms_tab:
             st.error('Choose a JSON file to import.')
         else:
             try:
-                imported_name, imported_components = parse_imported_form(import_file.getvalue())
+                imported_name, imported_components, imported_recipients, imported_message = parse_imported_form(import_file.getvalue())
                 target_name = import_target_name.strip() or imported_name or f"imported_form_{st.session_state.temp_form_counter}"
                 if not imported_name and not import_target_name.strip():
                     st.session_state.temp_form_counter += 1
-                st.session_state.forms[target_name] = {'components': imported_components}
+                st.session_state.forms[target_name] = normalize_form_data({
+                    'components': imported_components,
+                    'email_recipients_text': imported_recipients,
+                    'email_optional_message': imported_message,
+                })
                 load_builder_from_form(target_name)
                 st.session_state.pending_save_form_name = target_name
                 persist_forms_state()
@@ -965,9 +1091,11 @@ with forms_tab:
             st.error(f'A form named "{new_name.strip()}" already exists.')
         else:
             name_to_create = new_name.strip()
-            st.session_state.forms[name_to_create] = {'components': []}
+            st.session_state.forms[name_to_create] = normalize_form_data({})
             st.session_state.builder_form_name = name_to_create
             st.session_state.builder_components = []
+            st.session_state.email_recipients_text = st.session_state.profile_email_recipients_text
+            st.session_state.email_optional_message = st.session_state.profile_email_optional_message
             st.session_state.pending_save_form_name = name_to_create
             persist_forms_state()
             st.success(f'✅ Created "{name_to_create}". Go to 📝 Form Builder to add components.')
@@ -1003,8 +1131,12 @@ with forms_tab:
             elif dup_name.strip() in st.session_state.forms:
                 st.error(f'A form named "{dup_name.strip()}" already exists.')
             else:
-                src_comps = st.session_state.forms[dup_source].get('components', [])
-                st.session_state.forms[dup_name.strip()] = {'components': list(src_comps)}
+                source_form = normalize_form_data(st.session_state.forms.get(dup_source, {}))
+                st.session_state.forms[dup_name.strip()] = normalize_form_data({
+                    'components': list(source_form.get('components', [])),
+                    'email_recipients_text': source_form.get('email_recipients_text', ''),
+                    'email_optional_message': source_form.get('email_optional_message', ''),
+                })
                 persist_forms_state()
                 st.success(f'✅ Duplicated "{dup_source}" → "{dup_name.strip()}".')
                 trigger_rerun()
@@ -1035,6 +1167,8 @@ with forms_tab:
     export_payload = {
         'name': export_form_name,
         'components': list(st.session_state.builder_components),
+        'email_recipients_text': st.session_state.get('email_recipients_text', ''),
+        'email_optional_message': st.session_state.get('email_optional_message', ''),
     }
     st.download_button(
         '⬇️ Export Active Form as JSON',
@@ -1069,12 +1203,14 @@ with builder_tab:
         key='email_recipients_text',
         placeholder='person1@example.com\nperson2@example.com',
         height=120,
+        on_change=sync_email_settings_to_profile,
     )
     st.text_area(
         'Optional email message',
         key='email_optional_message',
         placeholder='Please review the attached signed checklist PDF.',
         height=100,
+        on_change=sync_email_settings_to_profile,
     )
 
     st.markdown('---')
@@ -1106,7 +1242,11 @@ with builder_tab:
                 st.error('Enter a form name to save.')
             else:
                 previous_name = active_form_name
-                st.session_state.forms[target_name] = {'components': list(st.session_state.builder_components)}
+                st.session_state.forms[target_name] = normalize_form_data({
+                    'components': list(st.session_state.builder_components),
+                    'email_recipients_text': st.session_state.get('email_recipients_text', ''),
+                    'email_optional_message': st.session_state.get('email_optional_message', ''),
+                })
                 if previous_name != target_name and previous_name.startswith('temp_form_'):
                     st.session_state.forms.pop(previous_name, None)
                 st.session_state.builder_form_name = target_name
