@@ -1,6 +1,7 @@
 import os
 import tempfile
 import json
+from datetime import datetime, timezone
 from io import BytesIO
 
 import streamlit as st
@@ -19,6 +20,12 @@ try:
     from streamlit_js_eval import streamlit_js_eval
 except ImportError:
     streamlit_js_eval = None
+
+try:
+    from pymongo import ASCENDING, MongoClient
+except ImportError:
+    ASCENDING = None
+    MongoClient = None
 
 require_authentication('Checklist Form to PDF')
 st.title('Checklist Form to PDF (Basic Test)')
@@ -226,7 +233,150 @@ def pdf_to_images(pdf_data):
         return None
 
 
+PERSISTENCE_PAGE_KEY = 'checklist_pdf'
+
+
+def _get_setting(name, default=None):
+    env_value = os.getenv(name)
+    if env_value is not None and str(env_value).strip():
+        return env_value
+
+    try:
+        secret_value = st.secrets.get(name, default)
+        if secret_value is not None and str(secret_value).strip():
+            return secret_value
+    except Exception:
+        pass
+
+    return default
+
+
+@st.cache_resource(show_spinner=False)
+def _get_forms_collection(mongo_uri, db_name, collection_name):
+    if MongoClient is None:
+        return None
+
+    client = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
+    client.admin.command('ping')
+    collection = client[db_name][collection_name]
+    collection.create_index([('username', ASCENDING), ('page', ASCENDING)], unique=True)
+    return collection
+
+
+def get_forms_collection():
+    mongo_uri = _get_setting('MONGODB_URI')
+    if not mongo_uri:
+        return None
+
+    db_name = str(_get_setting('MONGODB_DB', 'app_data')).strip() or 'app_data'
+    collection_name = str(_get_setting('MONGODB_FORMS_COLLECTION', 'user_forms')).strip() or 'user_forms'
+
+    try:
+        return _get_forms_collection(mongo_uri, db_name, collection_name)
+    except Exception:
+        return None
+
+
+def get_persistence_status():
+    mongo_uri = _get_setting('MONGODB_URI')
+    if not mongo_uri:
+        return 'session_only', 'Mongo not configured (set MONGODB_URI).'
+
+    if MongoClient is None:
+        return 'session_only', 'Mongo driver not installed (add pymongo).'
+
+    collection = get_forms_collection()
+    if collection is None:
+        return 'session_only', 'Mongo unavailable (connection failed).'
+
+    return 'mongo', 'Mongo connected. Forms persist per logged-in user.'
+
+
+def get_authenticated_username():
+    username = st.session_state.get('username')
+    return str(username).strip() if username else ''
+
+
+def load_persisted_forms(username):
+    if not username:
+        return None
+
+    collection = get_forms_collection()
+    if collection is None:
+        return None
+
+    try:
+        doc = collection.find_one({'username': username, 'page': PERSISTENCE_PAGE_KEY})
+    except Exception:
+        return None
+
+    if not isinstance(doc, dict):
+        return None
+
+    forms = doc.get('forms', {})
+    builder_components = doc.get('builder_components', [])
+    builder_form_name = doc.get('builder_form_name', '')
+
+    if not isinstance(forms, dict):
+        forms = {}
+    if not isinstance(builder_components, list):
+        builder_components = []
+    if not isinstance(builder_form_name, str):
+        builder_form_name = ''
+
+    return {
+        'forms': forms,
+        'builder_components': builder_components,
+        'builder_form_name': builder_form_name,
+    }
+
+
+def persist_forms_state():
+    username = get_authenticated_username()
+    if not username:
+        return
+
+    collection = get_forms_collection()
+    if collection is None:
+        return
+
+    payload = {
+        'username': username,
+        'page': PERSISTENCE_PAGE_KEY,
+        'forms': st.session_state.get('forms', {}),
+        'builder_components': st.session_state.get('builder_components', []),
+        'builder_form_name': st.session_state.get('builder_form_name', ''),
+        'updated_at': datetime.now(timezone.utc),
+    }
+
+    try:
+        collection.update_one(
+            {'username': username, 'page': PERSISTENCE_PAGE_KEY},
+            {'$set': payload},
+            upsert=True,
+        )
+    except Exception:
+        return
+
+
 def init_state():
+    current_user = get_authenticated_username()
+
+    if 'forms_loaded_for_user' not in st.session_state:
+        st.session_state.forms_loaded_for_user = None
+
+    if st.session_state.forms_loaded_for_user != current_user:
+        persisted = load_persisted_forms(current_user)
+        if persisted:
+            st.session_state.forms = persisted.get('forms', {})
+            st.session_state.builder_components = persisted.get('builder_components', [])
+            st.session_state.builder_form_name = persisted.get('builder_form_name', '')
+        else:
+            st.session_state.forms = {}
+            st.session_state.builder_components = []
+            st.session_state.builder_form_name = ''
+        st.session_state.forms_loaded_for_user = current_user
+
     if 'forms' not in st.session_state:
         st.session_state.forms = {}
     if 'builder_components' not in st.session_state:
@@ -248,6 +398,7 @@ def init_state():
         st.session_state.forms[temp_name] = {'components': []}
         st.session_state.builder_form_name = temp_name
         st.session_state.builder_components = []
+        persist_forms_state()
 
 
 def load_builder_from_form(form_name):
@@ -359,6 +510,12 @@ else:
 with forms_tab:
     st.subheader('📂 My Forms')
 
+    persistence_mode, persistence_message = get_persistence_status()
+    if persistence_mode == 'mongo':
+        st.success(f'Persistence: {persistence_message}')
+    else:
+        st.warning(f'Persistence: {persistence_message}')
+
     form_names = list(st.session_state.forms.keys())
 
     # Import form JSON (first)
@@ -377,6 +534,7 @@ with forms_tab:
                 st.session_state.forms[target_name] = {'components': imported_components}
                 load_builder_from_form(target_name)
                 st.session_state.pending_save_form_name = target_name
+                persist_forms_state()
                 st.success(f'✅ Imported form: "{target_name}".')
                 trigger_rerun()
             except Exception as exc:
@@ -411,6 +569,7 @@ with forms_tab:
             st.session_state.builder_form_name = name_to_create
             st.session_state.builder_components = []
             st.session_state.pending_save_form_name = name_to_create
+            persist_forms_state()
             st.success(f'✅ Created "{name_to_create}". Go to 📝 Form Builder to add components.')
             trigger_rerun()
 
@@ -428,6 +587,7 @@ with forms_tab:
         if st.button('Load Form', use_container_width=True):
             load_builder_from_form(selected_form)
             st.session_state.pending_save_form_name = selected_form
+            persist_forms_state()
             st.success(f'✅ Loaded "{selected_form}" into the builder.')
             trigger_rerun()
 
@@ -445,6 +605,7 @@ with forms_tab:
             else:
                 src_comps = st.session_state.forms[dup_source].get('components', [])
                 st.session_state.forms[dup_name.strip()] = {'components': list(src_comps)}
+                persist_forms_state()
                 st.success(f'✅ Duplicated "{dup_source}" → "{dup_name.strip()}".')
                 trigger_rerun()
 
@@ -462,6 +623,7 @@ with forms_tab:
                     remaining = list(st.session_state.forms.keys())
                     load_builder_from_form(remaining[0])
                     st.session_state.pending_save_form_name = remaining[0]
+                persist_forms_state()
                 st.success(f'🗑️ Deleted "{del_form}".')
                 trigger_rerun()
 
@@ -512,6 +674,7 @@ with builder_tab:
                 if component_type == 'Checkbox':
                     entry['default'] = checkbox_default
                 st.session_state.builder_components.append(entry)
+                persist_forms_state()
                 st.success(f'✅ Added {TYPE_ICONS.get(component_type, "")} {component_type}: {component_label.strip()}')
     with save_col:
         if st.button('💾 Save Form', use_container_width=True):
@@ -524,6 +687,7 @@ with builder_tab:
                 if previous_name != target_name and previous_name.startswith('temp_form_'):
                     st.session_state.forms.pop(previous_name, None)
                 st.session_state.builder_form_name = target_name
+                persist_forms_state()
                 st.success(f'✅ Saved form: "{target_name}".')
                 trigger_rerun()
 
@@ -571,20 +735,24 @@ with builder_tab:
                     st.session_state.builder_components[selected_idx]['label'] = edit_label.strip()
                     if selected_component.get('type') == 'Checkbox':
                         st.session_state.builder_components[selected_idx]['default'] = edit_default
+                    persist_forms_state()
                     st.success('✅ Updated.')
         with action_cols[1]:
             if st.button('🗑️ Delete', use_container_width=True):
                 st.session_state.builder_components.pop(selected_idx)
+                persist_forms_state()
                 st.success('🗑️ Deleted.')
         with action_cols[2]:
             if st.button('⬆️ Up', use_container_width=True) and selected_idx > 0:
                 comps = st.session_state.builder_components
                 comps[selected_idx - 1], comps[selected_idx] = comps[selected_idx], comps[selected_idx - 1]
+                persist_forms_state()
                 st.success('⬆️ Moved up.')
         with action_cols[3]:
             if st.button('⬇️ Down', use_container_width=True) and selected_idx < len(st.session_state.builder_components) - 1:
                 comps = st.session_state.builder_components
                 comps[selected_idx + 1], comps[selected_idx] = comps[selected_idx], comps[selected_idx + 1]
+                persist_forms_state()
                 st.success('⬇️ Moved down.')
 
 # ── Tab 3: Render & Export ────────────────────────────────────────────────────

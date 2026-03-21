@@ -16,3 +16,4 @@ Pillow
 pdf2image
 streamlit-authenticator
 streamlit-js-eval
+pymongo
