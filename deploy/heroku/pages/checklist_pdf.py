@@ -124,34 +124,104 @@ def draw_wrapped(pdf_canvas, x, y, text, font_name, font_size, max_width, line_h
     return y
 
 
-def render_components(components, key_prefix):
+def _default_span_for_type(comp_type, total_columns):
+    if comp_type in ('Textarea', 'Image Upload', 'Camera Input', 'Text'):
+        return total_columns
+    return 1
+
+
+def _coerce_layout_columns(value):
+    try:
+        columns = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(4, columns))
+
+
+def _coerce_span(value, total_columns, comp_type):
+    try:
+        span = int(value)
+    except (TypeError, ValueError):
+        span = _default_span_for_type(comp_type, total_columns)
+    return max(1, min(total_columns, span))
+
+
+def _render_one_component(component, key_prefix, idx, values):
+    comp_type = component.get('type')
+    label = component.get('label', f'Field {idx + 1}')
+    if comp_type == 'Text':
+        st.markdown(f'**{label}**')
+    elif comp_type == 'Text Input':
+        values[label] = st.text_input(label, key=f'{key_prefix}_text_{idx}')
+    elif comp_type == 'Textarea':
+        values[label] = st.text_area(label, key=f'{key_prefix}_textarea_{idx}')
+    elif comp_type == 'Checkbox':
+        values[label] = st.checkbox(
+            label,
+            value=component.get('default', False),
+            key=f'{key_prefix}_checkbox_{idx}',
+        )
+    elif comp_type == 'Image Upload':
+        values[label] = st.file_uploader(
+            label,
+            type=['png', 'jpg', 'jpeg'],
+            key=f'{key_prefix}_image_{idx}',
+        )
+    elif comp_type == 'Camera Input':
+        values[label] = st.camera_input(
+            label,
+            key=f'{key_prefix}_camera_{idx}',
+        )
+
+
+def render_components(components, key_prefix, form_columns=1):
     values = {}
+    total_columns = _coerce_layout_columns(form_columns)
+
+    # Keep mobile simple and readable.
+    if _screen_width is not None and _screen_width < 768:
+        total_columns = 1
+
+    if total_columns == 1:
+        for idx, component in enumerate(components):
+            _render_one_component(component, key_prefix, idx, values)
+        return values
+
+    rows = []
+    current_row = []
+    used = 0
     for idx, component in enumerate(components):
         comp_type = component.get('type')
-        label = component.get('label', f'Field {idx + 1}')
-        if comp_type == 'Text':
-            st.markdown(f'**{label}**')
-        elif comp_type == 'Text Input':
-            values[label] = st.text_input(label, key=f'{key_prefix}_text_{idx}')
-        elif comp_type == 'Textarea':
-            values[label] = st.text_area(label, key=f'{key_prefix}_textarea_{idx}')
-        elif comp_type == 'Checkbox':
-            values[label] = st.checkbox(
-                label,
-                value=component.get('default', False),
-                key=f'{key_prefix}_checkbox_{idx}',
-            )
-        elif comp_type == 'Image Upload':
-            values[label] = st.file_uploader(
-                label,
-                type=['png', 'jpg', 'jpeg'],
-                key=f'{key_prefix}_image_{idx}',
-            )
-        elif comp_type == 'Camera Input':
-            values[label] = st.camera_input(
-                label,
-                key=f'{key_prefix}_camera_{idx}',
-            )
+        span = _coerce_span(component.get('span'), total_columns, comp_type)
+
+        if used + span > total_columns and current_row:
+            rows.append(current_row)
+            current_row = []
+            used = 0
+
+        current_row.append((idx, component, span))
+        used += span
+
+        if used >= total_columns:
+            rows.append(current_row)
+            current_row = []
+            used = 0
+
+    if current_row:
+        rows.append(current_row)
+
+    for row in rows:
+        widths = [item[2] for item in row]
+        spare = total_columns - sum(widths)
+        if spare > 0:
+            widths += [1] * spare
+
+        cols = st.columns(widths)
+        for col_idx, item in enumerate(row):
+            idx, component, _span = item
+            with cols[col_idx]:
+                _render_one_component(component, key_prefix, idx, values)
+
     return values
 
 
@@ -379,11 +449,13 @@ def normalize_form_data(form_data):
         form_data = {}
 
     components = form_data.get('components', [])
+    form_columns = form_data.get('form_columns', 1)
     email_recipients_text = form_data.get('email_recipients_text', '')
     email_optional_message = form_data.get('email_optional_message', '')
 
     if not isinstance(components, list):
         components = []
+    form_columns = _coerce_layout_columns(form_columns)
     if not isinstance(email_recipients_text, str):
         email_recipients_text = ''
     if not isinstance(email_optional_message, str):
@@ -391,6 +463,7 @@ def normalize_form_data(form_data):
 
     return {
         'components': list(components),
+        'form_columns': form_columns,
         'email_recipients_text': email_recipients_text,
         'email_optional_message': email_optional_message,
     }
@@ -443,6 +516,7 @@ def sync_active_form_state():
     forms = normalize_forms_map(st.session_state.get('forms', {}))
     active_form = normalize_form_data(forms.get(form_name, {}))
     active_form['components'] = list(st.session_state.get('builder_components', []))
+    active_form['form_columns'] = _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1))
     active_form['email_recipients_text'] = st.session_state.get('email_recipients_text', '')
     active_form['email_optional_message'] = st.session_state.get('email_optional_message', '')
     forms[form_name] = active_form
@@ -844,6 +918,8 @@ def init_state():
         st.session_state.builder_components = []
     if 'builder_form_name' not in st.session_state:
         st.session_state.builder_form_name = ''
+    if 'builder_layout_columns' not in st.session_state:
+        st.session_state.builder_layout_columns = 1
     if 'profile_email_recipients_text' not in st.session_state:
         st.session_state.profile_email_recipients_text = ''
     if 'profile_email_optional_message' not in st.session_state:
@@ -866,6 +942,7 @@ def init_state():
         st.session_state.temp_form_counter += 1
         st.session_state.forms[temp_name] = normalize_form_data({})
         st.session_state.builder_form_name = temp_name
+        st.session_state.builder_layout_columns = 1
         st.session_state.builder_components = []
         st.session_state.email_recipients_text = st.session_state.profile_email_recipients_text
         st.session_state.email_optional_message = st.session_state.profile_email_optional_message
@@ -878,6 +955,7 @@ def load_builder_from_form(form_name):
         st.session_state.forms[form_name] = form
         st.session_state.builder_components = list(form.get('components', []))
         st.session_state.builder_form_name = form_name
+        st.session_state.builder_layout_columns = _coerce_layout_columns(form.get('form_columns', 1))
         st.session_state.email_recipients_text, st.session_state.email_optional_message = get_form_email_settings(form)
 
 
