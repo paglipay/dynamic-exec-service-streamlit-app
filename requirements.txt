@@ -17,3 +17,6 @@ pdf2image
 streamlit-authenticator
 streamlit-js-eval
 pymongo
+google-auth
+google-api-python-client
+google-auth-oauthlib
