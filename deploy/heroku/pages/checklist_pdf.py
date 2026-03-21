@@ -124,127 +124,253 @@ def draw_wrapped(pdf_canvas, x, y, text, font_name, font_size, max_width, line_h
     return y
 
 
-def render_components(components, key_prefix):
+def _default_span_for_type(comp_type, total_columns):
+    if comp_type in ('Textarea', 'Image Upload', 'Camera Input', 'Text'):
+        return total_columns
+    return 1
+
+
+def _coerce_layout_columns(value):
+    try:
+        columns = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(4, columns))
+
+
+def _coerce_span(value, total_columns, comp_type):
+    try:
+        span = int(value)
+    except (TypeError, ValueError):
+        span = _default_span_for_type(comp_type, total_columns)
+    return max(1, min(total_columns, span))
+
+
+def _render_one_component(component, key_prefix, idx, values):
+    comp_type = component.get('type')
+    label = component.get('label', f'Field {idx + 1}')
+    if comp_type == 'Text':
+        st.markdown(f'**{label}**')
+    elif comp_type == 'Text Input':
+        values[label] = st.text_input(label, key=f'{key_prefix}_text_{idx}')
+    elif comp_type == 'Textarea':
+        values[label] = st.text_area(label, key=f'{key_prefix}_textarea_{idx}')
+    elif comp_type == 'Checkbox':
+        values[label] = st.checkbox(
+            label,
+            value=component.get('default', False),
+            key=f'{key_prefix}_checkbox_{idx}',
+        )
+    elif comp_type == 'Image Upload':
+        values[label] = st.file_uploader(
+            label,
+            type=['png', 'jpg', 'jpeg'],
+            key=f'{key_prefix}_image_{idx}',
+        )
+    elif comp_type == 'Camera Input':
+        values[label] = st.camera_input(
+            label,
+            key=f'{key_prefix}_camera_{idx}',
+        )
+
+
+def render_components(components, key_prefix, form_columns=1):
     values = {}
+    total_columns = _coerce_layout_columns(form_columns)
+
+    # Keep mobile simple and readable.
+    if _screen_width is not None and _screen_width < 768:
+        total_columns = 1
+
+    if total_columns == 1:
+        for idx, component in enumerate(components):
+            _render_one_component(component, key_prefix, idx, values)
+        return values
+
+    rows = []
+    current_row = []
+    used = 0
     for idx, component in enumerate(components):
         comp_type = component.get('type')
-        label = component.get('label', f'Field {idx + 1}')
-        if comp_type == 'Text':
-            st.markdown(f'**{label}**')
-        elif comp_type == 'Text Input':
-            values[label] = st.text_input(label, key=f'{key_prefix}_text_{idx}')
-        elif comp_type == 'Textarea':
-            values[label] = st.text_area(label, key=f'{key_prefix}_textarea_{idx}')
-        elif comp_type == 'Checkbox':
-            values[label] = st.checkbox(
-                label,
-                value=component.get('default', False),
-                key=f'{key_prefix}_checkbox_{idx}',
-            )
-        elif comp_type == 'Image Upload':
-            values[label] = st.file_uploader(
-                label,
-                type=['png', 'jpg', 'jpeg'],
-                key=f'{key_prefix}_image_{idx}',
-            )
-        elif comp_type == 'Camera Input':
-            values[label] = st.camera_input(
-                label,
-                key=f'{key_prefix}_camera_{idx}',
-            )
+        span = _coerce_span(component.get('span'), total_columns, comp_type)
+
+        if used + span > total_columns and current_row:
+            rows.append(current_row)
+            current_row = []
+            used = 0
+
+        current_row.append((idx, component, span))
+        used += span
+
+        if used >= total_columns:
+            rows.append(current_row)
+            current_row = []
+            used = 0
+
+    if current_row:
+        rows.append(current_row)
+
+    for row in rows:
+        widths = [item[2] for item in row]
+        spare = total_columns - sum(widths)
+        if spare > 0:
+            widths += [1] * spare
+
+        cols = st.columns(widths)
+        for col_idx, item in enumerate(row):
+            idx, component, _span = item
+            with cols[col_idx]:
+                _render_one_component(component, key_prefix, idx, values)
+
     return values
 
 
-def build_pdf(form_name, components, values):
+def build_pdf(form_name, components, values, form_columns=1):
     with tempfile.TemporaryDirectory() as tmp_dir:
         pdf_path = os.path.join(tmp_dir, 'checklist_output.pdf')
         pdf_canvas = canvas.Canvas(pdf_path, pagesize=letter)
         page_width, page_height = letter
 
-        # Margins: 50pt left, 50pt right
         left_margin = 50
-        indent = 70
         right_margin = 50
-        body_max_w = page_width - left_margin - right_margin   # 512 pt
-        indent_max_w = page_width - indent - right_margin      # 492 pt
+        body_max_w = page_width - left_margin - right_margin
+        col_gap = 10
         line_h = 15
+        top_margin = 50
+        bottom_margin = 50
 
-        y_pos = page_height - 50
-        pdf_canvas.setFont('Helvetica-Bold', 16)
-        # Wrap long form titles in the header
-        for title_line in wrap_text(f'Checklist Form: {form_name}', 'Helvetica-Bold', 16, body_max_w):
-            pdf_canvas.drawCentredString(page_width / 2, y_pos, title_line)
-            y_pos -= 22
-        y_pos -= 10
-        pdf_canvas.setFont('Helvetica', 12)
+        total_columns = _coerce_layout_columns(form_columns)
 
-        for component in components:
+        def _build_rows():
+            rows = []
+            current_row = []
+            used = 0
+            for component in components:
+                comp_type = component.get('type')
+                span = _coerce_span(component.get('span'), total_columns, comp_type)
+
+                if used + span > total_columns and current_row:
+                    rows.append(current_row)
+                    current_row = []
+                    used = 0
+
+                current_row.append((component, span, used))
+                used += span
+
+                if used >= total_columns:
+                    rows.append(current_row)
+                    current_row = []
+                    used = 0
+
+            if current_row:
+                rows.append(current_row)
+            return rows
+
+        def _text_block_lines(text, font_name, font_size, max_width):
+            return [(line, font_name, font_size) for line in wrap_text(text, font_name, font_size, max_width)]
+
+        def _component_block(component, cell_width):
             comp_type = component.get('type')
             label = component.get('label', '')
+            content_width = max(80, cell_width - 8)
+            block = {
+                'lines': [],
+                'image': None,
+                'image_width': 0,
+                'image_height': 0,
+            }
 
             if comp_type == 'Text':
-                pdf_canvas.setFont('Helvetica-Bold', 12)
-                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, label,
-                                     'Helvetica-Bold', 12, body_max_w, line_h, page_height)
-                pdf_canvas.setFont('Helvetica', 12)
-                y_pos -= 4
+                block['lines'].extend(_text_block_lines(label, 'Helvetica-Bold', 12, content_width))
 
             elif comp_type == 'Text Input':
-                # Draw "Label:" on its own line, then the value indented
-                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}:',
-                                     'Helvetica', 12, body_max_w, line_h, page_height)
-                value_text = values.get(label, '') or ''
-                y_pos = draw_wrapped(pdf_canvas, indent, y_pos, value_text,
-                                     'Helvetica', 12, indent_max_w, line_h, page_height)
-                y_pos -= 4
+                block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
+                value_text = str(values.get(label, '') or '')
+                block['lines'].extend(_text_block_lines(value_text, 'Helvetica', 12, content_width))
 
             elif comp_type == 'Textarea':
-                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}:',
-                                     'Helvetica', 12, body_max_w, line_h, page_height)
-                raw_lines = (values.get(label, '') or '').split('\n')
+                block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
+                raw_lines = str(values.get(label, '') or '').split('\n')
                 for raw_line in raw_lines:
-                    y_pos = draw_wrapped(pdf_canvas, indent, y_pos, raw_line,
-                                        'Helvetica', 12, indent_max_w, line_h, page_height)
-                y_pos -= 8
+                    block['lines'].extend(_text_block_lines(raw_line, 'Helvetica', 12, content_width))
 
             elif comp_type == 'Checkbox':
                 checked = 'Yes' if values.get(label, False) else 'No'
-                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}: {checked}',
-                                     'Helvetica', 12, body_max_w, line_h, page_height)
-                y_pos -= 4
+                block['lines'].extend(_text_block_lines(f'{label}: {checked}', 'Helvetica', 12, content_width))
 
             elif comp_type in ('Image Upload', 'Camera Input'):
+                block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
                 uploaded_img = values.get(label)
-                y_pos = draw_wrapped(pdf_canvas, left_margin, y_pos, f'{label}:',
-                                     'Helvetica', 12, body_max_w, line_h, page_height)
-
                 if uploaded_img is None:
-                    y_pos = draw_wrapped(pdf_canvas, indent, y_pos, '(no image uploaded)',
-                                        'Helvetica', 12, indent_max_w, line_h, page_height)
+                    block['lines'].extend(_text_block_lines('(no image uploaded)', 'Helvetica', 12, content_width))
                 else:
                     try:
                         image = Image.open(uploaded_img)
                         img_width, img_height = image.size
                         if img_width > 0:
-                            max_img_w = page_width - indent - right_margin
+                            max_img_w = content_width
                             display_width = min(max_img_w, float(img_width))
                             display_height = display_width * (float(img_height) / float(img_width))
-
-                            y_pos = ensure_space(pdf_canvas, y_pos, display_height + 10, page_height)
-                            pdf_canvas.drawImage(
-                                ImageReader(image),
-                                indent,
-                                y_pos - display_height,
-                                width=display_width,
-                                height=display_height,
-                                preserveAspectRatio=True,
-                                mask='auto',
-                            )
-                            y_pos -= display_height + 15
+                            display_height = min(display_height, 180.0)
+                            block['image'] = image
+                            block['image_width'] = display_width
+                            block['image_height'] = display_height
+                        else:
+                            block['lines'].extend(_text_block_lines('(image has invalid size)', 'Helvetica', 12, content_width))
                     except Exception as exc:
-                        y_pos = draw_wrapped(pdf_canvas, indent, y_pos, f'(image error: {exc})',
-                                            'Helvetica', 12, indent_max_w, line_h, page_height)
-                y_pos -= 4
+                        block['lines'].extend(_text_block_lines(f'(image error: {exc})', 'Helvetica', 12, content_width))
+
+            if not block['lines']:
+                block['lines'].append(('', 'Helvetica', 12))
+
+            text_height = len(block['lines']) * line_h
+            image_height = (block['image_height'] + 6) if block['image'] is not None else 0
+            block['height'] = text_height + image_height + 6
+            return block
+
+        y_pos = page_height - top_margin
+        pdf_canvas.setFont('Helvetica-Bold', 16)
+        for title_line in wrap_text(f'Checklist Form: {form_name}', 'Helvetica-Bold', 16, body_max_w):
+            pdf_canvas.drawCentredString(page_width / 2, y_pos, title_line)
+            y_pos -= 22
+        y_pos -= 10
+
+        unit_w = (body_max_w - (col_gap * (total_columns - 1))) / float(total_columns)
+        rows = _build_rows()
+
+        for row in rows:
+            rendered_cells = []
+            row_height = line_h
+            for component, span, col_start in row:
+                cell_x = left_margin + col_start * (unit_w + col_gap)
+                cell_w = unit_w * span + col_gap * (span - 1)
+                block = _component_block(component, cell_w)
+                rendered_cells.append((cell_x, cell_w, block))
+                row_height = max(row_height, block['height'])
+
+            if y_pos - row_height < bottom_margin:
+                pdf_canvas.showPage()
+                y_pos = page_height - top_margin
+
+            for cell_x, _cell_w, block in rendered_cells:
+                text_y = y_pos
+                for line_text, font_name, font_size in block['lines']:
+                    pdf_canvas.setFont(font_name, font_size)
+                    pdf_canvas.drawString(cell_x, text_y, line_text)
+                    text_y -= line_h
+
+                if block['image'] is not None:
+                    pdf_canvas.drawImage(
+                        ImageReader(block['image']),
+                        cell_x,
+                        text_y - block['image_height'],
+                        width=block['image_width'],
+                        height=block['image_height'],
+                        preserveAspectRatio=True,
+                        mask='auto',
+                    )
+
+            y_pos -= row_height + 6
 
         pdf_canvas.save()
         with open(pdf_path, 'rb') as pdf_file:
@@ -379,11 +505,13 @@ def normalize_form_data(form_data):
         form_data = {}
 
     components = form_data.get('components', [])
+    form_columns = form_data.get('form_columns', 1)
     email_recipients_text = form_data.get('email_recipients_text', '')
     email_optional_message = form_data.get('email_optional_message', '')
 
     if not isinstance(components, list):
         components = []
+    form_columns = _coerce_layout_columns(form_columns)
     if not isinstance(email_recipients_text, str):
         email_recipients_text = ''
     if not isinstance(email_optional_message, str):
@@ -391,6 +519,7 @@ def normalize_form_data(form_data):
 
     return {
         'components': list(components),
+        'form_columns': form_columns,
         'email_recipients_text': email_recipients_text,
         'email_optional_message': email_optional_message,
     }
@@ -443,6 +572,7 @@ def sync_active_form_state():
     forms = normalize_forms_map(st.session_state.get('forms', {}))
     active_form = normalize_form_data(forms.get(form_name, {}))
     active_form['components'] = list(st.session_state.get('builder_components', []))
+    active_form['form_columns'] = _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1))
     active_form['email_recipients_text'] = st.session_state.get('email_recipients_text', '')
     active_form['email_optional_message'] = st.session_state.get('email_optional_message', '')
     forms[form_name] = active_form
@@ -824,8 +954,10 @@ def init_state():
                 active_form = normalize_form_data(st.session_state.forms.get(active_form_name, {}))
                 active_form['components'] = list(st.session_state.builder_components)
                 st.session_state.forms[active_form_name] = active_form
+                st.session_state.builder_layout_columns = _coerce_layout_columns(active_form.get('form_columns', 1))
                 st.session_state.email_recipients_text, st.session_state.email_optional_message = get_form_email_settings(active_form)
             else:
+                st.session_state.builder_layout_columns = 1
                 st.session_state.email_recipients_text = st.session_state.profile_email_recipients_text
                 st.session_state.email_optional_message = st.session_state.profile_email_optional_message
         else:
@@ -844,6 +976,8 @@ def init_state():
         st.session_state.builder_components = []
     if 'builder_form_name' not in st.session_state:
         st.session_state.builder_form_name = ''
+    if 'builder_layout_columns' not in st.session_state:
+        st.session_state.builder_layout_columns = 1
     if 'profile_email_recipients_text' not in st.session_state:
         st.session_state.profile_email_recipients_text = ''
     if 'profile_email_optional_message' not in st.session_state:
@@ -866,6 +1000,7 @@ def init_state():
         st.session_state.temp_form_counter += 1
         st.session_state.forms[temp_name] = normalize_form_data({})
         st.session_state.builder_form_name = temp_name
+        st.session_state.builder_layout_columns = 1
         st.session_state.builder_components = []
         st.session_state.email_recipients_text = st.session_state.profile_email_recipients_text
         st.session_state.email_optional_message = st.session_state.profile_email_optional_message
@@ -878,6 +1013,7 @@ def load_builder_from_form(form_name):
         st.session_state.forms[form_name] = form
         st.session_state.builder_components = list(form.get('components', []))
         st.session_state.builder_form_name = form_name
+        st.session_state.builder_layout_columns = _coerce_layout_columns(form.get('form_columns', 1))
         st.session_state.email_recipients_text, st.session_state.email_optional_message = get_form_email_settings(form)
 
 
@@ -891,6 +1027,7 @@ def parse_imported_form(file_data):
         raise ValueError('Imported JSON must include a components array.')
 
     allowed_types = {'Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'}
+    imported_form_columns = _coerce_layout_columns(payload.get('form_columns', 1))
     cleaned = []
     for item in components:
         if not isinstance(item, dict):
@@ -905,6 +1042,7 @@ def parse_imported_form(file_data):
         entry = {'type': comp_type, 'label': label.strip()}
         if comp_type == 'Checkbox':
             entry['default'] = bool(item.get('default', False))
+        entry['span'] = _coerce_span(item.get('span'), imported_form_columns, comp_type)
         cleaned.append(entry)
 
     imported_name = payload.get('name', '')
@@ -918,7 +1056,7 @@ def parse_imported_form(file_data):
     if not isinstance(imported_message, str):
         imported_message = ''
 
-    return imported_name.strip(), cleaned, imported_recipients, imported_message
+    return imported_name.strip(), cleaned, imported_recipients, imported_message, imported_form_columns
 
 
 init_state()
@@ -1049,12 +1187,13 @@ with forms_tab:
             st.error('Choose a JSON file to import.')
         else:
             try:
-                imported_name, imported_components, imported_recipients, imported_message = parse_imported_form(import_file.getvalue())
+                imported_name, imported_components, imported_recipients, imported_message, imported_form_columns = parse_imported_form(import_file.getvalue())
                 target_name = import_target_name.strip() or imported_name or f"imported_form_{st.session_state.temp_form_counter}"
                 if not imported_name and not import_target_name.strip():
                     st.session_state.temp_form_counter += 1
                 st.session_state.forms[target_name] = normalize_form_data({
                     'components': imported_components,
+                    'form_columns': imported_form_columns,
                     'email_recipients_text': imported_recipients,
                     'email_optional_message': imported_message,
                 })
@@ -1093,6 +1232,7 @@ with forms_tab:
             name_to_create = new_name.strip()
             st.session_state.forms[name_to_create] = normalize_form_data({})
             st.session_state.builder_form_name = name_to_create
+            st.session_state.builder_layout_columns = 1
             st.session_state.builder_components = []
             st.session_state.email_recipients_text = st.session_state.profile_email_recipients_text
             st.session_state.email_optional_message = st.session_state.profile_email_optional_message
@@ -1134,6 +1274,7 @@ with forms_tab:
                 source_form = normalize_form_data(st.session_state.forms.get(dup_source, {}))
                 st.session_state.forms[dup_name.strip()] = normalize_form_data({
                     'components': list(source_form.get('components', [])),
+                    'form_columns': source_form.get('form_columns', 1),
                     'email_recipients_text': source_form.get('email_recipients_text', ''),
                     'email_optional_message': source_form.get('email_optional_message', ''),
                 })
@@ -1166,6 +1307,7 @@ with forms_tab:
     export_form_name = st.session_state.save_form_name.strip() or st.session_state.builder_form_name
     export_payload = {
         'name': export_form_name,
+        'form_columns': _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
         'components': list(st.session_state.builder_components),
         'email_recipients_text': st.session_state.get('email_recipients_text', ''),
         'email_optional_message': st.session_state.get('email_optional_message', ''),
@@ -1187,6 +1329,16 @@ with builder_tab:
     st.info(f'Active form: **{active_form_name}** — {comp_count} component(s). Manage or switch forms in the 📂 My Forms tab.')
 
     save_form_name = st.text_input('Form name to save', key='save_form_name')
+
+    st.markdown('---')
+    st.markdown('**📐 Layout**')
+    st.caption('Desktop layout supports 1 to 4 columns. On mobile, fields stack to one column.')
+    st.select_slider(
+        'Columns per row',
+        options=[1, 2, 3, 4],
+        key='builder_layout_columns',
+        on_change=persist_forms_state,
+    )
 
     st.markdown('---')
     st.markdown('**✉️ Sign and Email Settings**')
@@ -1220,6 +1372,20 @@ with builder_tab:
         ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'],
         format_func=lambda t: f'{TYPE_ICONS.get(t, "")} {t}',
     )
+    selected_layout_columns = _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1))
+    suggested_span = _default_span_for_type(component_type, selected_layout_columns)
+    if selected_layout_columns == 1:
+        component_span = 1
+        st.caption('Component width: full row (1 of 1).')
+    else:
+        component_span = st.slider(
+            'Component width (columns)',
+            min_value=1,
+            max_value=selected_layout_columns,
+            value=suggested_span,
+            key='builder_component_span',
+            help='How many columns this component should span in the current form layout.',
+        )
     component_label = st.text_input('Component label', key='builder_component_label', placeholder='e.g. Inspector Name')
     checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
 
@@ -1232,6 +1398,7 @@ with builder_tab:
                 entry = {'type': component_type, 'label': component_label.strip()}
                 if component_type == 'Checkbox':
                     entry['default'] = checkbox_default
+                entry['span'] = _coerce_span(component_span, selected_layout_columns, component_type)
                 st.session_state.builder_components.append(entry)
                 persist_forms_state()
                 st.success(f'✅ Added {TYPE_ICONS.get(component_type, "")} {component_type}: {component_label.strip()}')
@@ -1244,6 +1411,7 @@ with builder_tab:
                 previous_name = active_form_name
                 st.session_state.forms[target_name] = normalize_form_data({
                     'components': list(st.session_state.builder_components),
+                    'form_columns': _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
                     'email_recipients_text': st.session_state.get('email_recipients_text', ''),
                     'email_optional_message': st.session_state.get('email_optional_message', ''),
                 })
@@ -1260,10 +1428,11 @@ with builder_tab:
 
         for index, component in enumerate(st.session_state.builder_components, start=1):
             icon = TYPE_ICONS.get(component['type'], '•')
+            span = _coerce_span(component.get('span'), _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)), component.get('type'))
             if component['type'] == 'Checkbox':
-                st.write(f"{index}. {icon} **{component['label']}** `{component['type']}` (default={component.get('default', False)})")
+                st.write(f"{index}. {icon} **{component['label']}** `{component['type']}` (span {span}) (default={component.get('default', False)})")
             else:
-                st.write(f"{index}. {icon} **{component['label']}** `{component['type']}`")
+                st.write(f"{index}. {icon} **{component['label']}** `{component['type']}` (span {span})")
 
         st.markdown('---')
         st.markdown('**Edit / Delete / Reorder**')
@@ -1282,12 +1451,27 @@ with builder_tab:
             key=f'edit_component_label_{selected_idx}',
         )
         edit_default = False
+        edit_span = _coerce_span(
+            selected_component.get('span'),
+            _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
+            selected_component.get('type'),
+        )
         if selected_component.get('type') == 'Checkbox':
             edit_default = st.checkbox(
                 'Checkbox default',
                 value=selected_component.get('default', False),
                 key=f'edit_component_default_{selected_idx}',
             )
+        if _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)) > 1:
+            edit_span = st.slider(
+                'Component width (columns)',
+                min_value=1,
+                max_value=_coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
+                value=edit_span,
+                key=f'edit_component_span_{selected_idx}',
+            )
+        else:
+            st.caption('Component width: full row (1 of 1).')
 
         action_cols = st.columns(4)
         with action_cols[0]:
@@ -1296,6 +1480,11 @@ with builder_tab:
                     st.error('Label cannot be empty.')
                 else:
                     st.session_state.builder_components[selected_idx]['label'] = edit_label.strip()
+                    st.session_state.builder_components[selected_idx]['span'] = _coerce_span(
+                        edit_span,
+                        _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
+                        selected_component.get('type'),
+                    )
                     if selected_component.get('type') == 'Checkbox':
                         st.session_state.builder_components[selected_idx]['default'] = edit_default
                     persist_forms_state()
@@ -1332,7 +1521,11 @@ with render_tab:
         st.caption(f'{comp_count} field(s) — fill in the form below, then generate a PDF preview.')
         st.markdown('---')
 
-        live_values = render_components(st.session_state.builder_components, 'live_render')
+        live_values = render_components(
+            st.session_state.builder_components,
+            'live_render',
+            form_columns=st.session_state.get('builder_layout_columns', 1),
+        )
 
         st.markdown('---')
 
@@ -1351,7 +1544,12 @@ with render_tab:
         col1, col2 = st.columns(2)
         with col1:
             if st.button('📄 Generate & Preview PDF', use_container_width=True):
-                pdf_data = build_pdf(export_name, st.session_state.builder_components, live_values)
+                pdf_data = build_pdf(
+                    export_name,
+                    st.session_state.builder_components,
+                    live_values,
+                    form_columns=st.session_state.get('builder_layout_columns', 1),
+                )
                 st.session_state.generated_pdf_data = pdf_data
                 st.session_state.generated_pdf_name = export_name
                 show_pdf_preview_modal()
