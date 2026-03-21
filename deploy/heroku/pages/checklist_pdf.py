@@ -1,7 +1,10 @@
 import os
 import tempfile
 import json
+import base64
+import inspect
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from io import BytesIO
 from urllib.parse import urlparse, unquote
 
@@ -27,6 +30,40 @@ try:
 except ImportError:
     ASCENDING = None
     MongoClient = None
+
+try:
+    from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials as GoogleOAuthCredentials
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build as build_google_service
+except ImportError:
+    service_account = None
+    GoogleOAuthCredentials = None
+    GoogleAuthRequest = None
+    InstalledAppFlow = None
+    build_google_service = None
+
+try:
+    from pyhanko.sign import signers
+    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+except ImportError:
+    signers = None
+    IncrementalPdfFileWriter = None
+
+try:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import pkcs12
+    from cryptography.x509.oid import NameOID
+except ImportError:
+    x509 = None
+    hashes = None
+    serialization = None
+    rsa = None
+    pkcs12 = None
+    NameOID = None
 
 require_authentication('Checklist Form to PDF')
 st.title('Checklist Form to PDF (Basic Test)')
@@ -235,6 +272,7 @@ def pdf_to_images(pdf_data):
 
 
 PERSISTENCE_PAGE_KEY = 'checklist_pdf'
+GMAIL_SEND_SCOPE = ['https://www.googleapis.com/auth/gmail.send']
 
 
 def _get_setting(name, default=None):
@@ -311,6 +349,306 @@ def get_persistence_status():
 def get_authenticated_username():
     username = st.session_state.get('username')
     return str(username).strip() if username else ''
+
+
+def parse_email_list(raw_text):
+    emails = []
+    invalid = []
+
+    for line in (raw_text or '').splitlines():
+        for part in line.replace(';', ',').split(','):
+            candidate = part.strip()
+            if not candidate:
+                continue
+            if '@' not in candidate or candidate.startswith('@') or candidate.endswith('@'):
+                invalid.append(candidate)
+                continue
+            local, domain = candidate.rsplit('@', 1)
+            if not local or '.' not in domain:
+                invalid.append(candidate)
+                continue
+            emails.append(candidate)
+
+    # Preserve order while removing duplicates
+    unique_emails = list(dict.fromkeys(emails))
+    return unique_emails, invalid
+
+
+def _load_json_data(raw_value):
+    if raw_value is None:
+        return None, None
+    if isinstance(raw_value, dict):
+        return raw_value, None
+
+    raw_text = str(raw_value).strip()
+    if not raw_text:
+        return None, None
+
+    if raw_text.startswith('{'):
+        return json.loads(raw_text), None
+
+    with open(raw_text, 'r', encoding='utf-8') as source_file:
+        return json.load(source_file), raw_text
+
+
+def _load_google_oauth_credentials_info():
+    raw = (
+        _get_setting('GMAIL_OAUTH_CREDENTIALS_JSON')
+        or _get_setting('GOOGLE_OAUTH_CREDENTIALS_JSON')
+        or _get_setting('GMAIL_CREDENTIALS_JSON')
+        or 'credentials.json'
+    )
+    try:
+        return _load_json_data(raw)
+    except Exception:
+        return None, None
+
+
+def _load_google_oauth_token_info():
+    raw = (
+        _get_setting('GMAIL_OAUTH_TOKEN_JSON')
+        or _get_setting('GOOGLE_OAUTH_TOKEN_JSON')
+        or _get_setting('GMAIL_TOKEN_JSON')
+        or 'gmail_token.json'
+    )
+    try:
+        return _load_json_data(raw)
+    except Exception:
+        return None, None
+
+
+def _load_google_service_account_info():
+    raw = _get_setting('GMAIL_SERVICE_ACCOUNT_JSON') or _get_setting('GOOGLE_SERVICE_ACCOUNT_JSON')
+    try:
+        data, _ = _load_json_data(raw)
+        return data
+    except Exception:
+        return None
+
+
+def _save_oauth_token_if_possible(token_info, token_path):
+    if not token_info or not token_path:
+        return
+    try:
+        with open(token_path, 'w', encoding='utf-8') as token_file:
+            json.dump(token_info, token_file)
+    except Exception:
+        return
+
+
+def _build_gmail_oauth_credentials(credentials_info, token_info, token_path):
+    if GoogleOAuthCredentials is None:
+        return None
+
+    credentials = None
+    if token_info:
+        credentials = GoogleOAuthCredentials.from_authorized_user_info(token_info, GMAIL_SEND_SCOPE)
+
+    if credentials and credentials.expired and credentials.refresh_token and GoogleAuthRequest is not None:
+        try:
+            credentials.refresh(GoogleAuthRequest())
+            _save_oauth_token_if_possible(json.loads(credentials.to_json()), token_path)
+        except Exception:
+            credentials = None
+
+    if credentials and credentials.valid:
+        return credentials
+
+    if not credentials_info or InstalledAppFlow is None:
+        return None
+
+    flow = InstalledAppFlow.from_client_config(credentials_info, GMAIL_SEND_SCOPE)
+    credentials = flow.run_local_server(port=0)
+    _save_oauth_token_if_possible(json.loads(credentials.to_json()), token_path)
+    return credentials
+
+
+@st.cache_resource(show_spinner=False)
+def _build_gmail_service_oauth(credentials_payload_text, token_payload_text):
+    if build_google_service is None:
+        return None
+
+    credentials_info = json.loads(credentials_payload_text) if credentials_payload_text else None
+    token_info = json.loads(token_payload_text) if token_payload_text else None
+    credentials = _build_gmail_oauth_credentials(credentials_info, token_info, None)
+    if credentials is None:
+        return None
+
+    return build_google_service('gmail', 'v1', credentials=credentials, cache_discovery=False)
+
+
+@st.cache_resource(show_spinner=False)
+def _build_gmail_service(service_account_payload_text, delegated_user):
+    if service_account is None or build_google_service is None:
+        return None
+
+    service_account_info = json.loads(service_account_payload_text)
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info,
+        scopes=GMAIL_SEND_SCOPE,
+    )
+    if delegated_user:
+        credentials = credentials.with_subject(delegated_user)
+
+    return build_google_service('gmail', 'v1', credentials=credentials, cache_discovery=False)
+
+
+def get_gmail_service():
+    sender = str(_get_setting('GMAIL_SENDER_EMAIL', '')).strip()
+
+    oauth_credentials_info, _ = _load_google_oauth_credentials_info()
+    oauth_token_info, oauth_token_path = _load_google_oauth_token_info()
+    if oauth_credentials_info or oauth_token_info:
+        credentials = _build_gmail_oauth_credentials(oauth_credentials_info, oauth_token_info, oauth_token_path)
+        if credentials is not None and build_google_service is not None:
+            service = build_google_service('gmail', 'v1', credentials=credentials, cache_discovery=False)
+            return service, sender, 'oauth'
+
+    service_account_info = _load_google_service_account_info()
+    if service_account_info:
+        delegated_user = str(
+            _get_setting('GMAIL_DELEGATED_USER')
+            or sender
+            or ''
+        ).strip()
+        if delegated_user:
+            payload_text = json.dumps(service_account_info, sort_keys=True)
+            service = _build_gmail_service(payload_text, delegated_user)
+            if service is not None:
+                return service, delegated_user, 'service_account'
+
+    raise ValueError(
+        'Gmail auth not configured. Provide OAuth files (credentials.json + gmail_token.json), '
+        'or service-account settings (GMAIL_SERVICE_ACCOUNT_JSON + GMAIL_DELEGATED_USER).'
+    )
+
+
+def get_email_delivery_status():
+    try:
+        _, sender, mode = get_gmail_service()
+        mode_label = 'OAuth' if mode == 'oauth' else 'Service Account'
+        sender_label = sender or 'default account'
+        return 'ready', f'Gmail connected ({mode_label}). Sender: {sender_label}'
+    except Exception as exc:
+        return 'not_ready', str(exc)
+
+
+def create_ephemeral_pkcs12():
+    if not all([x509, hashes, serialization, rsa, pkcs12, NameOID]):
+        raise ValueError('Cryptography dependencies for signing are not available.')
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    subject = issuer = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, 'US'),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'Dynamic Exec Service'),
+            x509.NameAttribute(NameOID.COMMON_NAME, 'Checklist PDF Auto Signer'),
+        ]
+    )
+
+    now = datetime.now(timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now.replace(year=now.year + 1))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .sign(private_key, hashes.SHA256())
+    )
+
+    return pkcs12.serialize_key_and_certificates(
+        name=b'checklist-auto-signer',
+        key=private_key,
+        cert=certificate,
+        cas=None,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+def create_incremental_writer_with_hybrid_support(input_stream):
+    if IncrementalPdfFileWriter is None:
+        raise ValueError('pyHanko is not installed.')
+
+    parameters = inspect.signature(IncrementalPdfFileWriter).parameters
+    kwargs = {}
+    if 'strict' in parameters:
+        kwargs['strict'] = False
+    if 'allow_hybrid_xrefs' in parameters:
+        kwargs['allow_hybrid_xrefs'] = True
+    if 'reader_kwargs' in parameters:
+        kwargs['reader_kwargs'] = {'strict': False, 'allow_hybrid_xrefs': True}
+
+    return IncrementalPdfFileWriter(input_stream, **kwargs)
+
+
+def load_signer_from_pkcs12(p12_path):
+    if signers is None:
+        raise ValueError('pyHanko is not installed.')
+
+    load_fn = signers.SimpleSigner.load_pkcs12
+    parameters = inspect.signature(load_fn).parameters
+
+    if 'passphrase' in parameters:
+        return load_fn(p12_path, passphrase=None)
+    if 'pfx_passphrase' in parameters:
+        return load_fn(p12_path, pfx_passphrase=None)
+    return load_fn(p12_path, None)
+
+
+def sign_pdf_bytes(pdf_data):
+    if not pdf_data:
+        raise ValueError('No PDF data to sign.')
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        pdf_path = os.path.join(tmp_dir, 'input.pdf')
+        p12_path = os.path.join(tmp_dir, 'signer.p12')
+        signed_path = os.path.join(tmp_dir, 'signed.pdf')
+
+        with open(pdf_path, 'wb') as pdf_file:
+            pdf_file.write(pdf_data)
+        with open(p12_path, 'wb') as cert_file:
+            cert_file.write(create_ephemeral_pkcs12())
+
+        signer = load_signer_from_pkcs12(p12_path)
+        if signer is None:
+            raise ValueError('Could not initialize signer from generated PKCS#12 bundle.')
+
+        with open(pdf_path, 'rb') as source_pdf, open(signed_path, 'wb') as output_pdf:
+            writer = create_incremental_writer_with_hybrid_support(source_pdf)
+            signature_meta = signers.PdfSignatureMetadata(field_name='Signature1')
+            pdf_signer = signers.PdfSigner(signature_meta=signature_meta, signer=signer)
+            pdf_signer.sign_pdf(writer, output=output_pdf)
+
+        with open(signed_path, 'rb') as signed_file:
+            return signed_file.read()
+
+
+def send_signed_pdf_email(recipients, message_text, signed_pdf_data, filename, form_name):
+    if not recipients:
+        raise ValueError('At least one recipient email is required.')
+
+    gmail_service, sender, _ = get_gmail_service()
+
+    message = EmailMessage()
+    message['To'] = ', '.join(recipients)
+    if sender:
+        message['From'] = sender
+    message['Subject'] = f'Signed checklist PDF: {form_name}'
+    body = (message_text or '').strip() or 'Please find the signed checklist PDF attached.'
+    message.set_content(body)
+    message.add_attachment(
+        signed_pdf_data,
+        maintype='application',
+        subtype='pdf',
+        filename=filename,
+    )
+
+    encoded = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+    gmail_service.users().messages().send(userId='me', body={'raw': encoded}).execute()
 
 
 def load_persisted_forms(username):
@@ -407,6 +745,10 @@ def init_state():
         st.session_state.generated_pdf_data = None
     if 'generated_pdf_name' not in st.session_state:
         st.session_state.generated_pdf_name = 'form.pdf'
+    if 'email_recipients_text' not in st.session_state:
+        st.session_state.email_recipients_text = ''
+    if 'email_optional_message' not in st.session_state:
+        st.session_state.email_optional_message = ''
 
     if not st.session_state.builder_form_name:
         temp_name = f"temp_form_{st.session_state.temp_form_counter}"
@@ -498,13 +840,55 @@ def show_pdf_preview_modal():
         st.code('sudo apt-get install poppler-utils && pip install pdf2image', language='bash')
 
     st.markdown('---')
-    st.download_button(
-        '⬇️ Download PDF',
-        data=pdf_data,
-        file_name=f'{pdf_name}_basic.pdf',
-        mime='application/pdf',
-        use_container_width=True,
-    )
+    st.subheader('✉️ Sign and Email PDF')
+
+    delivery_status, delivery_message = get_email_delivery_status()
+    if delivery_status == 'ready':
+        st.success(delivery_message)
+    else:
+        st.warning(f'Email not ready: {delivery_message}')
+
+    recipients_raw = st.session_state.get('email_recipients_text', '')
+    optional_message = st.session_state.get('email_optional_message', '')
+
+    recipient_emails, invalid_entries = parse_email_list(recipients_raw)
+    can_send = delivery_status == 'ready' and bool(recipient_emails) and not invalid_entries
+
+    button_col1, button_col2 = st.columns(2)
+    with button_col1:
+        st.download_button(
+            '⬇️ Download PDF',
+            data=pdf_data,
+            file_name=f'{pdf_name}_basic.pdf',
+            mime='application/pdf',
+            use_container_width=True,
+        )
+    with button_col2:
+        send_now = st.button(
+            '📨 Sign and Email PDF Now',
+            use_container_width=True,
+            disabled=not can_send,
+        )
+
+    if invalid_entries:
+        st.error(f'Invalid email(s): {", ".join(invalid_entries)}')
+    elif not recipients_raw.strip():
+        st.info('Add recipient emails in Form Builder before sending.')
+
+    if send_now:
+        with st.spinner('Signing and sending email...'):
+            try:
+                signed_pdf_data = sign_pdf_bytes(pdf_data)
+                send_signed_pdf_email(
+                    recipients=recipient_emails,
+                    message_text=optional_message,
+                    signed_pdf_data=signed_pdf_data,
+                    filename=f'{pdf_name}_signed.pdf',
+                    form_name=pdf_name,
+                )
+                st.success(f'Sent signed PDF to {len(recipient_emails)} recipient(s).')
+            except Exception as exc:
+                st.error(f'Could not send signed PDF email: {exc}')
 
 
 # Responsive layout: tabs on narrow, 2-col on medium, 3-col on wide
@@ -669,6 +1053,29 @@ with builder_tab:
     st.info(f'Active form: **{active_form_name}** — {comp_count} component(s). Manage or switch forms in the 📂 My Forms tab.')
 
     save_form_name = st.text_input('Form name to save', key='save_form_name')
+
+    st.markdown('---')
+    st.markdown('**✉️ Sign and Email Settings**')
+    st.caption('Recipients: newline-delimited list. Message is optional and included in the email body.')
+
+    email_status, email_status_message = get_email_delivery_status()
+    if email_status == 'ready':
+        st.success(email_status_message)
+    else:
+        st.warning(f'Email not ready: {email_status_message}')
+
+    st.text_area(
+        'Recipient emails (one per line)',
+        key='email_recipients_text',
+        placeholder='person1@example.com\nperson2@example.com',
+        height=120,
+    )
+    st.text_area(
+        'Optional email message',
+        key='email_optional_message',
+        placeholder='Please review the attached signed checklist PDF.',
+        height=100,
+    )
 
     st.markdown('---')
     st.markdown('**➕ Add Component**')
