@@ -1465,6 +1465,65 @@ def _get_query_param_value(query_params, key):
     return str(value).strip()
 
 
+def _get_requested_form_name(query_params):
+    """
+    Read the requested form name from query params.
+    Tolerates unencoded '&' in the form value, e.g.
+    ?user=admin&form=CCTV T&A Form
+    """
+    requested_form_name = _get_query_param_value(query_params, 'form')
+    if not requested_form_name:
+        return ''
+
+    known_keys = {'form', 'user', 'profile', 'tab'}
+    dangling_keys = []
+    for key in query_params.keys():
+        if key in known_keys:
+            continue
+        raw_value = query_params.get(key)
+        if isinstance(raw_value, list):
+            raw_value = raw_value[0] if raw_value else ''
+        value_text = '' if raw_value is None else str(raw_value).strip()
+        if value_text:
+            continue
+        dangling_keys.append(str(key).strip())
+
+    if dangling_keys and '&' not in requested_form_name:
+        requested_form_name = f"{requested_form_name}&{'&'.join(dangling_keys)}"
+
+    return requested_form_name.strip()
+
+
+def _get_share_page_base_url():
+    """Return absolute page URL (scheme + host + path) for sharing."""
+    if 'share_page_base_url' not in st.session_state:
+        st.session_state.share_page_base_url = ''
+
+    if streamlit_js_eval:
+        current_url = streamlit_js_eval(
+            js_expressions='window.location.origin + window.location.pathname',
+            key='share_page_base_url_probe',
+        )
+        if isinstance(current_url, str) and current_url.strip():
+            st.session_state.share_page_base_url = current_url.strip().rstrip('/')
+
+    if st.session_state.share_page_base_url:
+        return st.session_state.share_page_base_url
+
+    configured_base = str(_get_setting('APP_BASE_URL', '') or '').strip()
+    if not configured_base:
+        return ''
+
+    parsed = urlparse(configured_base)
+    if not parsed.scheme or not parsed.netloc:
+        return ''
+
+    configured_base = configured_base.rstrip('/')
+    if parsed.path and parsed.path not in ('', '/'):
+        return configured_base
+    return f'{configured_base}/checklist_pdf'
+
+
 def find_form_for_user(username, form_name):
     if not username or not form_name:
         return None
@@ -1780,7 +1839,7 @@ init_state()
 # Own form: ?form=FormName
 # Shared form: ?user=Username&form=FormName
 query_params = st.query_params
-requested_form_name = _get_query_param_value(query_params, 'form')
+requested_form_name = _get_requested_form_name(query_params)
 requested_source_user = (
     _get_query_param_value(query_params, 'user')
     or _get_query_param_value(query_params, 'profile')
@@ -1997,32 +2056,41 @@ with forms_tab:
     share_username = get_authenticated_username()
     if st.session_state.builder_form_name and share_username:
         active_form = st.session_state.builder_form_name
+        page_base_url = _get_share_page_base_url()
         form_param = (
             f'?user={quote(share_username, safe="")}'
             f'&form={quote(active_form, safe="")}'
+        )
+        share_url = f'{page_base_url}{form_param}' if page_base_url else form_param
+        form_url_widget_key = (
+            f'form_url_input_{quote(share_username, safe="")}_{quote(active_form, safe="")}'
         )
 
         col1, col2 = st.columns([3, 1])
         with col1:
             st.text_input(
                 'Share this URL:',
-                value=form_param,
+                value=share_url,
                 disabled=True,
-                key='form_url_input'
+                key=form_url_widget_key,
             )
         with col2:
             if st.button('📋 Copy', use_container_width=True, key='copy_form_url'):
                 if streamlit_js_eval:
                     streamlit_js_eval(
                         js_expressions=f"""
-                        navigator.clipboard.writeText(window.location.origin + window.location.pathname + {json.dumps(form_param)}).then(
+                        navigator.clipboard.writeText({json.dumps(share_url)}).then(
                             () => console.log('URL copied'),
                             (err) => console.error('Failed to copy:', err)
                         )
                         """,
                         key='copy_url_to_clipboard'
                     )
-                st.success('✅ URL copied to clipboard!')
+                    st.success('✅ URL copied to clipboard!')
+                elif page_base_url:
+                    st.error('Clipboard copy is unavailable. Please copy the URL manually from the field.')
+                else:
+                    st.error('Could not detect full URL in this session. Set APP_BASE_URL to enable full-link fallback.')
     else:
         st.info('Select or create a form to share it.')
 
