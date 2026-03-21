@@ -4,7 +4,7 @@ import json
 import base64
 import inspect
 import math
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email.message import EmailMessage
 from io import BytesIO
 from urllib.parse import urlparse, unquote
@@ -196,6 +196,67 @@ def _normalize_table_columns(columns):
     return normalized or [{'name': 'Column 1', 'type': 'Text Input'}]
 
 
+def _parse_date_value(value):
+    if value in (None, ''):
+        return None
+
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        return datetime.fromisoformat(text.replace('Z', '+00:00')).date()
+    except Exception:
+        pass
+
+    try:
+        return datetime.strptime(text, '%Y-%m-%d').date()
+    except Exception:
+        return None
+
+
+def _normalize_date_default(value):
+    parsed = _parse_date_value(value)
+    return parsed.isoformat() if parsed is not None else ''
+
+
+def _normalize_table_default_rows(default_rows, columns):
+    if not isinstance(default_rows, list):
+        return []
+
+    normalized_rows = []
+    for row in default_rows[:25]:
+        if not isinstance(row, dict):
+            continue
+
+        clean_row = {}
+        for column in columns:
+            col_name = column.get('name', 'Column')
+            col_type = column.get('type', 'Text Input')
+            cell_value = row.get(col_name)
+
+            if col_type == 'Checkbox':
+                clean_row[col_name] = bool(cell_value)
+            elif col_type == 'Date Picker':
+                clean_row[col_name] = _normalize_date_default(cell_value)
+            elif col_type == 'Dropdown':
+                options = _clean_dropdown_options(column.get('options', [])) or ['Option 1']
+                clean_row[col_name] = cell_value if cell_value in options else options[0]
+            elif col_type in ('Image Upload', 'Camera Input'):
+                clean_row[col_name] = None
+            else:
+                clean_row[col_name] = str(cell_value or '')
+
+        normalized_rows.append(clean_row)
+
+    return normalized_rows
+
+
 def _normalize_component_entry(component, form_columns):
     if not isinstance(component, dict):
         return None
@@ -215,12 +276,19 @@ def _normalize_component_entry(component, form_columns):
 
     if comp_type == 'Checkbox':
         normalized['default'] = bool(component.get('default', False))
+    elif comp_type in ('Text Input', 'Textarea', 'Signature'):
+        normalized['default_value'] = str(component.get('default_value', '') or '')
+    elif comp_type == 'Date Picker':
+        normalized['default_value'] = _normalize_date_default(component.get('default_value', ''))
     elif comp_type == 'Dropdown':
         options = _clean_dropdown_options(component.get('options', []))
         normalized['options'] = options or ['Option 1']
+        dropdown_default = component.get('default_value', '')
+        normalized['default_value'] = dropdown_default if dropdown_default in normalized['options'] else normalized['options'][0]
     elif comp_type == 'Table':
         normalized['columns'] = _normalize_table_columns(component.get('columns', []))
         normalized['initial_rows'] = _coerce_table_rows(component.get('initial_rows', 1))
+        normalized['default_rows'] = _normalize_table_default_rows(component.get('default_rows', []), normalized['columns'])
 
     return normalized
 
@@ -245,6 +313,11 @@ def _coerce_span(value, total_columns, comp_type):
     except (TypeError, ValueError):
         span = _default_span_for_type(comp_type, total_columns)
     return max(1, min(total_columns, span))
+
+
+def _init_widget_state(widget_key, value):
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = value
 
 
 def _table_default_cell_value(column):
@@ -375,8 +448,12 @@ def _render_table_component(component, key_prefix, idx, values):
     data_editor_key = f'{key_prefix}_table_editor_{idx}'
 
     if rows_state_key not in st.session_state:
-        seed_row = _build_default_table_row(columns)
-        st.session_state[rows_state_key] = [dict(seed_row) for _ in range(initial_rows)]
+        default_rows = _normalize_table_default_rows(component.get('default_rows', []), columns)
+        if default_rows:
+            st.session_state[rows_state_key] = default_rows
+        else:
+            seed_row = _build_default_table_row(columns)
+            st.session_state[rows_state_key] = [dict(seed_row) for _ in range(initial_rows)]
 
     existing_rows = st.session_state.get(rows_state_key, [])
     if not isinstance(existing_rows, list):
@@ -471,11 +548,19 @@ def _render_one_component(component, key_prefix, idx, values):
     if comp_type == 'Text':
         st.markdown(f'**{label}**')
     elif comp_type == 'Text Input':
-        values[label] = st.text_input(label, key=f'{key_prefix}_text_{idx}')
+        widget_key = f'{key_prefix}_text_{idx}'
+        _init_widget_state(widget_key, str(component.get('default_value', '') or ''))
+        values[label] = st.text_input(label, key=widget_key)
     elif comp_type == 'Textarea':
-        values[label] = st.text_area(label, key=f'{key_prefix}_textarea_{idx}')
+        widget_key = f'{key_prefix}_textarea_{idx}'
+        _init_widget_state(widget_key, str(component.get('default_value', '') or ''))
+        values[label] = st.text_area(label, key=widget_key)
     elif comp_type == 'Date Picker':
-        values[label] = st.date_input(label, key=f'{key_prefix}_date_{idx}')
+        widget_key = f'{key_prefix}_date_{idx}'
+        parsed_date = _parse_date_value(component.get('default_value', ''))
+        if parsed_date is not None:
+            _init_widget_state(widget_key, parsed_date)
+        values[label] = st.date_input(label, key=widget_key)
     elif comp_type == 'Dropdown':
         options = component.get('options', [])
         if not isinstance(options, list):
@@ -483,7 +568,12 @@ def _render_one_component(component, key_prefix, idx, values):
         cleaned_options = [str(opt).strip() for opt in options if str(opt).strip()]
         if not cleaned_options:
             cleaned_options = ['Option 1']
-        values[label] = st.selectbox(label, cleaned_options, key=f'{key_prefix}_dropdown_{idx}')
+        widget_key = f'{key_prefix}_dropdown_{idx}'
+        default_option = component.get('default_value', cleaned_options[0])
+        if default_option not in cleaned_options:
+            default_option = cleaned_options[0]
+        _init_widget_state(widget_key, default_option)
+        values[label] = st.selectbox(label, cleaned_options, key=widget_key)
     elif comp_type == 'Checkbox':
         values[label] = st.checkbox(
             label,
@@ -491,9 +581,11 @@ def _render_one_component(component, key_prefix, idx, values):
             key=f'{key_prefix}_checkbox_{idx}',
         )
     elif comp_type == 'Signature':
+        widget_key = f'{key_prefix}_signature_{idx}'
+        _init_widget_state(widget_key, str(component.get('default_value', '') or ''))
         values[label] = st.text_input(
             label,
-            key=f'{key_prefix}_signature_{idx}',
+            key=widget_key,
             placeholder='Type full name as signature',
         )
     elif comp_type == 'Image Upload':
@@ -1544,6 +1636,13 @@ def parse_imported_form(file_data):
         entry = {'type': comp_type, 'label': label.strip()}
         if comp_type == 'Checkbox':
             entry['default'] = bool(item.get('default', False))
+        if comp_type in ('Text Input', 'Textarea', 'Signature'):
+            entry['default_value'] = str(item.get('default_value', '') or '')
+        if comp_type == 'Date Picker':
+            raw_default_date = item.get('default_value', '')
+            if raw_default_date not in (None, '') and _parse_date_value(raw_default_date) is None:
+                raise ValueError(f'Date Picker "{label.strip()}" default_value must be YYYY-MM-DD.')
+            entry['default_value'] = _normalize_date_default(raw_default_date)
         if comp_type == 'Dropdown':
             options = item.get('options')
             if not isinstance(options, list):
@@ -1552,6 +1651,13 @@ def parse_imported_form(file_data):
             if not cleaned_options:
                 raise ValueError(f'Dropdown "{label.strip()}" must include at least one non-empty option.')
             entry['options'] = cleaned_options
+            raw_dropdown_default = item.get('default_value', '')
+            if raw_dropdown_default in ('', None):
+                entry['default_value'] = cleaned_options[0]
+            elif raw_dropdown_default not in cleaned_options:
+                raise ValueError(f'Dropdown "{label.strip()}" default_value must match one of the options.')
+            else:
+                entry['default_value'] = raw_dropdown_default
         if comp_type == 'Table':
             columns = item.get('columns')
             if not isinstance(columns, list):
@@ -1585,6 +1691,10 @@ def parse_imported_form(file_data):
 
             entry['columns'] = normalized_columns
             entry['initial_rows'] = _coerce_table_rows(item.get('initial_rows', 1))
+            raw_default_rows = item.get('default_rows', [])
+            if raw_default_rows not in (None, []) and not isinstance(raw_default_rows, list):
+                raise ValueError(f'Table "{label.strip()}" default_rows must be an array of row objects.')
+            entry['default_rows'] = _normalize_table_default_rows(raw_default_rows or [], normalized_columns)
         entry['span'] = _coerce_span(item.get('span'), imported_form_columns, comp_type)
         cleaned.append(entry)
 
@@ -1935,7 +2045,10 @@ with builder_tab:
         )
     component_label = st.text_input('Component label', key='builder_component_label', placeholder='e.g. Inspector Name')
     checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
+    component_default_value_text = ''
+    component_default_date_text = ''
     dropdown_options_text = ''
+    dropdown_default_value_text = ''
     if component_type == 'Dropdown':
         dropdown_options_text = st.text_area(
             'Dropdown options (one per line)',
@@ -1943,8 +2056,25 @@ with builder_tab:
             placeholder='Routine\nFollow-up\nIncident',
             height=100,
         )
+        dropdown_default_value_text = st.text_input(
+            'Dropdown default value (optional, must match an option)',
+            key='builder_dropdown_default_value',
+        )
+    if component_type in ('Text Input', 'Textarea', 'Signature'):
+        component_default_value_text = st.text_area(
+            'Default value (optional)',
+            key='builder_component_default_value',
+            height=90 if component_type == 'Textarea' else 68,
+        )
+    if component_type == 'Date Picker':
+        component_default_date_text = st.text_input(
+            'Default date (optional, YYYY-MM-DD)',
+            key='builder_component_default_date',
+            placeholder='2026-03-21',
+        )
     table_columns = []
     table_initial_rows = 1
+    table_default_rows_text = ''
     if component_type == 'Table':
         st.caption('Define table columns and per-column input type.')
         table_col_count = st.number_input(
@@ -1986,6 +2116,12 @@ with builder_tab:
             value=1,
             key='builder_table_initial_rows',
         )
+        table_default_rows_text = st.text_area(
+            'Default rows JSON (optional)',
+            key='builder_table_default_rows_json',
+            placeholder='[{"Column 1": "Value A", "Column 2": "Value B"}]',
+            height=100,
+        )
 
     add_col, save_col = st.columns(2)
     with add_col:
@@ -1993,15 +2129,32 @@ with builder_tab:
             if not component_label.strip():
                 st.error('Component label is required.')
             else:
+                has_validation_error = False
                 entry = {'type': component_type, 'label': component_label.strip()}
                 if component_type == 'Checkbox':
                     entry['default'] = checkbox_default
+                if component_type in ('Text Input', 'Textarea', 'Signature'):
+                    entry['default_value'] = str(component_default_value_text or '')
+                if component_type == 'Date Picker':
+                    normalized_default_date = _normalize_date_default(component_default_date_text)
+                    if component_default_date_text.strip() and not normalized_default_date:
+                        st.error('Date default must be YYYY-MM-DD.')
+                        has_validation_error = True
+                    else:
+                        entry['default_value'] = normalized_default_date
                 if component_type == 'Dropdown':
                     option_lines = [line.strip() for line in dropdown_options_text.splitlines() if line.strip()]
                     if not option_lines:
                         st.error('Dropdown components require at least one option.')
+                        has_validation_error = True
                     else:
                         entry['options'] = option_lines
+                        raw_default_option = dropdown_default_value_text.strip()
+                        if raw_default_option and raw_default_option not in option_lines:
+                            st.error('Dropdown default value must match one of the options.')
+                            has_validation_error = True
+                        else:
+                            entry['default_value'] = raw_default_option or option_lines[0]
                 if component_type == 'Table':
                     cleaned_columns = []
                     for column in table_columns:
@@ -2009,10 +2162,12 @@ with builder_tab:
                         col_type = column.get('type')
                         if not col_name:
                             st.error('Every table column must have a header.')
+                            has_validation_error = True
                             cleaned_columns = []
                             break
                         if col_type not in TABLE_COLUMN_TYPES:
                             st.error(f'Unsupported table column type: {col_type}')
+                            has_validation_error = True
                             cleaned_columns = []
                             break
 
@@ -2021,6 +2176,7 @@ with builder_tab:
                             col_options = [opt.strip() for opt in column.get('options', []) if opt.strip()]
                             if not col_options:
                                 st.error(f'Dropdown table column "{col_name}" requires at least one option.')
+                                has_validation_error = True
                                 cleaned_columns = []
                                 break
                             table_col_entry['options'] = col_options
@@ -2029,8 +2185,20 @@ with builder_tab:
                     if cleaned_columns:
                         entry['columns'] = cleaned_columns
                         entry['initial_rows'] = _coerce_table_rows(table_initial_rows)
+                        if table_default_rows_text.strip():
+                            try:
+                                parsed_rows = json.loads(table_default_rows_text)
+                            except Exception:
+                                st.error('Default rows JSON is invalid.')
+                                has_validation_error = True
+                                parsed_rows = []
+                            entry['default_rows'] = _normalize_table_default_rows(parsed_rows, cleaned_columns)
+                        else:
+                            entry['default_rows'] = []
 
                 if (
+                    not has_validation_error
+                    and
                     (component_type != 'Dropdown' or entry.get('options'))
                     and (component_type != 'Table' or entry.get('columns'))
                 ):
@@ -2099,6 +2267,9 @@ with builder_tab:
                 key=f'edit_component_default_{selected_idx}',
             )
         edit_dropdown_options = []
+        edit_default_value_text = ''
+        edit_default_date_text = ''
+        edit_dropdown_default_text = ''
         if selected_component.get('type') == 'Dropdown':
             existing_options = selected_component.get('options', [])
             if not isinstance(existing_options, list):
@@ -2110,8 +2281,27 @@ with builder_tab:
                 height=100,
             )
             edit_dropdown_options = [line.strip() for line in edit_options_text.splitlines() if line.strip()]
+            edit_dropdown_default_text = st.text_input(
+                'Dropdown default value (optional, must match an option)',
+                value=str(selected_component.get('default_value', '') or ''),
+                key=f'edit_component_dropdown_default_{selected_idx}',
+            )
+        if selected_component.get('type') in ('Text Input', 'Textarea', 'Signature'):
+            edit_default_value_text = st.text_area(
+                'Default value (optional)',
+                value=str(selected_component.get('default_value', '') or ''),
+                key=f'edit_component_default_value_{selected_idx}',
+                height=90 if selected_component.get('type') == 'Textarea' else 68,
+            )
+        if selected_component.get('type') == 'Date Picker':
+            edit_default_date_text = st.text_input(
+                'Default date (optional, YYYY-MM-DD)',
+                value=str(selected_component.get('default_value', '') or ''),
+                key=f'edit_component_default_date_{selected_idx}',
+            )
         edit_table_columns = []
         edit_table_initial_rows = _coerce_table_rows(selected_component.get('initial_rows', 1))
+        edit_table_default_rows_text = ''
         if selected_component.get('type') == 'Table':
             existing_columns = _normalize_table_columns(selected_component.get('columns', []))
             edit_col_count = st.number_input(
@@ -2162,6 +2352,12 @@ with builder_tab:
                 value=edit_table_initial_rows,
                 key=f'edit_table_initial_rows_{selected_idx}',
             )
+            edit_table_default_rows_text = st.text_area(
+                'Default rows JSON (optional)',
+                value=json.dumps(selected_component.get('default_rows', []), indent=2),
+                key=f'edit_table_default_rows_{selected_idx}',
+                height=110,
+            )
         if _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)) > 1:
             edit_span = st.slider(
                 'Component width (columns)',
@@ -2179,19 +2375,37 @@ with builder_tab:
                 if not edit_label.strip():
                     st.error('Label cannot be empty.')
                 else:
-                    st.session_state.builder_components[selected_idx]['label'] = edit_label.strip()
-                    st.session_state.builder_components[selected_idx]['span'] = _coerce_span(
+                    has_validation_error = False
+                    updated_component = dict(st.session_state.builder_components[selected_idx])
+                    updated_component['label'] = edit_label.strip()
+                    updated_component['span'] = _coerce_span(
                         edit_span,
                         _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)),
                         selected_component.get('type'),
                     )
                     if selected_component.get('type') == 'Checkbox':
-                        st.session_state.builder_components[selected_idx]['default'] = edit_default
+                        updated_component['default'] = edit_default
+                    if selected_component.get('type') in ('Text Input', 'Textarea', 'Signature'):
+                        updated_component['default_value'] = str(edit_default_value_text or '')
+                    if selected_component.get('type') == 'Date Picker':
+                        normalized_edit_date = _normalize_date_default(edit_default_date_text)
+                        if edit_default_date_text.strip() and not normalized_edit_date:
+                            st.error('Date default must be YYYY-MM-DD.')
+                            has_validation_error = True
+                        else:
+                            updated_component['default_value'] = normalized_edit_date
                     if selected_component.get('type') == 'Dropdown':
                         if not edit_dropdown_options:
                             st.error('Dropdown components require at least one option.')
+                            has_validation_error = True
                         else:
-                            st.session_state.builder_components[selected_idx]['options'] = edit_dropdown_options
+                            updated_component['options'] = edit_dropdown_options
+                            clean_dropdown_default = edit_dropdown_default_text.strip()
+                            if clean_dropdown_default and clean_dropdown_default not in edit_dropdown_options:
+                                st.error('Dropdown default value must match one of the options.')
+                                has_validation_error = True
+                            else:
+                                updated_component['default_value'] = clean_dropdown_default or edit_dropdown_options[0]
                     if selected_component.get('type') == 'Table':
                         cleaned_table_columns = []
                         for column in edit_table_columns:
@@ -2199,10 +2413,12 @@ with builder_tab:
                             col_type = column.get('type')
                             if not col_name:
                                 st.error('Every table column must have a header.')
+                                has_validation_error = True
                                 cleaned_table_columns = []
                                 break
                             if col_type not in TABLE_COLUMN_TYPES:
                                 st.error(f'Unsupported table column type: {col_type}')
+                                has_validation_error = True
                                 cleaned_table_columns = []
                                 break
 
@@ -2211,19 +2427,31 @@ with builder_tab:
                                 col_options = [opt.strip() for opt in column.get('options', []) if opt.strip()]
                                 if not col_options:
                                     st.error(f'Dropdown table column "{col_name}" requires at least one option.')
+                                    has_validation_error = True
                                     cleaned_table_columns = []
                                     break
                                 updated_col['options'] = col_options
                             cleaned_table_columns.append(updated_col)
 
                         if cleaned_table_columns:
-                            st.session_state.builder_components[selected_idx]['columns'] = cleaned_table_columns
-                            st.session_state.builder_components[selected_idx]['initial_rows'] = _coerce_table_rows(edit_table_initial_rows)
+                            updated_component['columns'] = cleaned_table_columns
+                            updated_component['initial_rows'] = _coerce_table_rows(edit_table_initial_rows)
+                            if edit_table_default_rows_text.strip():
+                                try:
+                                    parsed_rows = json.loads(edit_table_default_rows_text)
+                                    updated_component['default_rows'] = _normalize_table_default_rows(parsed_rows, cleaned_table_columns)
+                                except Exception:
+                                    st.error('Default rows JSON is invalid.')
+                                    has_validation_error = True
+                            else:
+                                updated_component['default_rows'] = []
 
                     if (
-                        (selected_component.get('type') != 'Dropdown' or edit_dropdown_options)
-                        and (selected_component.get('type') != 'Table' or st.session_state.builder_components[selected_idx].get('columns'))
+                        not has_validation_error
+                        and (selected_component.get('type') != 'Dropdown' or edit_dropdown_options)
+                        and (selected_component.get('type') != 'Table' or updated_component.get('columns'))
                     ):
+                        st.session_state.builder_components[selected_idx] = updated_component
                         persist_forms_state()
                         st.success('✅ Updated.')
         with action_cols[1]:
