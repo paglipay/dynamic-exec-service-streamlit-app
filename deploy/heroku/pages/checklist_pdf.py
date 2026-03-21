@@ -124,8 +124,108 @@ def draw_wrapped(pdf_canvas, x, y, text, font_name, font_size, max_width, line_h
     return y
 
 
+COMPONENT_TYPES = (
+    'Text',
+    'Text Input',
+    'Textarea',
+    'Date Picker',
+    'Dropdown',
+    'Checkbox',
+    'Image Upload',
+    'Camera Input',
+    'Signature',
+    'Table',
+)
+
+TABLE_COLUMN_TYPES = (
+    'Text Input',
+    'Textarea',
+    'Date Picker',
+    'Dropdown',
+    'Checkbox',
+    'Image Upload',
+    'Camera Input',
+    'Signature',
+)
+
+
+def _coerce_table_rows(value):
+    try:
+        row_count = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(25, row_count))
+
+
+def _clean_dropdown_options(options):
+    if not isinstance(options, list):
+        options = []
+    cleaned = [str(opt).strip() for opt in options if str(opt).strip()]
+    return cleaned
+
+
+def _normalize_table_columns(columns):
+    if not isinstance(columns, list):
+        columns = []
+
+    normalized = []
+    for idx, column in enumerate(columns):
+        if not isinstance(column, dict):
+            continue
+
+        name = column.get('name', f'Column {idx + 1}')
+        col_type = column.get('type', 'Text Input')
+
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if col_type not in TABLE_COLUMN_TYPES:
+            col_type = 'Text Input'
+
+        cleaned_column = {
+            'name': name.strip(),
+            'type': col_type,
+        }
+
+        if col_type == 'Dropdown':
+            options = _clean_dropdown_options(column.get('options', []))
+            cleaned_column['options'] = options or ['Option 1']
+
+        normalized.append(cleaned_column)
+
+    return normalized or [{'name': 'Column 1', 'type': 'Text Input'}]
+
+
+def _normalize_component_entry(component, form_columns):
+    if not isinstance(component, dict):
+        return None
+
+    comp_type = component.get('type')
+    label = component.get('label')
+    if comp_type not in COMPONENT_TYPES:
+        return None
+    if not isinstance(label, str) or not label.strip():
+        return None
+
+    normalized = {
+        'type': comp_type,
+        'label': label.strip(),
+        'span': _coerce_span(component.get('span'), form_columns, comp_type),
+    }
+
+    if comp_type == 'Checkbox':
+        normalized['default'] = bool(component.get('default', False))
+    elif comp_type == 'Dropdown':
+        options = _clean_dropdown_options(component.get('options', []))
+        normalized['options'] = options or ['Option 1']
+    elif comp_type == 'Table':
+        normalized['columns'] = _normalize_table_columns(component.get('columns', []))
+        normalized['initial_rows'] = _coerce_table_rows(component.get('initial_rows', 1))
+
+    return normalized
+
+
 def _default_span_for_type(comp_type, total_columns):
-    if comp_type in ('Textarea', 'Image Upload', 'Camera Input', 'Text', 'Signature'):
+    if comp_type in ('Textarea', 'Image Upload', 'Camera Input', 'Text', 'Signature', 'Table'):
         return total_columns
     return 1
 
@@ -144,6 +244,69 @@ def _coerce_span(value, total_columns, comp_type):
     except (TypeError, ValueError):
         span = _default_span_for_type(comp_type, total_columns)
     return max(1, min(total_columns, span))
+
+
+def _render_table_cell_input(column, widget_key):
+    col_name = column.get('name', 'Column')
+    col_type = column.get('type', 'Text Input')
+
+    if col_type == 'Text Input':
+        return st.text_input(col_name, key=widget_key)
+    if col_type == 'Textarea':
+        return st.text_area(col_name, key=widget_key, height=90)
+    if col_type == 'Date Picker':
+        return st.date_input(col_name, key=widget_key)
+    if col_type == 'Dropdown':
+        options = _clean_dropdown_options(column.get('options', [])) or ['Option 1']
+        return st.selectbox(col_name, options, key=widget_key)
+    if col_type == 'Checkbox':
+        return st.checkbox(col_name, key=widget_key)
+    if col_type == 'Image Upload':
+        return st.file_uploader(col_name, type=['png', 'jpg', 'jpeg'], key=widget_key)
+    if col_type == 'Camera Input':
+        return st.camera_input(col_name, key=widget_key)
+    if col_type == 'Signature':
+        return st.text_input(col_name, key=widget_key, placeholder='Type full name as signature')
+    return st.text_input(col_name, key=widget_key)
+
+
+def _render_table_component(component, key_prefix, idx, values):
+    label = component.get('label', f'Table {idx + 1}')
+    columns = _normalize_table_columns(component.get('columns', []))
+    initial_rows = _coerce_table_rows(component.get('initial_rows', 1))
+
+    st.markdown(f'**{label}**')
+    rows_key = f'{key_prefix}_table_rows_{idx}'
+    if rows_key not in st.session_state:
+        st.session_state[rows_key] = initial_rows
+
+    row_count = _coerce_table_rows(st.session_state.get(rows_key, initial_rows))
+    st.session_state[rows_key] = row_count
+
+    control_col1, control_col2, control_col3 = st.columns([1, 1, 3])
+    with control_col1:
+        if st.button('➕ Row', key=f'{key_prefix}_table_add_row_{idx}', use_container_width=True):
+            st.session_state[rows_key] = _coerce_table_rows(row_count + 1)
+            trigger_rerun()
+    with control_col2:
+        if st.button('➖ Row', key=f'{key_prefix}_table_remove_row_{idx}', use_container_width=True):
+            st.session_state[rows_key] = _coerce_table_rows(max(1, row_count - 1))
+            trigger_rerun()
+    with control_col3:
+        st.caption(f'{row_count} row(s)')
+
+    rows_data = []
+    for row_idx in range(row_count):
+        st.caption(f'Row {row_idx + 1}')
+        table_cols = st.columns(len(columns))
+        row_entry = {}
+        for col_idx, column in enumerate(columns):
+            widget_key = f'{key_prefix}_table_cell_{idx}_{row_idx}_{col_idx}'
+            with table_cols[col_idx]:
+                row_entry[column.get('name', f'Column {col_idx + 1}')] = _render_table_cell_input(column, widget_key)
+        rows_data.append(row_entry)
+
+    values[label] = rows_data
 
 
 def _render_one_component(component, key_prefix, idx, values):
@@ -189,6 +352,8 @@ def _render_one_component(component, key_prefix, idx, values):
             label,
             key=f'{key_prefix}_camera_{idx}',
         )
+    elif comp_type == 'Table':
+        _render_table_component(component, key_prefix, idx, values)
 
 
 def render_components(components, key_prefix, form_columns=1):
@@ -364,6 +529,72 @@ def build_pdf(form_name, components, values, form_columns=1):
                                 block['lines'].extend(_text_block_lines('(image has invalid size)', 'Helvetica', 12, content_width))
                         except Exception as exc:
                             block['lines'].extend(_text_block_lines(f'(image error: {exc})', 'Helvetica', 12, content_width))
+
+            elif comp_type == 'Table':
+                block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
+                columns = _normalize_table_columns(component.get('columns', []))
+                row_values = values.get(label)
+
+                if not isinstance(row_values, list) or not row_values:
+                    block['lines'].extend(_text_block_lines('(no rows added)', 'Helvetica', 12, content_width))
+                else:
+                    for row_index, row_data in enumerate(row_values, start=1):
+                        if not isinstance(row_data, dict):
+                            row_data = {}
+                        block['lines'].extend(_text_block_lines(f'Row {row_index}:', 'Helvetica-Bold', 11, content_width))
+
+                        for column in columns:
+                            col_name = column.get('name', 'Column')
+                            col_type = column.get('type', 'Text Input')
+                            cell_value = row_data.get(col_name)
+
+                            if col_type in ('Image Upload', 'Camera Input'):
+                                block['lines'].extend(_text_block_lines(f'{col_name}:', 'Helvetica', 11, content_width))
+                                images_to_render = []
+                                if col_type == 'Image Upload':
+                                    if isinstance(cell_value, list):
+                                        images_to_render = [item for item in cell_value if item is not None]
+                                    elif cell_value is not None:
+                                        images_to_render = [cell_value]
+                                elif cell_value is not None:
+                                    images_to_render = [cell_value]
+
+                                if not images_to_render:
+                                    block['lines'].extend(_text_block_lines('(no image uploaded)', 'Helvetica', 11, content_width))
+                                else:
+                                    for img_idx, uploaded_img in enumerate(images_to_render, start=1):
+                                        if len(images_to_render) > 1:
+                                            block['lines'].extend(_text_block_lines(f'Image {img_idx}:', 'Helvetica', 10, content_width))
+                                        try:
+                                            image = Image.open(uploaded_img)
+                                            img_width, img_height = image.size
+                                            if img_width > 0:
+                                                display_width = min(content_width, float(img_width))
+                                                display_height = display_width * (float(img_height) / float(img_width))
+                                                display_height = min(display_height, 140.0)
+                                                block['images'].append({
+                                                    'image': image,
+                                                    'width': display_width,
+                                                    'height': display_height,
+                                                })
+                                            else:
+                                                block['lines'].extend(_text_block_lines('(image has invalid size)', 'Helvetica', 11, content_width))
+                                        except Exception as exc:
+                                            block['lines'].extend(_text_block_lines(f'(image error: {exc})', 'Helvetica', 11, content_width))
+                            elif col_type == 'Checkbox':
+                                checked = 'Yes' if bool(cell_value) else 'No'
+                                block['lines'].extend(_text_block_lines(f'{col_name}: {checked}', 'Helvetica', 11, content_width))
+                            elif col_type == 'Date Picker':
+                                value_text = ''
+                                if cell_value is not None:
+                                    value_text = cell_value.isoformat() if hasattr(cell_value, 'isoformat') else str(cell_value)
+                                block['lines'].extend(_text_block_lines(f'{col_name}: {value_text}', 'Helvetica', 11, content_width))
+                            elif col_type == 'Textarea':
+                                block['lines'].extend(_text_block_lines(f'{col_name}:', 'Helvetica', 11, content_width))
+                                for raw_line in str(cell_value or '').split('\n'):
+                                    block['lines'].extend(_text_block_lines(raw_line, 'Helvetica', 11, content_width))
+                            else:
+                                block['lines'].extend(_text_block_lines(f'{col_name}: {str(cell_value or "")}', 'Helvetica', 11, content_width))
 
             if not block['lines']:
                 block['lines'].append(('', 'Helvetica', 12))
@@ -558,13 +789,19 @@ def normalize_form_data(form_data):
     if not isinstance(components, list):
         components = []
     form_columns = _coerce_layout_columns(form_columns)
+    normalized_components = []
+    for item in components:
+        normalized_item = _normalize_component_entry(item, form_columns)
+        if normalized_item is not None:
+            normalized_components.append(normalized_item)
+
     if not isinstance(email_recipients_text, str):
         email_recipients_text = ''
     if not isinstance(email_optional_message, str):
         email_optional_message = ''
 
     return {
-        'components': list(components),
+        'components': normalized_components,
         'form_columns': form_columns,
         'email_recipients_text': email_recipients_text,
         'email_optional_message': email_optional_message,
@@ -1072,17 +1309,7 @@ def parse_imported_form(file_data):
     if not isinstance(components, list):
         raise ValueError('Imported JSON must include a components array.')
 
-    allowed_types = {
-        'Text',
-        'Text Input',
-        'Textarea',
-        'Date Picker',
-        'Dropdown',
-        'Checkbox',
-        'Image Upload',
-        'Camera Input',
-        'Signature',
-    }
+    allowed_types = set(COMPONENT_TYPES)
     imported_form_columns = _coerce_layout_columns(payload.get('form_columns', 1))
     cleaned = []
     for item in components:
@@ -1106,6 +1333,39 @@ def parse_imported_form(file_data):
             if not cleaned_options:
                 raise ValueError(f'Dropdown "{label.strip()}" must include at least one non-empty option.')
             entry['options'] = cleaned_options
+        if comp_type == 'Table':
+            columns = item.get('columns')
+            if not isinstance(columns, list):
+                raise ValueError(f'Table "{label.strip()}" must include a columns array.')
+
+            normalized_columns = []
+            for col_idx, column in enumerate(columns):
+                if not isinstance(column, dict):
+                    raise ValueError(f'Table "{label.strip()}" column #{col_idx + 1} must be an object.')
+                col_name = column.get('name')
+                col_type = column.get('type')
+                if not isinstance(col_name, str) or not col_name.strip():
+                    raise ValueError(f'Table "{label.strip()}" column #{col_idx + 1} must include a non-empty name.')
+                if col_type not in TABLE_COLUMN_TYPES:
+                    raise ValueError(f'Table "{label.strip()}" column "{col_name}" has unsupported type: {col_type}')
+
+                cleaned_column = {'name': col_name.strip(), 'type': col_type}
+                if col_type == 'Dropdown':
+                    column_options = column.get('options')
+                    if not isinstance(column_options, list):
+                        raise ValueError(f'Table "{label.strip()}" dropdown column "{col_name}" must include options array.')
+                    cleaned_col_options = [str(opt).strip() for opt in column_options if str(opt).strip()]
+                    if not cleaned_col_options:
+                        raise ValueError(f'Table "{label.strip()}" dropdown column "{col_name}" must include at least one option.')
+                    cleaned_column['options'] = cleaned_col_options
+
+                normalized_columns.append(cleaned_column)
+
+            if not normalized_columns:
+                raise ValueError(f'Table "{label.strip()}" must include at least one column.')
+
+            entry['columns'] = normalized_columns
+            entry['initial_rows'] = _coerce_table_rows(item.get('initial_rows', 1))
         entry['span'] = _coerce_span(item.get('span'), imported_form_columns, comp_type)
         cleaned.append(entry)
 
@@ -1142,6 +1402,7 @@ TYPE_ICONS = {
     'Image Upload': '🖼️',
     'Camera Input': '📷',
     'Signature': '✍️',
+    'Table': '📊',
 }
 
 @st.dialog('📋 PDF Preview', width='large')
@@ -1436,17 +1697,7 @@ with builder_tab:
     st.markdown('**➕ Add Component**')
     component_type = st.selectbox(
         'Component type',
-        [
-            'Text',
-            'Text Input',
-            'Textarea',
-            'Date Picker',
-            'Dropdown',
-            'Checkbox',
-            'Image Upload',
-            'Camera Input',
-            'Signature',
-        ],
+        list(COMPONENT_TYPES),
         format_func=lambda t: f'{TYPE_ICONS.get(t, "")} {t}',
     )
     selected_layout_columns = _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1))
@@ -1473,6 +1724,49 @@ with builder_tab:
             placeholder='Routine\nFollow-up\nIncident',
             height=100,
         )
+    table_columns = []
+    table_initial_rows = 1
+    if component_type == 'Table':
+        st.caption('Define table columns and per-column input type.')
+        table_col_count = st.number_input(
+            'Table column count',
+            min_value=1,
+            max_value=8,
+            value=2,
+            key='builder_table_col_count',
+        )
+        for col_idx in range(int(table_col_count)):
+            default_col_name = f'Column {col_idx + 1}'
+            col_header = st.text_input(
+                f'Column {col_idx + 1} header',
+                value=default_col_name,
+                key=f'builder_table_col_name_{col_idx}',
+            )
+            col_type = st.selectbox(
+                f'Column {col_idx + 1} type',
+                list(TABLE_COLUMN_TYPES),
+                key=f'builder_table_col_type_{col_idx}',
+            )
+            table_column_entry = {
+                'name': col_header.strip(),
+                'type': col_type,
+            }
+            if col_type == 'Dropdown':
+                options_text = st.text_area(
+                    f'Column {col_idx + 1} dropdown options (one per line)',
+                    key=f'builder_table_col_options_{col_idx}',
+                    height=90,
+                )
+                table_column_entry['options'] = [line.strip() for line in options_text.splitlines() if line.strip()]
+            table_columns.append(table_column_entry)
+
+        table_initial_rows = st.number_input(
+            'Initial row count in Render tab',
+            min_value=1,
+            max_value=25,
+            value=1,
+            key='builder_table_initial_rows',
+        )
 
     add_col, save_col = st.columns(2)
     with add_col:
@@ -1489,8 +1783,38 @@ with builder_tab:
                         st.error('Dropdown components require at least one option.')
                     else:
                         entry['options'] = option_lines
+                if component_type == 'Table':
+                    cleaned_columns = []
+                    for column in table_columns:
+                        col_name = str(column.get('name', '')).strip()
+                        col_type = column.get('type')
+                        if not col_name:
+                            st.error('Every table column must have a header.')
+                            cleaned_columns = []
+                            break
+                        if col_type not in TABLE_COLUMN_TYPES:
+                            st.error(f'Unsupported table column type: {col_type}')
+                            cleaned_columns = []
+                            break
 
-                if component_type != 'Dropdown' or entry.get('options'):
+                        table_col_entry = {'name': col_name, 'type': col_type}
+                        if col_type == 'Dropdown':
+                            col_options = [opt.strip() for opt in column.get('options', []) if opt.strip()]
+                            if not col_options:
+                                st.error(f'Dropdown table column "{col_name}" requires at least one option.')
+                                cleaned_columns = []
+                                break
+                            table_col_entry['options'] = col_options
+                        cleaned_columns.append(table_col_entry)
+
+                    if cleaned_columns:
+                        entry['columns'] = cleaned_columns
+                        entry['initial_rows'] = _coerce_table_rows(table_initial_rows)
+
+                if (
+                    (component_type != 'Dropdown' or entry.get('options'))
+                    and (component_type != 'Table' or entry.get('columns'))
+                ):
                     entry['span'] = _coerce_span(component_span, selected_layout_columns, component_type)
                     st.session_state.builder_components.append(entry)
                     persist_forms_state()
@@ -1567,6 +1891,58 @@ with builder_tab:
                 height=100,
             )
             edit_dropdown_options = [line.strip() for line in edit_options_text.splitlines() if line.strip()]
+        edit_table_columns = []
+        edit_table_initial_rows = _coerce_table_rows(selected_component.get('initial_rows', 1))
+        if selected_component.get('type') == 'Table':
+            existing_columns = _normalize_table_columns(selected_component.get('columns', []))
+            edit_col_count = st.number_input(
+                'Table column count',
+                min_value=1,
+                max_value=8,
+                value=len(existing_columns),
+                key=f'edit_table_col_count_{selected_idx}',
+            )
+
+            for col_idx in range(int(edit_col_count)):
+                current_column = existing_columns[col_idx] if col_idx < len(existing_columns) else {'name': f'Column {col_idx + 1}', 'type': 'Text Input'}
+                edit_col_name = st.text_input(
+                    f'Column {col_idx + 1} header',
+                    value=current_column.get('name', f'Column {col_idx + 1}'),
+                    key=f'edit_table_col_name_{selected_idx}_{col_idx}',
+                )
+                col_type_options = list(TABLE_COLUMN_TYPES)
+                default_col_type = current_column.get('type', 'Text Input')
+                default_col_type_index = col_type_options.index(default_col_type) if default_col_type in col_type_options else 0
+                edit_col_type = st.selectbox(
+                    f'Column {col_idx + 1} type',
+                    col_type_options,
+                    index=default_col_type_index,
+                    key=f'edit_table_col_type_{selected_idx}_{col_idx}',
+                )
+                updated_column = {
+                    'name': edit_col_name.strip(),
+                    'type': edit_col_type,
+                }
+                if edit_col_type == 'Dropdown':
+                    existing_col_options = current_column.get('options', [])
+                    if not isinstance(existing_col_options, list):
+                        existing_col_options = []
+                    edit_col_options_text = st.text_area(
+                        f'Column {col_idx + 1} dropdown options (one per line)',
+                        value='\n'.join(str(opt) for opt in existing_col_options),
+                        key=f'edit_table_col_options_{selected_idx}_{col_idx}',
+                        height=90,
+                    )
+                    updated_column['options'] = [line.strip() for line in edit_col_options_text.splitlines() if line.strip()]
+                edit_table_columns.append(updated_column)
+
+            edit_table_initial_rows = st.number_input(
+                'Initial row count in Render tab',
+                min_value=1,
+                max_value=25,
+                value=edit_table_initial_rows,
+                key=f'edit_table_initial_rows_{selected_idx}',
+            )
         if _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)) > 1:
             edit_span = st.slider(
                 'Component width (columns)',
@@ -1597,8 +1973,38 @@ with builder_tab:
                             st.error('Dropdown components require at least one option.')
                         else:
                             st.session_state.builder_components[selected_idx]['options'] = edit_dropdown_options
+                    if selected_component.get('type') == 'Table':
+                        cleaned_table_columns = []
+                        for column in edit_table_columns:
+                            col_name = str(column.get('name', '')).strip()
+                            col_type = column.get('type')
+                            if not col_name:
+                                st.error('Every table column must have a header.')
+                                cleaned_table_columns = []
+                                break
+                            if col_type not in TABLE_COLUMN_TYPES:
+                                st.error(f'Unsupported table column type: {col_type}')
+                                cleaned_table_columns = []
+                                break
 
-                    if selected_component.get('type') != 'Dropdown' or edit_dropdown_options:
+                            updated_col = {'name': col_name, 'type': col_type}
+                            if col_type == 'Dropdown':
+                                col_options = [opt.strip() for opt in column.get('options', []) if opt.strip()]
+                                if not col_options:
+                                    st.error(f'Dropdown table column "{col_name}" requires at least one option.')
+                                    cleaned_table_columns = []
+                                    break
+                                updated_col['options'] = col_options
+                            cleaned_table_columns.append(updated_col)
+
+                        if cleaned_table_columns:
+                            st.session_state.builder_components[selected_idx]['columns'] = cleaned_table_columns
+                            st.session_state.builder_components[selected_idx]['initial_rows'] = _coerce_table_rows(edit_table_initial_rows)
+
+                    if (
+                        (selected_component.get('type') != 'Dropdown' or edit_dropdown_options)
+                        and (selected_component.get('type') != 'Table' or st.session_state.builder_components[selected_idx].get('columns'))
+                    ):
                         persist_forms_state()
                         st.success('✅ Updated.')
         with action_cols[1]:
