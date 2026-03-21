@@ -3,6 +3,7 @@ import tempfile
 import json
 import base64
 import inspect
+import math
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from io import BytesIO
@@ -246,28 +247,119 @@ def _coerce_span(value, total_columns, comp_type):
     return max(1, min(total_columns, span))
 
 
-def _render_table_cell_input(column, widget_key):
-    col_name = column.get('name', 'Column')
+def _table_default_cell_value(column):
     col_type = column.get('type', 'Text Input')
-
-    if col_type == 'Text Input':
-        return st.text_input(col_name, key=widget_key)
-    if col_type == 'Textarea':
-        return st.text_area(col_name, key=widget_key, height=90)
-    if col_type == 'Date Picker':
-        return st.date_input(col_name, key=widget_key)
-    if col_type == 'Dropdown':
-        options = _clean_dropdown_options(column.get('options', [])) or ['Option 1']
-        return st.selectbox(col_name, options, key=widget_key)
     if col_type == 'Checkbox':
-        return st.checkbox(col_name, key=widget_key)
-    if col_type == 'Image Upload':
-        return st.file_uploader(col_name, type=['png', 'jpg', 'jpeg'], key=widget_key)
-    if col_type == 'Camera Input':
-        return st.camera_input(col_name, key=widget_key)
-    if col_type == 'Signature':
-        return st.text_input(col_name, key=widget_key, placeholder='Type full name as signature')
-    return st.text_input(col_name, key=widget_key)
+        return False
+    if col_type == 'Date Picker':
+        return None
+    return ''
+
+
+def _build_default_table_row(columns):
+    return {
+        column.get('name', f'Column {idx + 1}'): _table_default_cell_value(column)
+        for idx, column in enumerate(columns)
+    }
+
+
+def _sanitize_table_editor_value(value, col_type, options=None):
+    if isinstance(value, float) and math.isnan(value):
+        value = None
+
+    if col_type == 'Checkbox':
+        return bool(value)
+
+    if col_type == 'Date Picker':
+        return value if value not in ('', None) else None
+
+    if col_type == 'Dropdown':
+        cleaned_options = _clean_dropdown_options(options or []) or ['Option 1']
+        if value in cleaned_options:
+            return value
+        return cleaned_options[0]
+
+    return str(value or '')
+
+
+def _get_data_editor_callable():
+    if hasattr(st, 'data_editor'):
+        return st.data_editor
+    if hasattr(st, 'experimental_data_editor'):
+        return st.experimental_data_editor
+    return None
+
+
+def _build_table_editor_column_config(columns):
+    if not hasattr(st, 'column_config'):
+        return {}
+
+    config = {}
+    for column in columns:
+        col_name = column.get('name', 'Column')
+        col_type = column.get('type', 'Text Input')
+
+        if col_type == 'Checkbox':
+            config[col_name] = st.column_config.CheckboxColumn(col_name)
+        elif col_type == 'Date Picker':
+            config[col_name] = st.column_config.DateColumn(col_name, format='YYYY-MM-DD')
+        elif col_type == 'Dropdown':
+            options = _clean_dropdown_options(column.get('options', [])) or ['Option 1']
+            config[col_name] = st.column_config.SelectboxColumn(col_name, options=options)
+        else:
+            config[col_name] = st.column_config.TextColumn(col_name)
+
+    return config
+
+
+def _extract_editor_rows(edited_value):
+    if edited_value is None:
+        return []
+
+    if isinstance(edited_value, list):
+        return [row for row in edited_value if isinstance(row, dict)]
+
+    if isinstance(edited_value, dict):
+        data_rows = edited_value.get('data')
+        if isinstance(data_rows, list):
+            return [row for row in data_rows if isinstance(row, dict)]
+        return []
+
+    if hasattr(edited_value, 'to_dict'):
+        try:
+            return edited_value.to_dict(orient='records')
+        except Exception:
+            return []
+
+    return []
+
+
+def _render_table_media_fields(columns, rows_data, key_prefix, idx):
+    media_columns = [
+        column
+        for column in columns
+        if column.get('type') in ('Image Upload', 'Camera Input')
+    ]
+    if not media_columns:
+        return
+
+    with st.expander('Row media fields', expanded=False):
+        for row_idx, row_entry in enumerate(rows_data):
+            st.caption(f'Row {row_idx + 1}')
+            widget_cols = st.columns(max(1, len(media_columns)))
+            for media_idx, column in enumerate(media_columns):
+                col_name = column.get('name', f'Column {media_idx + 1}')
+                col_type = column.get('type', 'Image Upload')
+                widget_key = f'{key_prefix}_table_media_{idx}_{row_idx}_{media_idx}'
+                with widget_cols[media_idx]:
+                    if col_type == 'Image Upload':
+                        row_entry[col_name] = st.file_uploader(
+                            col_name,
+                            type=['png', 'jpg', 'jpeg'],
+                            key=widget_key,
+                        )
+                    else:
+                        row_entry[col_name] = st.camera_input(col_name, key=widget_key)
 
 
 def _render_table_component(component, key_prefix, idx, values):
@@ -276,37 +368,98 @@ def _render_table_component(component, key_prefix, idx, values):
     initial_rows = _coerce_table_rows(component.get('initial_rows', 1))
 
     st.markdown(f'**{label}**')
-    rows_key = f'{key_prefix}_table_rows_{idx}'
-    if rows_key not in st.session_state:
-        st.session_state[rows_key] = initial_rows
+    rows_state_key = f'{key_prefix}_table_rows_data_{idx}'
+    data_editor_key = f'{key_prefix}_table_editor_{idx}'
 
-    row_count = _coerce_table_rows(st.session_state.get(rows_key, initial_rows))
-    st.session_state[rows_key] = row_count
+    if rows_state_key not in st.session_state:
+        seed_row = _build_default_table_row(columns)
+        st.session_state[rows_state_key] = [dict(seed_row) for _ in range(initial_rows)]
 
-    control_col1, control_col2, control_col3 = st.columns([1, 1, 3])
-    with control_col1:
-        if st.button('➕ Row', key=f'{key_prefix}_table_add_row_{idx}', use_container_width=True):
-            st.session_state[rows_key] = _coerce_table_rows(row_count + 1)
-            trigger_rerun()
-    with control_col2:
-        if st.button('➖ Row', key=f'{key_prefix}_table_remove_row_{idx}', use_container_width=True):
-            st.session_state[rows_key] = _coerce_table_rows(max(1, row_count - 1))
-            trigger_rerun()
-    with control_col3:
-        st.caption(f'{row_count} row(s)')
+    existing_rows = st.session_state.get(rows_state_key, [])
+    if not isinstance(existing_rows, list):
+        existing_rows = []
 
-    rows_data = []
-    for row_idx in range(row_count):
-        st.caption(f'Row {row_idx + 1}')
-        table_cols = st.columns(len(columns))
-        row_entry = {}
-        for col_idx, column in enumerate(columns):
-            widget_key = f'{key_prefix}_table_cell_{idx}_{row_idx}_{col_idx}'
-            with table_cols[col_idx]:
-                row_entry[column.get('name', f'Column {col_idx + 1}')] = _render_table_cell_input(column, widget_key)
-        rows_data.append(row_entry)
+    editor_columns = [
+        column
+        for column in columns
+        if column.get('type') not in ('Image Upload', 'Camera Input')
+    ]
 
-    values[label] = rows_data
+    editor_rows = []
+    for row_entry in existing_rows:
+        if not isinstance(row_entry, dict):
+            row_entry = {}
+        editor_row = {}
+        for column in editor_columns:
+            col_name = column.get('name', 'Column')
+            editor_row[col_name] = row_entry.get(col_name, _table_default_cell_value(column))
+        editor_rows.append(editor_row)
+
+    if not editor_rows:
+        editor_rows = [_build_default_table_row(editor_columns)] if editor_columns else [{}]
+
+    data_editor_fn = _get_data_editor_callable()
+    if data_editor_fn is None:
+        st.warning('Table editor is unavailable in this Streamlit version.')
+        values[label] = existing_rows
+        return
+
+    if editor_columns:
+        edited = data_editor_fn(
+            editor_rows,
+            key=data_editor_key,
+            num_rows='dynamic',
+            use_container_width=True,
+            hide_index=True,
+            column_config=_build_table_editor_column_config(editor_columns),
+        )
+
+        edited_rows = _extract_editor_rows(edited)
+        if len(edited_rows) > 25:
+            st.warning('Maximum 25 rows are supported. Extra rows were ignored.')
+            edited_rows = edited_rows[:25]
+
+        if not edited_rows:
+            edited_rows = [_build_default_table_row(editor_columns)]
+    else:
+        row_count_key = f'{key_prefix}_table_media_only_rows_{idx}'
+        if row_count_key not in st.session_state:
+            st.session_state[row_count_key] = max(1, min(25, len(existing_rows) or initial_rows))
+        st.session_state[row_count_key] = st.number_input(
+            'Rows',
+            min_value=1,
+            max_value=25,
+            value=int(st.session_state.get(row_count_key, 1)),
+            step=1,
+            key=f'{row_count_key}_input',
+        )
+        edited_rows = [{} for _ in range(int(st.session_state[row_count_key]))]
+
+    merged_rows = []
+    for row_idx, editor_row in enumerate(edited_rows):
+        base_row = {}
+        previous_row = existing_rows[row_idx] if row_idx < len(existing_rows) and isinstance(existing_rows[row_idx], dict) else {}
+
+        for column in columns:
+            col_name = column.get('name', 'Column')
+            col_type = column.get('type', 'Text Input')
+
+            if col_type in ('Image Upload', 'Camera Input'):
+                base_row[col_name] = previous_row.get(col_name)
+            else:
+                base_row[col_name] = _sanitize_table_editor_value(
+                    editor_row.get(col_name),
+                    col_type,
+                    column.get('options', []),
+                )
+
+        merged_rows.append(base_row)
+
+    _render_table_media_fields(columns, merged_rows, key_prefix, idx)
+    st.caption(f'{len(merged_rows)} row(s)')
+
+    st.session_state[rows_state_key] = merged_rows
+    values[label] = merged_rows
 
 
 def _render_one_component(component, key_prefix, idx, values):
