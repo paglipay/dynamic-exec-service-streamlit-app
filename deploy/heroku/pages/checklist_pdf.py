@@ -3,6 +3,7 @@ import tempfile
 import json
 from datetime import datetime, timezone
 from io import BytesIO
+from urllib.parse import urlparse, unquote
 
 import streamlit as st
 from PIL import Image
@@ -251,6 +252,18 @@ def _get_setting(name, default=None):
     return default
 
 
+def _database_name_from_uri(mongo_uri):
+    try:
+        parsed = urlparse(mongo_uri)
+        # mongodb+srv://.../<db_name>?... -> path is '/<db_name>'
+        candidate = unquote((parsed.path or '').lstrip('/')).strip()
+        if candidate:
+            return candidate
+    except Exception:
+        pass
+    return ''
+
+
 @st.cache_resource(show_spinner=False)
 def _get_forms_collection(mongo_uri, db_name, collection_name):
     if MongoClient is None:
@@ -268,7 +281,10 @@ def get_forms_collection():
     if not mongo_uri:
         return None
 
-    db_name = str(_get_setting('MONGODB_DB', 'app_data')).strip() or 'app_data'
+    configured_db_name = _get_setting('MONGODB_DB')
+    db_name = str(configured_db_name).strip() if configured_db_name is not None else ''
+    if not db_name:
+        db_name = _database_name_from_uri(mongo_uri) or 'app_data'
     collection_name = str(_get_setting('MONGODB_FORMS_COLLECTION', 'user_forms')).strip() or 'user_forms'
 
     try:
