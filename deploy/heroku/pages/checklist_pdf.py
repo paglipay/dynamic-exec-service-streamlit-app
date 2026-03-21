@@ -15,6 +15,11 @@ try:
 except ImportError:
     convert_from_bytes = None
 
+try:
+    from streamlit_js_eval import streamlit_js_eval
+except ImportError:
+    streamlit_js_eval = None
+
 require_authentication('Checklist Form to PDF')
 st.title('Checklist Form to PDF (Basic Test)')
 st.caption('Simplified page for testing core functionality: build form, enter values, download unsigned PDF.')
@@ -303,13 +308,81 @@ TYPE_ICONS = {
     'Camera Input': '📷',
 }
 
-forms_tab, builder_tab, render_tab = st.tabs(['📂 My Forms', '📝 Form Builder', '📋 Render & Export'])
+@st.dialog('📋 PDF Preview', width='large')
+def show_pdf_preview_modal():
+    pdf_name = st.session_state.get('generated_pdf_name', 'form')
+    pdf_data = st.session_state.get('generated_pdf_data')
+    if not pdf_data:
+        st.warning('No PDF generated yet.')
+        return
+
+    preview_images = pdf_to_images(pdf_data)
+    if preview_images:
+        st.caption(f'{len(preview_images)} page(s)')
+        if len(preview_images) == 1:
+            st.image(preview_images[0], use_column_width=True, caption='Page 1')
+        else:
+            page_tabs = st.tabs([f'Page {i + 1}' for i in range(len(preview_images))])
+            for idx, tab in enumerate(page_tabs):
+                with tab:
+                    st.image(preview_images[idx], use_column_width=True, caption=f'Page {idx + 1}')
+    else:
+        st.info('PDF image preview not available — install poppler-utils to enable it.')
+        st.code('sudo apt-get install poppler-utils && pip install pdf2image', language='bash')
+
+    st.markdown('---')
+    st.download_button(
+        '⬇️ Download PDF',
+        data=pdf_data,
+        file_name=f'{pdf_name}_basic.pdf',
+        mime='application/pdf',
+        use_container_width=True,
+    )
+
+
+# Responsive layout: tabs on narrow, 2-col on medium, 3-col on wide
+_screen_width = (
+    streamlit_js_eval(js_expressions='window.innerWidth', key='screen_width_checklist')
+    if streamlit_js_eval
+    else None
+)
+
+if _screen_width is None or _screen_width < 640:
+    forms_tab, builder_tab, render_tab = st.tabs(['📂 My Forms', '📝 Form Builder', '📋 Render & Export'])
+else:
+    _col1, _col2 = st.columns([1, 2])
+    forms_tab = _col1
+    with _col2:
+        builder_tab, render_tab = st.tabs(['📝 Form Builder', '📋 Render & Export'])
 
 # ── Tab 1: My Forms ───────────────────────────────────────────────────────────
 with forms_tab:
     st.subheader('📂 My Forms')
 
     form_names = list(st.session_state.forms.keys())
+
+    # Import form JSON (first)
+    st.markdown('**📤 Import Form**')
+    import_file = st.file_uploader('Import form JSON', type=['json'], key='import_form_json')
+    import_target_name = st.text_input('Imported form name override (optional)', key='import_form_name_override')
+    if st.button('📤 Import Form', use_container_width=True):
+        if import_file is None:
+            st.error('Choose a JSON file to import.')
+        else:
+            try:
+                imported_name, imported_components = parse_imported_form(import_file.getvalue())
+                target_name = import_target_name.strip() or imported_name or f"imported_form_{st.session_state.temp_form_counter}"
+                if not imported_name and not import_target_name.strip():
+                    st.session_state.temp_form_counter += 1
+                st.session_state.forms[target_name] = {'components': imported_components}
+                load_builder_from_form(target_name)
+                st.session_state.pending_save_form_name = target_name
+                st.success(f'✅ Imported form: "{target_name}".')
+                trigger_rerun()
+            except Exception as exc:
+                st.error(f'Import failed: {exc}')
+
+    st.markdown('---')
 
     # Form list with stats
     if form_names:
@@ -394,8 +467,8 @@ with forms_tab:
 
     st.markdown('---')
 
-    # Export / Import
-    st.markdown('**⬇️ Export / 📤 Import Form Definition**')
+    # Export
+    st.markdown('**⬇️ Export Form**')
     export_form_name = st.session_state.save_form_name.strip() or st.session_state.builder_form_name
     export_payload = {
         'name': export_form_name,
@@ -408,25 +481,6 @@ with forms_tab:
         mime='application/json',
         use_container_width=True,
     )
-
-    import_file = st.file_uploader('Import form JSON', type=['json'], key='import_form_json')
-    import_target_name = st.text_input('Imported form name override (optional)', key='import_form_name_override')
-    if st.button('📤 Import Form', use_container_width=True):
-        if import_file is None:
-            st.error('Choose a JSON file to import.')
-        else:
-            try:
-                imported_name, imported_components = parse_imported_form(import_file.getvalue())
-                target_name = import_target_name.strip() or imported_name or f"imported_form_{st.session_state.temp_form_counter}"
-                if not imported_name and not import_target_name.strip():
-                    st.session_state.temp_form_counter += 1
-                st.session_state.forms[target_name] = {'components': imported_components}
-                load_builder_from_form(target_name)
-                st.session_state.pending_save_form_name = target_name
-                st.success(f'✅ Imported form: "{target_name}".')
-                trigger_rerun()
-            except Exception as exc:
-                st.error(f'Import failed: {exc}')
 
 # ── Tab 2: Form Builder ───────────────────────────────────────────────────────
 with builder_tab:
@@ -565,41 +619,12 @@ with render_tab:
 
         col1, col2 = st.columns(2)
         with col1:
-            if st.button('📄 Generate PDF Preview', use_container_width=True):
+            if st.button('📄 Generate & Preview PDF', use_container_width=True):
                 pdf_data = build_pdf(export_name, st.session_state.builder_components, live_values)
                 st.session_state.generated_pdf_data = pdf_data
                 st.session_state.generated_pdf_name = export_name
-                st.success('✅ PDF generated! See preview below.')
+                show_pdf_preview_modal()
         with col2:
-            if st.button('🔄 Clear Preview', use_container_width=True):
-                st.session_state.generated_pdf_data = None
-                trigger_rerun()
-
-        if st.session_state.generated_pdf_data:
-            st.markdown('---')
-            st.subheader('📋 PDF Preview')
-
-            preview_images = pdf_to_images(st.session_state.generated_pdf_data)
-
-            if preview_images:
-                st.caption(f'{len(preview_images)} page(s)')
-                if len(preview_images) == 1:
-                    st.image(preview_images[0], use_column_width=True, caption='Page 1')
-                else:
-                    page_tabs = st.tabs([f'Page {i + 1}' for i in range(len(preview_images))])
-                    for idx, tab in enumerate(page_tabs):
-                        with tab:
-                            st.image(preview_images[idx], use_column_width=True, caption=f'Page {idx + 1}')
-            else:
-                st.info('PDF preview not available — install poppler-utils to enable image previews.')
-                st.code('sudo apt-get install poppler-utils && pip install pdf2image', language='bash')
-
-            st.markdown('---')
-            st.subheader('💾 Download PDF')
-            st.download_button(
-                '⬇️ Download PDF',
-                data=st.session_state.generated_pdf_data,
-                file_name=f'{st.session_state.generated_pdf_name}_basic.pdf',
-                mime='application/pdf',
-                use_container_width=True,
-            )
+            if st.session_state.generated_pdf_data:
+                if st.button('👁️ View Last Preview', use_container_width=True):
+                    show_pdf_preview_modal()
