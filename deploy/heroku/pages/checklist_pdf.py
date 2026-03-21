@@ -7,7 +7,7 @@ import math
 from datetime import date, datetime, timezone
 from email.message import EmailMessage
 from io import BytesIO
-from urllib.parse import urlparse, unquote
+from urllib.parse import quote, urlparse, unquote
 
 import streamlit as st
 from PIL import Image
@@ -1456,34 +1456,65 @@ def send_signed_pdf_email(recipients, message_text, signed_pdf_data, filename, f
     gmail_service.users().messages().send(userId='me', body={'raw': encoded}).execute()
 
 
-def find_form_by_name_any_user(form_name):
-    """
-    Search for a form by name across all users' profiles.
-    Returns (username, form_data) tuple if found, else (None, None).
-    """
-    if not form_name or not isinstance(form_name, str):
-        return None, None
-    
+def _get_query_param_value(query_params, key):
+    value = query_params.get(key)
+    if isinstance(value, list):
+        value = value[0] if value else ''
+    if value is None:
+        return ''
+    return str(value).strip()
+
+
+def find_form_for_user(username, form_name):
+    if not username or not form_name:
+        return None
+
     collection = get_forms_collection()
     if collection is None:
-        return None, None
-    
+        return None
+
     try:
-        doc = collection.find_one({'page': PERSISTENCE_PAGE_KEY})
-        while doc:
-            existing_user = doc.get('username', '')
-            forms = doc.get('forms', {})
-            if form_name in forms:
-                form_data = normalize_form_data(forms.get(form_name, {}))
-                return existing_user, form_data
-            doc = collection.find_one(
-                {'page': PERSISTENCE_PAGE_KEY},
-                {'_id': {'$gt': doc.get('_id')}}
-            )
+        doc = collection.find_one(
+            {'username': username, 'page': PERSISTENCE_PAGE_KEY},
+            {'forms': 1},
+        )
     except Exception:
-        pass
-    
-    return None, None
+        return None
+
+    if not isinstance(doc, dict):
+        return None
+
+    forms = normalize_forms_map(doc.get('forms', {}))
+    form_data = forms.get(form_name)
+    if not isinstance(form_data, dict):
+        return None
+
+    return normalize_form_data(form_data)
+
+
+def _find_existing_shared_copy_name(form_name, source_username, forms):
+    shared_base_name = f'{form_name} (from {source_username})'
+    if shared_base_name in forms:
+        return shared_base_name
+
+    matches = sorted(
+        name for name in forms
+        if name.startswith(f'{shared_base_name} (copy ')
+    )
+    return matches[0] if matches else ''
+
+
+def _build_shared_copy_name(form_name, source_username, forms):
+    shared_base_name = f'{form_name} (from {source_username})'
+    if shared_base_name not in forms:
+        return shared_base_name
+
+    counter = 1
+    while True:
+        candidate = f'{shared_base_name} (copy {counter})'
+        if candidate not in forms:
+            return candidate
+        counter += 1
 
 
 def load_persisted_forms(username):
@@ -1746,49 +1777,70 @@ def parse_imported_form(file_data):
 init_state()
 
 # ── URL Parameter Handling ────────────────────────────────────────────────────
-# Load a specific form via URL: ?form=FormName
-# If form is in another user's profile, create a copy in current user's profile
+# Own form: ?form=FormName
+# Shared form: ?user=Username&form=FormName
 query_params = st.query_params
-_url_form_loaded = False
-_url_form_owner = None
-if 'form' in query_params:
-    requested_form_name = query_params['form']
-    if isinstance(requested_form_name, list):
-        requested_form_name = requested_form_name[0]  # Handle list of params
-    requested_form_name = requested_form_name.strip()
-    
-    # First: Check if form exists in current user's profile
-    if requested_form_name in st.session_state.forms:
+requested_form_name = _get_query_param_value(query_params, 'form')
+requested_source_user = (
+    _get_query_param_value(query_params, 'user')
+    or _get_query_param_value(query_params, 'profile')
+)
+current_username = get_authenticated_username()
+_url_form_message = ''
+
+if requested_form_name:
+    if requested_source_user and requested_source_user != current_username:
+        existing_shared_copy_name = _find_existing_shared_copy_name(
+            requested_form_name,
+            requested_source_user,
+            st.session_state.forms,
+        )
+        if existing_shared_copy_name:
+            load_builder_from_form(existing_shared_copy_name)
+            st.session_state.url_loaded_form = existing_shared_copy_name
+            _url_form_message = (
+                f'Loaded shared copy of "{requested_form_name}" from user '
+                f'**{requested_source_user}** as **{existing_shared_copy_name}**.'
+            )
+        else:
+            source_form = find_form_for_user(requested_source_user, requested_form_name)
+            if source_form is None:
+                st.warning(
+                    f'Form "{requested_form_name}" was not found in user profile '
+                    f'"{requested_source_user}".'
+                )
+            else:
+                copy_name = _build_shared_copy_name(
+                    requested_form_name,
+                    requested_source_user,
+                    st.session_state.forms,
+                )
+                st.session_state.forms[copy_name] = normalize_form_data(source_form)
+                load_builder_from_form(copy_name)
+                st.session_state.url_loaded_form = copy_name
+                st.session_state.url_form_source = requested_source_user
+                persist_forms_state()
+                _url_form_message = (
+                    f'Copied form "{requested_form_name}" from user '
+                    f'**{requested_source_user}** as **{copy_name}**.'
+                )
+    elif requested_form_name in st.session_state.forms:
         load_builder_from_form(requested_form_name)
         st.session_state.url_loaded_form = requested_form_name
-        _url_form_loaded = True
-        _url_form_owner = 'self'
+        _url_form_message = f'Loaded form via URL: **{requested_form_name}**.'
+    elif requested_source_user == current_username:
+        st.warning(
+            f'Form "{requested_form_name}" was not found in your profile '
+            f'"{current_username}".'
+        )
     else:
-        # Second: Search for form in other users' profiles
-        owner_username, form_data = find_form_by_name_any_user(requested_form_name)
-        if owner_username and form_data:
-            # Create a copy in current user's profile
-            copy_name = requested_form_name
-            counter = 1
-            while copy_name in st.session_state.forms:
-                copy_name = f"{requested_form_name} (copy {counter})"
-                counter += 1
-            
-            st.session_state.forms[copy_name] = form_data
-            load_builder_from_form(copy_name)
-            st.session_state.url_loaded_form = copy_name
-            st.session_state.url_form_source = owner_username
-            persist_forms_state()
-            _url_form_loaded = True
-            _url_form_owner = owner_username
-        else:
-            st.warning(f'⚠️ Form "{requested_form_name}" not found in any user profile.')
+        st.warning(
+            'Form not found in the current profile. To open a shared form copy, '
+            'include both `user` and `form` in the URL.'
+        )
 
-if _url_form_loaded:
-    if _url_form_owner == 'self':
-        st.info(f'✅ Loaded form via URL: **{st.session_state.url_loaded_form}**')
-    else:
-        st.info(f'✅ Copied form "{requested_form_name}" from user **{_url_form_owner}** as: **{st.session_state.url_loaded_form}**')
+if _url_form_message:
+    st.info(_url_form_message)
 
 active_form_name = st.session_state.builder_form_name
 if 'pending_save_form_name' in st.session_state:
@@ -1942,11 +1994,14 @@ with forms_tab:
 
     # Share active form via URL
     st.markdown('**🔗 Share Active Form**')
-    if st.session_state.builder_form_name:
+    share_username = get_authenticated_username()
+    if st.session_state.builder_form_name and share_username:
         active_form = st.session_state.builder_form_name
-        # Construct shareable URL with form parameter
-        form_param = f"?form={active_form.replace(' ', '%20')}"
-        
+        form_param = (
+            f'?user={quote(share_username, safe="")}'
+            f'&form={quote(active_form, safe="")}'
+        )
+
         col1, col2 = st.columns([3, 1])
         with col1:
             st.text_input(
@@ -1957,11 +2012,10 @@ with forms_tab:
             )
         with col2:
             if st.button('📋 Copy', use_container_width=True, key='copy_form_url'):
-                # Use JavaScript to copy to clipboard
                 if streamlit_js_eval:
                     streamlit_js_eval(
                         js_expressions=f"""
-                        navigator.clipboard.writeText(window.location.origin + window.location.pathname + '{form_param}').then(
+                        navigator.clipboard.writeText(window.location.origin + window.location.pathname + {json.dumps(form_param)}).then(
                             () => console.log('URL copied'),
                             (err) => console.error('Failed to copy:', err)
                         )
