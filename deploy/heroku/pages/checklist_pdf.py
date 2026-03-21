@@ -670,6 +670,8 @@ def load_persisted_forms(username):
     forms = doc.get('forms', {})
     builder_components = doc.get('builder_components', [])
     builder_form_name = doc.get('builder_form_name', '')
+    email_recipients_text = doc.get('email_recipients_text', '')
+    email_optional_message = doc.get('email_optional_message', '')
 
     if not isinstance(forms, dict):
         forms = {}
@@ -677,11 +679,17 @@ def load_persisted_forms(username):
         builder_components = []
     if not isinstance(builder_form_name, str):
         builder_form_name = ''
+    if not isinstance(email_recipients_text, str):
+        email_recipients_text = ''
+    if not isinstance(email_optional_message, str):
+        email_optional_message = ''
 
     return {
         'forms': forms,
         'builder_components': builder_components,
         'builder_form_name': builder_form_name,
+        'email_recipients_text': email_recipients_text,
+        'email_optional_message': email_optional_message,
     }
 
 
@@ -700,6 +708,8 @@ def persist_forms_state():
         'forms': st.session_state.get('forms', {}),
         'builder_components': st.session_state.get('builder_components', []),
         'builder_form_name': st.session_state.get('builder_form_name', ''),
+        'email_recipients_text': st.session_state.get('email_recipients_text', ''),
+        'email_optional_message': st.session_state.get('email_optional_message', ''),
         'updated_at': datetime.now(timezone.utc),
     }
 
@@ -725,10 +735,14 @@ def init_state():
             st.session_state.forms = persisted.get('forms', {})
             st.session_state.builder_components = persisted.get('builder_components', [])
             st.session_state.builder_form_name = persisted.get('builder_form_name', '')
+            st.session_state.email_recipients_text = persisted.get('email_recipients_text', '')
+            st.session_state.email_optional_message = persisted.get('email_optional_message', '')
         else:
             st.session_state.forms = {}
             st.session_state.builder_components = []
             st.session_state.builder_form_name = ''
+            st.session_state.email_recipients_text = ''
+            st.session_state.email_optional_message = ''
         st.session_state.forms_loaded_for_user = current_user
 
     if 'forms' not in st.session_state:
@@ -1069,12 +1083,14 @@ with builder_tab:
         key='email_recipients_text',
         placeholder='person1@example.com\nperson2@example.com',
         height=120,
+        on_change=persist_forms_state,
     )
     st.text_area(
         'Optional email message',
         key='email_optional_message',
         placeholder='Please review the attached signed checklist PDF.',
         height=100,
+        on_change=persist_forms_state,
     )
 
     st.markdown('---')
