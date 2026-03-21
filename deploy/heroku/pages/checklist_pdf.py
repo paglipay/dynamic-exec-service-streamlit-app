@@ -840,15 +840,6 @@ def show_pdf_preview_modal():
         st.code('sudo apt-get install poppler-utils && pip install pdf2image', language='bash')
 
     st.markdown('---')
-    st.download_button(
-        '⬇️ Download PDF',
-        data=pdf_data,
-        file_name=f'{pdf_name}_basic.pdf',
-        mime='application/pdf',
-        use_container_width=True,
-    )
-
-    st.markdown('---')
     st.subheader('✉️ Sign and Email PDF')
 
     delivery_status, delivery_message = get_email_delivery_status()
@@ -860,28 +851,44 @@ def show_pdf_preview_modal():
     recipients_raw = st.session_state.get('email_recipients_text', '')
     optional_message = st.session_state.get('email_optional_message', '')
 
-    if not recipients_raw.strip():
+    recipient_emails, invalid_entries = parse_email_list(recipients_raw)
+    can_send = delivery_status == 'ready' and bool(recipient_emails) and not invalid_entries
+
+    button_col1, button_col2 = st.columns(2)
+    with button_col1:
+        st.download_button(
+            '⬇️ Download PDF',
+            data=pdf_data,
+            file_name=f'{pdf_name}_basic.pdf',
+            mime='application/pdf',
+            use_container_width=True,
+        )
+    with button_col2:
+        send_now = st.button(
+            '📨 Sign and Email PDF Now',
+            use_container_width=True,
+            disabled=not can_send,
+        )
+
+    if invalid_entries:
+        st.error(f'Invalid email(s): {", ".join(invalid_entries)}')
+    elif not recipients_raw.strip():
         st.info('Add recipient emails in Form Builder before sending.')
-    elif st.button('📨 Sign and Email PDF Now', use_container_width=True):
-        recipients, invalid_entries = parse_email_list(recipients_raw)
-        if invalid_entries:
-            st.error(f'Invalid email(s): {", ".join(invalid_entries)}')
-        elif not recipients:
-            st.error('No valid recipient emails found.')
-        else:
-            with st.spinner('Signing and sending email...'):
-                try:
-                    signed_pdf_data = sign_pdf_bytes(pdf_data)
-                    send_signed_pdf_email(
-                        recipients=recipients,
-                        message_text=optional_message,
-                        signed_pdf_data=signed_pdf_data,
-                        filename=f'{pdf_name}_signed.pdf',
-                        form_name=pdf_name,
-                    )
-                    st.success(f'Sent signed PDF to {len(recipients)} recipient(s).')
-                except Exception as exc:
-                    st.error(f'Could not send signed PDF email: {exc}')
+
+    if send_now:
+        with st.spinner('Signing and sending email...'):
+            try:
+                signed_pdf_data = sign_pdf_bytes(pdf_data)
+                send_signed_pdf_email(
+                    recipients=recipient_emails,
+                    message_text=optional_message,
+                    signed_pdf_data=signed_pdf_data,
+                    filename=f'{pdf_name}_signed.pdf',
+                    form_name=pdf_name,
+                )
+                st.success(f'Sent signed PDF to {len(recipient_emails)} recipient(s).')
+            except Exception as exc:
+                st.error(f'Could not send signed PDF email: {exc}')
 
 
 # Responsive layout: tabs on narrow, 2-col on medium, 3-col on wide
