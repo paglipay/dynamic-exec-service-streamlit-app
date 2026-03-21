@@ -1,0 +1,96 @@
+{
+  "name": "User Service Agreement",
+  "form_columns": 4,
+  "components": [
+    { "type": "Text", "label": "=== User Service Agreement ===", "span": 4 },
+
+    { "type": "Text Input", "label": "Agreement ID", "default_value": "USA-2026-001", "span": 2 },
+    { "type": "Date Picker", "label": "Agreement Date", "default_value": "2026-03-21", "span": 2 },
+    { "type": "Date Picker", "label": "Effective Date", "default_value": "2026-03-21", "span": 2 },
+    { "type": "Date Picker", "label": "Review / Renewal Date", "default_value": "2027-03-21", "span": 2 },
+
+    { "type": "Text", "label": "=== User Information ===", "span": 4 },
+
+    { "type": "Text Input", "label": "Full Name", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Email Address", "default_value": "", "span": 2 },
+
+    { "type": "Text Input", "label": "Department", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Job Title", "default_value": "", "span": 2 },
+
+    { "type": "Text Input", "label": "Employee ID", "default_value": "", "span": 2 },
+    { "type": "Dropdown", "label": "Employment Type", "options": ["Regular", "Contractor", "Consultant", "Intern"], "default_value": "Regular", "span": 2 },
+
+    { "type": "Text", "label": "=== Service Scope ===", "span": 4 },
+
+    { "type": "Text", "label": "This agreement governs your use of this web application, including form creation, file uploads, PDF generation, sharing links, and electronic acknowledgments.", "span": 4 },
+
+    { "type": "Dropdown", "label": "Service Category", "options": ["IT Services", "Application Access", "Hardware Provisioning", "Support Services", "Other"], "default_value": "IT Services", "span": 2 },
+    { "type": "Dropdown", "label": "Service Level", "options": ["Standard", "Priority", "Critical"], "default_value": "Standard", "span": 2 },
+
+    { "type": "Textarea", "label": "Requested Service Description", "default_value": "", "span": 4 },
+
+    { "type": "Text", "label": "=== Account Responsibility ===", "span": 4 },
+
+    { "type": "Checkbox", "label": "I am responsible for all activity performed under my account.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I will maintain credential confidentiality and use strong authentication controls.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I will promptly report unauthorized access, account compromise, or suspicious behavior.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== Terms and Conditions ===", "span": 4 },
+
+    { "type": "Checkbox", "label": "I acknowledge that services are provided according to company policy.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I agree to use company systems for authorized business purposes only.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I will protect credentials and report any suspected security incident immediately.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I understand that violations may result in suspension of service access.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== Acceptable Use and Prohibited Conduct ===", "span": 4 },
+
+    { "type": "Checkbox", "label": "I will not upload malicious software, harmful scripts, or unlawful content.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I will not attempt unauthorized access, privilege escalation, or service disruption.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I will not reverse engineer or misuse the platform beyond approved business use.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== Data Privacy and Security ===", "span": 4 },
+
+    { "type": "Checkbox", "label": "I consent to processing of my data for service delivery and compliance.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I agree to comply with information security, retention, and confidentiality rules.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I understand uploaded files and form data may be retained for audit, backup, and operational support.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== Shared Links and Form Copy Behavior ===", "span": 4 },
+
+    { "type": "Checkbox", "label": "I understand shared URLs may copy forms into another user profile as a separate editable record.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I understand copied forms can diverge from the original and are independently managed by the receiving user.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== Electronic Signature and Consent ===", "span": 4 },
+
+    { "type": "Checkbox", "label": "I acknowledge that my electronic signature/typed signature is my acceptance of this agreement.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I confirm that I have authority to agree to these terms on behalf of my role or team.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== Service Availability and Changes ===", "span": 4 },
+
+    { "type": "Checkbox", "label": "I understand service availability may be affected by maintenance, incidents, and third-party dependencies.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I acknowledge features and policies may be updated with notice as required by company governance.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== Limitation and Compliance ===", "span": 4 },
+
+    { "type": "Checkbox", "label": "I acknowledge the service is provided according to applicable policy and operational constraints.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I agree to comply with applicable laws, organizational policy, and acceptable use standards.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== Approval and Acceptance ===", "span": 4 },
+
+    { "type": "Text Input", "label": "Manager Name", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Approver Name", "default_value": "", "span": 2 },
+
+    { "type": "Date Picker", "label": "Service Start Date", "default_value": "", "span": 2 },
+    { "type": "Date Picker", "label": "Approval Date", "default_value": "", "span": 2 },
+
+    { "type": "Textarea", "label": "Additional Notes", "default_value": "", "span": 4 },
+
+    { "type": "Checkbox", "label": "I have read, understood, and agree to all terms in this User Service Agreement.", "default": false, "span": 4 },
+
+    { "type": "Signature", "label": "User Signature", "default_value": "", "span": 2 },
+    { "type": "Signature", "label": "Authorized Representative Signature", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Representative Name", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Representative Title", "default_value": "", "span": 2 }
+  ],
+  "email_recipients_text": "",
+  "email_optional_message": ""
+}
