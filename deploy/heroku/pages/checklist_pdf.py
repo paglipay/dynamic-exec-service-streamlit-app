@@ -125,7 +125,7 @@ def draw_wrapped(pdf_canvas, x, y, text, font_name, font_size, max_width, line_h
 
 
 def _default_span_for_type(comp_type, total_columns):
-    if comp_type in ('Textarea', 'Image Upload', 'Camera Input', 'Text'):
+    if comp_type in ('Textarea', 'Image Upload', 'Camera Input', 'Text', 'Signature'):
         return total_columns
     return 1
 
@@ -155,11 +155,27 @@ def _render_one_component(component, key_prefix, idx, values):
         values[label] = st.text_input(label, key=f'{key_prefix}_text_{idx}')
     elif comp_type == 'Textarea':
         values[label] = st.text_area(label, key=f'{key_prefix}_textarea_{idx}')
+    elif comp_type == 'Date Picker':
+        values[label] = st.date_input(label, key=f'{key_prefix}_date_{idx}')
+    elif comp_type == 'Dropdown':
+        options = component.get('options', [])
+        if not isinstance(options, list):
+            options = []
+        cleaned_options = [str(opt).strip() for opt in options if str(opt).strip()]
+        if not cleaned_options:
+            cleaned_options = ['Option 1']
+        values[label] = st.selectbox(label, cleaned_options, key=f'{key_prefix}_dropdown_{idx}')
     elif comp_type == 'Checkbox':
         values[label] = st.checkbox(
             label,
             value=component.get('default', False),
             key=f'{key_prefix}_checkbox_{idx}',
+        )
+    elif comp_type == 'Signature':
+        values[label] = st.text_input(
+            label,
+            key=f'{key_prefix}_signature_{idx}',
+            placeholder='Type full name as signature',
         )
     elif comp_type == 'Image Upload':
         values[label] = st.file_uploader(
@@ -287,6 +303,17 @@ def build_pdf(form_name, components, values, form_columns=1):
                 value_text = str(values.get(label, '') or '')
                 block['lines'].extend(_text_block_lines(value_text, 'Helvetica', 12, content_width))
 
+            elif comp_type == 'Date Picker':
+                value_obj = values.get(label)
+                value_text = ''
+                if value_obj is not None:
+                    value_text = value_obj.isoformat() if hasattr(value_obj, 'isoformat') else str(value_obj)
+                block['lines'].extend(_text_block_lines(f'{label}: {value_text}', 'Helvetica', 12, content_width))
+
+            elif comp_type == 'Dropdown':
+                value_text = str(values.get(label, '') or '')
+                block['lines'].extend(_text_block_lines(f'{label}: {value_text}', 'Helvetica', 12, content_width))
+
             elif comp_type == 'Textarea':
                 block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
                 raw_lines = str(values.get(label, '') or '').split('\n')
@@ -296,6 +323,10 @@ def build_pdf(form_name, components, values, form_columns=1):
             elif comp_type == 'Checkbox':
                 checked = 'Yes' if values.get(label, False) else 'No'
                 block['lines'].extend(_text_block_lines(f'{label}: {checked}', 'Helvetica', 12, content_width))
+
+            elif comp_type == 'Signature':
+                value_text = str(values.get(label, '') or '').strip() or '________________________'
+                block['lines'].extend(_text_block_lines(f'{label}: {value_text}', 'Helvetica', 12, content_width))
 
             elif comp_type in ('Image Upload', 'Camera Input'):
                 block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
@@ -1041,7 +1072,17 @@ def parse_imported_form(file_data):
     if not isinstance(components, list):
         raise ValueError('Imported JSON must include a components array.')
 
-    allowed_types = {'Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'}
+    allowed_types = {
+        'Text',
+        'Text Input',
+        'Textarea',
+        'Date Picker',
+        'Dropdown',
+        'Checkbox',
+        'Image Upload',
+        'Camera Input',
+        'Signature',
+    }
     imported_form_columns = _coerce_layout_columns(payload.get('form_columns', 1))
     cleaned = []
     for item in components:
@@ -1057,6 +1098,14 @@ def parse_imported_form(file_data):
         entry = {'type': comp_type, 'label': label.strip()}
         if comp_type == 'Checkbox':
             entry['default'] = bool(item.get('default', False))
+        if comp_type == 'Dropdown':
+            options = item.get('options')
+            if not isinstance(options, list):
+                raise ValueError(f'Dropdown "{label.strip()}" must include an options array.')
+            cleaned_options = [str(opt).strip() for opt in options if str(opt).strip()]
+            if not cleaned_options:
+                raise ValueError(f'Dropdown "{label.strip()}" must include at least one non-empty option.')
+            entry['options'] = cleaned_options
         entry['span'] = _coerce_span(item.get('span'), imported_form_columns, comp_type)
         cleaned.append(entry)
 
@@ -1087,9 +1136,12 @@ TYPE_ICONS = {
     'Text': '📝',
     'Text Input': '✏️',
     'Textarea': '📄',
+    'Date Picker': '📅',
+    'Dropdown': '🔽',
     'Checkbox': '☑️',
     'Image Upload': '🖼️',
     'Camera Input': '📷',
+    'Signature': '✍️',
 }
 
 @st.dialog('📋 PDF Preview', width='large')
@@ -1384,7 +1436,17 @@ with builder_tab:
     st.markdown('**➕ Add Component**')
     component_type = st.selectbox(
         'Component type',
-        ['Text', 'Text Input', 'Textarea', 'Checkbox', 'Image Upload', 'Camera Input'],
+        [
+            'Text',
+            'Text Input',
+            'Textarea',
+            'Date Picker',
+            'Dropdown',
+            'Checkbox',
+            'Image Upload',
+            'Camera Input',
+            'Signature',
+        ],
         format_func=lambda t: f'{TYPE_ICONS.get(t, "")} {t}',
     )
     selected_layout_columns = _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1))
@@ -1403,6 +1465,14 @@ with builder_tab:
         )
     component_label = st.text_input('Component label', key='builder_component_label', placeholder='e.g. Inspector Name')
     checkbox_default = st.checkbox('Default checked', key='builder_checkbox_default') if component_type == 'Checkbox' else False
+    dropdown_options_text = ''
+    if component_type == 'Dropdown':
+        dropdown_options_text = st.text_area(
+            'Dropdown options (one per line)',
+            key='builder_dropdown_options',
+            placeholder='Routine\nFollow-up\nIncident',
+            height=100,
+        )
 
     add_col, save_col = st.columns(2)
     with add_col:
@@ -1413,10 +1483,18 @@ with builder_tab:
                 entry = {'type': component_type, 'label': component_label.strip()}
                 if component_type == 'Checkbox':
                     entry['default'] = checkbox_default
-                entry['span'] = _coerce_span(component_span, selected_layout_columns, component_type)
-                st.session_state.builder_components.append(entry)
-                persist_forms_state()
-                st.success(f'✅ Added {TYPE_ICONS.get(component_type, "")} {component_type}: {component_label.strip()}')
+                if component_type == 'Dropdown':
+                    option_lines = [line.strip() for line in dropdown_options_text.splitlines() if line.strip()]
+                    if not option_lines:
+                        st.error('Dropdown components require at least one option.')
+                    else:
+                        entry['options'] = option_lines
+
+                if component_type != 'Dropdown' or entry.get('options'):
+                    entry['span'] = _coerce_span(component_span, selected_layout_columns, component_type)
+                    st.session_state.builder_components.append(entry)
+                    persist_forms_state()
+                    st.success(f'✅ Added {TYPE_ICONS.get(component_type, "")} {component_type}: {component_label.strip()}')
     with save_col:
         if st.button('💾 Save Form', use_container_width=True):
             target_name = save_form_name.strip()
@@ -1477,6 +1555,18 @@ with builder_tab:
                 value=selected_component.get('default', False),
                 key=f'edit_component_default_{selected_idx}',
             )
+        edit_dropdown_options = []
+        if selected_component.get('type') == 'Dropdown':
+            existing_options = selected_component.get('options', [])
+            if not isinstance(existing_options, list):
+                existing_options = []
+            edit_options_text = st.text_area(
+                'Dropdown options (one per line)',
+                value='\n'.join(str(opt) for opt in existing_options),
+                key=f'edit_component_options_{selected_idx}',
+                height=100,
+            )
+            edit_dropdown_options = [line.strip() for line in edit_options_text.splitlines() if line.strip()]
         if _coerce_layout_columns(st.session_state.get('builder_layout_columns', 1)) > 1:
             edit_span = st.slider(
                 'Component width (columns)',
@@ -1502,8 +1592,15 @@ with builder_tab:
                     )
                     if selected_component.get('type') == 'Checkbox':
                         st.session_state.builder_components[selected_idx]['default'] = edit_default
-                    persist_forms_state()
-                    st.success('✅ Updated.')
+                    if selected_component.get('type') == 'Dropdown':
+                        if not edit_dropdown_options:
+                            st.error('Dropdown components require at least one option.')
+                        else:
+                            st.session_state.builder_components[selected_idx]['options'] = edit_dropdown_options
+
+                    if selected_component.get('type') != 'Dropdown' or edit_dropdown_options:
+                        persist_forms_state()
+                        st.success('✅ Updated.')
         with action_cols[1]:
             if st.button('🗑️ Delete', use_container_width=True):
                 st.session_state.builder_components.pop(selected_idx)
@@ -1550,7 +1647,7 @@ with render_tab:
         empty_fields = [
             comp.get('label', '')
             for comp in st.session_state.builder_components
-            if comp.get('type') in ('Text Input', 'Textarea')
+            if comp.get('type') in ('Text Input', 'Textarea', 'Signature')
             and not (live_values.get(comp.get('label', ''), '') or '').strip()
         ]
         if empty_fields:
