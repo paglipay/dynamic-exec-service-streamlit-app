@@ -2080,6 +2080,8 @@ def init_state():
         st.session_state.render_loaded_values = None
     if 'render_loaded_label' not in st.session_state:
         st.session_state.render_loaded_label = ''
+    if 'render_pending_restore' not in st.session_state:
+        st.session_state.render_pending_restore = None
     if 'email_recipients_text' not in st.session_state:
         st.session_state.email_recipients_text = ''
     if 'email_optional_message' not in st.session_state:
@@ -3099,6 +3101,15 @@ with render_tab:
         st.caption(f'{comp_count} field(s) — fill in the form below, then generate a PDF preview.')
         st.markdown('---')
 
+        # Apply any pending restore BEFORE widgets are instantiated
+        if st.session_state.get('render_pending_restore'):
+            _restore_widget_state_from_values(
+                st.session_state.render_pending_restore,
+                st.session_state.builder_components,
+                key_prefix='live_render',
+            )
+            st.session_state.render_pending_restore = None
+
         live_values = render_components(
             st.session_state.builder_components,
             'live_render',
@@ -3213,11 +3224,8 @@ with render_tab:
                         )
                         st.session_state.render_loaded_values = _restored
                         st.session_state.render_loaded_label = _sub_labels[_selected_idx]
-                        _restore_widget_state_from_values(
-                            _restored,
-                            st.session_state.builder_components,
-                            key_prefix='live_render',
-                        )
+                        # Store for application before widgets are instantiated on next run
+                        st.session_state.render_pending_restore = _restored
                         trigger_rerun()
 
             if st.session_state.get('render_loaded_values'):
