@@ -624,6 +624,7 @@ def _render_one_component(component, key_prefix, idx, values):
                 default_name = getattr(uploaded_file, 'name', '') or ''
                 name_key = f'{key_prefix}_image_name_{idx}_{img_idx}'
                 _init_widget_state(name_key, '')
+                st.image(uploaded_file, use_container_width=True)
                 image_name = st.text_input(
                     f'Name for "{default_name}" (optional)',
                     key=name_key,
@@ -647,6 +648,7 @@ def _render_one_component(component, key_prefix, idx, values):
         if captured is not None:
             name_key = f'{key_prefix}_camera_name_{idx}'
             _init_widget_state(name_key, '')
+            st.image(captured, use_container_width=True)
             camera_name = st.text_input(
                 'Name for captured image (optional)',
                 key=name_key,
