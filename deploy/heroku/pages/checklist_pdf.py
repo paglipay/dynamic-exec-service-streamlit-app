@@ -1683,6 +1683,235 @@ def load_persisted_forms(username):
     }
 
 
+def _make_collection_name_from_form(form_name):
+    """Derive a safe MongoDB collection name from a form name."""
+    safe = ''.join(ch if ch.isalnum() or ch in ('_', '-') else '_' for ch in (form_name or 'unnamed'))
+    return f'submission_{safe}'[:120]
+
+
+def _get_submission_collection(form_name):
+    """Return a MongoDB collection scoped to a form name, or None."""
+    if MongoClient is None:
+        return None
+    mongo_uri = _get_setting('MONGODB_URI')
+    if not mongo_uri:
+        return None
+
+    configured_db_name = _get_setting('MONGODB_DB')
+    db_name = str(configured_db_name).strip() if configured_db_name else ''
+    if not db_name:
+        db_name = _database_name_from_uri(mongo_uri) or 'app_data'
+
+    coll_name = _make_collection_name_from_form(form_name)
+    try:
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
+        client.admin.command('ping')
+        return client[db_name][coll_name]
+    except Exception:
+        return None
+
+
+def _file_to_b64(file_like):
+    """Read an uploaded file / BytesIO and return a base64 string."""
+    try:
+        if hasattr(file_like, 'seek'):
+            file_like.seek(0)
+        return base64.b64encode(file_like.read()).decode('utf-8')
+    except Exception:
+        return None
+
+
+def _serialize_live_values(values, components):
+    """Convert live_values dict to a MongoDB-safe structure.
+
+    Images (UploadedFile / BytesIO) are encoded as base64 strings.
+    Everything else is kept as-is (strings, bools, dates coerced to ISO).
+    """
+    serialized = {}
+    for key, val in values.items():
+        if key.endswith('__image_names') or key.endswith('__description'):
+            serialized[key] = val
+            continue
+
+        comp = next(
+            (c for c in components if c.get('label') == key),
+            None,
+        )
+        comp_type = comp.get('type') if comp else None
+
+        if comp_type == 'Image Upload':
+            if isinstance(val, list):
+                serialized[key] = [
+                    {'b64': _file_to_b64(f), 'name': getattr(f, 'name', '')}
+                    for f in val if f is not None
+                ]
+            else:
+                serialized[key] = None
+        elif comp_type == 'Camera Input':
+            serialized[key] = {'b64': _file_to_b64(val), 'name': 'camera.jpg'} if val is not None else None
+        elif comp_type == 'Date Picker':
+            if val is not None:
+                serialized[key] = val.isoformat() if hasattr(val, 'isoformat') else str(val)
+            else:
+                serialized[key] = None
+        elif comp_type == 'Table':
+            if isinstance(val, list):
+                rows = []
+                for row in val:
+                    if not isinstance(row, dict):
+                        rows.append(row)
+                        continue
+                    clean_row = {}
+                    for col_key, cell in row.items():
+                        if hasattr(cell, 'read'):
+                            clean_row[col_key] = {'b64': _file_to_b64(cell), 'name': getattr(cell, 'name', '')}
+                        elif isinstance(cell, date) and not isinstance(cell, datetime):
+                            clean_row[col_key] = cell.isoformat()
+                        elif isinstance(cell, datetime):
+                            clean_row[col_key] = cell.date().isoformat()
+                        else:
+                            clean_row[col_key] = cell
+                    rows.append(clean_row)
+                serialized[key] = rows
+            else:
+                serialized[key] = val
+        else:
+            serialized[key] = val
+
+    return serialized
+
+
+def _b64_to_bytesio(b64_str, name='image.jpg'):
+    """Return a BytesIO with a .name attribute from a base64 string."""
+    try:
+        data = base64.b64decode(b64_str)
+        buf = BytesIO(data)
+        buf.name = name
+        return buf
+    except Exception:
+        return None
+
+
+def _deserialize_live_values(stored, components):
+    """Reconstruct live_values from a stored (serialized) dict.
+
+    Image fields are returned as BytesIO objects (usable by build_pdf).
+    Note: Streamlit file_uploader widgets cannot be pre-populated; images
+    loaded from MongoDB are only available for PDF export, not re-displayed.
+    """
+    restored = {}
+    for key, val in stored.items():
+        if key.endswith('__image_names') or key.endswith('__description'):
+            restored[key] = val
+            continue
+
+        comp = next(
+            (c for c in components if c.get('label') == key),
+            None,
+        )
+        comp_type = comp.get('type') if comp else None
+
+        if comp_type == 'Image Upload':
+            if isinstance(val, list):
+                restored[key] = [
+                    _b64_to_bytesio(item['b64'], item.get('name', 'image.jpg'))
+                    for item in val
+                    if isinstance(item, dict) and item.get('b64')
+                ]
+            else:
+                restored[key] = []
+        elif comp_type == 'Camera Input':
+            if isinstance(val, dict) and val.get('b64'):
+                restored[key] = _b64_to_bytesio(val['b64'], val.get('name', 'camera.jpg'))
+            else:
+                restored[key] = None
+        elif comp_type == 'Date Picker':
+            restored[key] = _parse_date_value(val)
+        elif comp_type == 'Table':
+            if isinstance(val, list):
+                rows = []
+                for row in val:
+                    if not isinstance(row, dict):
+                        rows.append(row)
+                        continue
+                    clean_row = {}
+                    for col_key, cell in row.items():
+                        if isinstance(cell, dict) and cell.get('b64'):
+                            clean_row[col_key] = _b64_to_bytesio(cell['b64'], cell.get('name', 'image.jpg'))
+                        else:
+                            clean_row[col_key] = cell
+                    rows.append(clean_row)
+                restored[key] = rows
+            else:
+                restored[key] = val
+        else:
+            restored[key] = val
+
+    return restored
+
+
+def save_form_submission(form_name, doc_name, values, components, username):
+    """Save a filled form submission to the form's own collection."""
+    coll = _get_submission_collection(form_name)
+    if coll is None:
+        return False, 'MongoDB unavailable.'
+
+    ts = datetime.now(timezone.utc)
+    ts_label = ts.strftime('%Y-%m-%d %H:%M:%S UTC')
+    display_name = f'{doc_name.strip()} — {ts_label}' if doc_name.strip() else ts_label
+
+    try:
+        serialized = _serialize_live_values(values, components)
+    except Exception as exc:
+        return False, f'Serialization error: {exc}'
+
+    doc = {
+        'username': username,
+        'form_name': form_name,
+        'display_name': display_name,
+        'saved_at': ts,
+        'values': serialized,
+    }
+
+    try:
+        coll.insert_one(doc)
+        return True, display_name
+    except Exception as exc:
+        return False, str(exc)
+
+
+def list_form_submissions(form_name, username):
+    """Return list of (display_name, str(_id)) for saved submissions."""
+    coll = _get_submission_collection(form_name)
+    if coll is None:
+        return []
+    try:
+        docs = coll.find(
+            {'username': username, 'form_name': form_name},
+            {'display_name': 1, 'saved_at': 1},
+        ).sort('saved_at', -1).limit(50)
+        return [(d.get('display_name', str(d['_id'])), str(d['_id'])) for d in docs]
+    except Exception:
+        return []
+
+
+def load_form_submission(form_name, doc_id, username):
+    """Load a single saved submission; returns (values_dict | None, error_str | None)."""
+    coll = _get_submission_collection(form_name)
+    if coll is None:
+        return None, 'MongoDB unavailable.'
+    try:
+        from bson import ObjectId
+        doc = coll.find_one({'_id': ObjectId(doc_id), 'username': username, 'form_name': form_name})
+    except Exception as exc:
+        return None, str(exc)
+
+    if not isinstance(doc, dict):
+        return None, 'Document not found.'
+
+    return doc.get('values', {}), None
+
+
 def persist_forms_state():
     username = get_authenticated_username()
     if not username:
@@ -1771,6 +2000,10 @@ def init_state():
         st.session_state.generated_pdf_data = None
     if 'generated_pdf_name' not in st.session_state:
         st.session_state.generated_pdf_name = 'form.pdf'
+    if 'render_loaded_values' not in st.session_state:
+        st.session_state.render_loaded_values = None
+    if 'render_loaded_label' not in st.session_state:
+        st.session_state.render_loaded_label = ''
     if 'email_recipients_text' not in st.session_state:
         st.session_state.email_recipients_text = ''
     if 'email_optional_message' not in st.session_state:
@@ -2825,4 +3058,102 @@ with render_tab:
         with col2:
             if st.session_state.generated_pdf_data:
                 if st.button('👁️ View Last Preview', use_container_width=True):
+                    show_pdf_preview_modal()
+
+        # ── Save to MongoDB ───────────────────────────────────────────────────
+        st.markdown('---')
+        st.markdown('#### 💾 Save Submission')
+        _submission_coll_available = _get_submission_collection(active_form_name) is not None
+
+        if not _submission_coll_available:
+            st.info('MongoDB is not configured (set MONGODB_URI). Saving is unavailable.')
+        else:
+            _current_user = get_authenticated_username()
+            save_doc_name_key = 'render_save_doc_name'
+            if save_doc_name_key not in st.session_state:
+                st.session_state[save_doc_name_key] = ''
+
+            _save_name_input = st.text_input(
+                'Save name (optional — a timestamp is always appended)',
+                key=save_doc_name_key,
+                placeholder='e.g. Site visit April 2026',
+            )
+
+            if st.button('💾 Save to MongoDB', use_container_width=True):
+                _ok, _label = save_form_submission(
+                    active_form_name,
+                    _save_name_input,
+                    live_values,
+                    st.session_state.builder_components,
+                    _current_user,
+                )
+                if _ok:
+                    st.success(f'✅ Saved as "{_label}"')
+                    # clear cached submission list so the load dropdown refreshes
+                    if 'render_submission_list' in st.session_state:
+                        del st.session_state['render_submission_list']
+                else:
+                    st.error(f'Save failed: {_label}')
+
+        # ── Load from MongoDB ─────────────────────────────────────────────────
+        st.markdown('#### 📂 Load Saved Submission')
+        if not _submission_coll_available:
+            st.info('MongoDB is not configured — loading is unavailable.')
+        else:
+            _current_user = get_authenticated_username()
+
+            if st.button('🔄 Refresh list', key='render_refresh_submissions'):
+                if 'render_submission_list' in st.session_state:
+                    del st.session_state['render_submission_list']
+
+            if 'render_submission_list' not in st.session_state:
+                st.session_state.render_submission_list = list_form_submissions(active_form_name, _current_user)
+
+            _submissions = st.session_state.render_submission_list
+
+            if not _submissions:
+                st.caption('No saved submissions found for this form.')
+            else:
+                _sub_labels = [label for label, _ in _submissions]
+                _sub_ids = [doc_id for _, doc_id in _submissions]
+                _selected_idx = st.selectbox(
+                    'Saved submissions',
+                    range(len(_sub_labels)),
+                    format_func=lambda i: _sub_labels[i],
+                    key='render_load_submission_select',
+                )
+                if st.button('📂 Load selected submission', use_container_width=True):
+                    _loaded_values, _load_err = load_form_submission(
+                        active_form_name,
+                        _sub_ids[_selected_idx],
+                        _current_user,
+                    )
+                    if _load_err:
+                        st.error(f'Load failed: {_load_err}')
+                    else:
+                        _restored = _deserialize_live_values(
+                            _loaded_values,
+                            st.session_state.builder_components,
+                        )
+                        st.session_state.render_loaded_values = _restored
+                        st.session_state.render_loaded_label = _sub_labels[_selected_idx]
+                        st.success(f'✅ Loaded "{_sub_labels[_selected_idx]}"')
+                        st.info(
+                            'Loaded values are ready for PDF export. '
+                            'Use **Generate PDF from Loaded** below to export them. '
+                            'Note: uploaded image files cannot be re-shown in the uploader widgets, '
+                            'but they are included in the PDF.'
+                        )
+
+            if st.session_state.get('render_loaded_values'):
+                _loaded_label = st.session_state.get('render_loaded_label', 'Loaded submission')
+                if st.button('📄 Generate PDF from Loaded', use_container_width=True):
+                    _pdf_data = build_pdf(
+                        export_name,
+                        st.session_state.builder_components,
+                        st.session_state.render_loaded_values,
+                        form_columns=st.session_state.get('builder_layout_columns', 1),
+                    )
+                    st.session_state.generated_pdf_data = _pdf_data
+                    st.session_state.generated_pdf_name = export_name
                     show_pdf_preview_modal()
