@@ -1850,22 +1850,90 @@ def _deserialize_live_values(stored, components):
     return restored
 
 
+def _restore_widget_state_from_values(restored, components, key_prefix='live_render'):
+    """Push deserialized submission values into Streamlit session state widget keys
+    so the form renders with the loaded values on the next rerun.
+
+    Image Upload / Camera Input widget state cannot be set (Streamlit limitation),
+    but descriptions, image names, and all text/date/dropdown/checkbox fields are restored.
+    Table row data is also restored.
+    """
+    for idx, component in enumerate(components):
+        comp_type = component.get('type')
+        label = component.get('label', '')
+
+        if comp_type == 'Text Input':
+            val = restored.get(label, '')
+            st.session_state[f'{key_prefix}_text_{idx}'] = str(val or '')
+
+        elif comp_type == 'Textarea':
+            val = restored.get(label, '')
+            st.session_state[f'{key_prefix}_textarea_{idx}'] = str(val or '')
+
+        elif comp_type == 'Signature':
+            val = restored.get(label, '')
+            st.session_state[f'{key_prefix}_signature_{idx}'] = str(val or '')
+
+        elif comp_type == 'Date Picker':
+            val = restored.get(label)
+            parsed = _parse_date_value(val) if not isinstance(val, date) else val
+            if parsed is not None:
+                st.session_state[f'{key_prefix}_date_{idx}'] = parsed
+
+        elif comp_type == 'Dropdown':
+            val = restored.get(label, '')
+            options = component.get('options', [])
+            cleaned = [str(o).strip() for o in options if str(o).strip()]
+            if val in cleaned:
+                st.session_state[f'{key_prefix}_dropdown_{idx}'] = val
+
+        elif comp_type == 'Checkbox':
+            val = restored.get(label, False)
+            st.session_state[f'{key_prefix}_checkbox_{idx}'] = bool(val)
+
+        elif comp_type == 'Image Upload':
+            desc = restored.get(f'{label}__description', '')
+            st.session_state[f'{key_prefix}_image_desc_{idx}'] = str(desc or '')
+            names = restored.get(f'{label}__image_names', [])
+            if isinstance(names, list):
+                for img_idx, name in enumerate(names):
+                    st.session_state[f'{key_prefix}_image_name_{idx}_{img_idx}'] = str(name or '')
+
+        elif comp_type == 'Camera Input':
+            desc = restored.get(f'{label}__description', '')
+            st.session_state[f'{key_prefix}_camera_desc_{idx}'] = str(desc or '')
+            names = restored.get(f'{label}__image_names', [])
+            if isinstance(names, list) and names:
+                st.session_state[f'{key_prefix}_camera_name_{idx}'] = str(names[0] or '')
+
+        elif comp_type == 'Table':
+            rows_state_key = f'{key_prefix}_table_rows_data_{idx}'
+            row_data = restored.get(label)
+            if isinstance(row_data, list):
+                st.session_state[rows_state_key] = row_data
+
+
 def save_form_submission(form_name, doc_name, values, components, username):
-    """Save a filled form submission to the form's own collection."""
+    """Save a filled form submission to the form's own collection.
+
+    - If doc_name is empty: display_name = timestamp; always inserts a new doc.
+    - If doc_name is provided: display_name = doc_name; upserts (overwrites) any
+      existing doc with the same username + form_name + display_name.
+    """
     coll = _get_submission_collection(form_name)
     if coll is None:
         return False, 'MongoDB unavailable.'
 
     ts = datetime.now(timezone.utc)
-    ts_label = ts.strftime('%Y-%m-%d %H:%M:%S UTC')
-    display_name = f'{doc_name.strip()} — {ts_label}' if doc_name.strip() else ts_label
+    named = doc_name.strip()
+    display_name = named if named else ts.strftime('%Y-%m-%d %H:%M:%S UTC')
 
     try:
         serialized = _serialize_live_values(values, components)
     except Exception as exc:
         return False, f'Serialization error: {exc}'
 
-    doc = {
+    payload = {
         'username': username,
         'form_name': form_name,
         'display_name': display_name,
@@ -1874,7 +1942,15 @@ def save_form_submission(form_name, doc_name, values, components, username):
     }
 
     try:
-        coll.insert_one(doc)
+        if named:
+            # Overwrite existing doc with same name, or insert new one.
+            coll.update_one(
+                {'username': username, 'form_name': form_name, 'display_name': display_name},
+                {'$set': payload},
+                upsert=True,
+            )
+        else:
+            coll.insert_one(payload)
         return True, display_name
     except Exception as exc:
         return False, str(exc)
@@ -3137,13 +3213,12 @@ with render_tab:
                         )
                         st.session_state.render_loaded_values = _restored
                         st.session_state.render_loaded_label = _sub_labels[_selected_idx]
-                        st.success(f'✅ Loaded "{_sub_labels[_selected_idx]}"')
-                        st.info(
-                            'Loaded values are ready for PDF export. '
-                            'Use **Generate PDF from Loaded** below to export them. '
-                            'Note: uploaded image files cannot be re-shown in the uploader widgets, '
-                            'but they are included in the PDF.'
+                        _restore_widget_state_from_values(
+                            _restored,
+                            st.session_state.builder_components,
+                            key_prefix='live_render',
                         )
+                        trigger_rerun()
 
             if st.session_state.get('render_loaded_values'):
                 _loaded_label = st.session_state.get('render_loaded_label', 'Loaded submission')
