@@ -604,6 +604,13 @@ def _render_one_component(component, key_prefix, idx, values):
             placeholder='Type full name as signature',
         )
     elif comp_type == 'Image Upload':
+        desc_key = f'{key_prefix}_image_desc_{idx}'
+        _init_widget_state(desc_key, '')
+        values[f'{label}__description'] = st.text_input(
+            f'{label} — description (optional)',
+            key=desc_key,
+            placeholder='e.g. Site inspection photos',
+        )
         uploaded_files = st.file_uploader(
             label,
             type=['png', 'jpg', 'jpeg'],
@@ -625,6 +632,13 @@ def _render_one_component(component, key_prefix, idx, values):
                 image_names.append(image_name)
             values[f'{label}__image_names'] = image_names
     elif comp_type == 'Camera Input':
+        desc_key = f'{key_prefix}_camera_desc_{idx}'
+        _init_widget_state(desc_key, '')
+        values[f'{label}__description'] = st.text_input(
+            f'{label} — description (optional)',
+            key=desc_key,
+            placeholder='e.g. Equipment condition photo',
+        )
         captured = st.camera_input(
             label,
             key=f'{key_prefix}_camera_{idx}',
@@ -636,7 +650,7 @@ def _render_one_component(component, key_prefix, idx, values):
             camera_name = st.text_input(
                 'Name for captured image (optional)',
                 key=name_key,
-                placeholder='e.g. Scanned document',
+                placeholder='e.g. Front view',
             )
             values[f'{label}__image_names'] = [camera_name]
     elif comp_type == 'Table':
@@ -782,7 +796,9 @@ def build_pdf(form_name, components, values, form_columns=1):
                 block['lines'].extend(_text_block_lines(f'{label}: {value_text}', 'Helvetica', 12, content_width))
 
             elif comp_type in ('Image Upload', 'Camera Input'):
-                block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
+                description = str(values.get(f'{label}__description', '') or '').strip()
+                if description:
+                    block['lines'].extend(_text_block_lines(description, 'Helvetica-Bold', 12, content_width))
                 uploaded_value = values.get(label)
                 image_names = values.get(f'{label}__image_names', [])
                 images_to_render = []
@@ -800,19 +816,14 @@ def build_pdf(form_name, components, values, form_columns=1):
                 else:
                     for image_idx, uploaded_img in enumerate(images_to_render, start=1):
                         provided_name = image_names[image_idx - 1].strip() if image_idx - 1 < len(image_names) else ''
-                        if provided_name:
-                            caption = provided_name
-                        elif len(images_to_render) > 1:
-                            caption = f'Image {image_idx}'
-                        else:
-                            caption = ''
-                        if caption:
-                            block['lines'].extend(_text_block_lines(f'{caption}:', 'Helvetica', 11, content_width))
+                        if not provided_name and len(images_to_render) > 1:
+                            provided_name = f'Image {image_idx}'
                         try:
                             image = Image.open(uploaded_img)
                             img_width, img_height = image.size
                             if img_width > 0:
-                                max_img_w = content_width
+                                # Reserve right-side space for caption when one is present
+                                max_img_w = content_width * 0.62 if provided_name else content_width
                                 display_width = min(max_img_w, float(img_width))
                                 display_height = display_width * (float(img_height) / float(img_width))
                                 display_height = min(display_height, 180.0)
@@ -820,6 +831,7 @@ def build_pdf(form_name, components, values, form_columns=1):
                                     'image': image,
                                     'width': display_width,
                                     'height': display_height,
+                                    'caption': provided_name,
                                 })
                             else:
                                 block['lines'].extend(_text_block_lines('(image has invalid size)', 'Helvetica', 12, content_width))
@@ -994,15 +1006,22 @@ def build_pdf(form_name, components, values, form_columns=1):
                     text_y = table_bottom - 6
 
                 for image_item in block['images']:
+                    img_y = text_y - image_item['height']
                     pdf_canvas.drawImage(
                         ImageReader(image_item['image']),
                         cell_x,
-                        text_y - image_item['height'],
+                        img_y,
                         width=image_item['width'],
                         height=image_item['height'],
                         preserveAspectRatio=True,
                         mask='auto',
                     )
+                    caption = image_item.get('caption', '')
+                    if caption:
+                        caption_x = cell_x + image_item['width'] + 8
+                        caption_y = img_y + image_item['height'] / 2 - 5
+                        pdf_canvas.setFont('Helvetica', 10)
+                        pdf_canvas.drawString(caption_x, caption_y, caption)
                     text_y -= image_item['height'] + 6
 
             y_pos -= row_height + 6
