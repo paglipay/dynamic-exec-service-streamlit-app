@@ -3226,6 +3226,7 @@ with render_tab:
                         )
                         st.session_state.render_loaded_values = _restored
                         st.session_state.render_loaded_label = _sub_labels[_selected_idx]
+                        st.session_state.render_loaded_img_init_needed = True
                         # Store for application before widgets are instantiated on next run
                         st.session_state.render_pending_restore = _restored
                         trigger_rerun()
