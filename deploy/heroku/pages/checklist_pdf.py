@@ -604,17 +604,41 @@ def _render_one_component(component, key_prefix, idx, values):
             placeholder='Type full name as signature',
         )
     elif comp_type == 'Image Upload':
-        values[label] = st.file_uploader(
+        uploaded_files = st.file_uploader(
             label,
             type=['png', 'jpg', 'jpeg'],
             accept_multiple_files=True,
             key=f'{key_prefix}_image_{idx}',
         )
+        values[label] = uploaded_files
+        if uploaded_files:
+            image_names = []
+            for img_idx, uploaded_file in enumerate(uploaded_files):
+                default_name = getattr(uploaded_file, 'name', '') or ''
+                name_key = f'{key_prefix}_image_name_{idx}_{img_idx}'
+                _init_widget_state(name_key, '')
+                image_name = st.text_input(
+                    f'Name for "{default_name}" (optional)',
+                    key=name_key,
+                    placeholder='e.g. Front view',
+                )
+                image_names.append(image_name)
+            values[f'{label}__image_names'] = image_names
     elif comp_type == 'Camera Input':
-        values[label] = st.camera_input(
+        captured = st.camera_input(
             label,
             key=f'{key_prefix}_camera_{idx}',
         )
+        values[label] = captured
+        if captured is not None:
+            name_key = f'{key_prefix}_camera_name_{idx}'
+            _init_widget_state(name_key, '')
+            camera_name = st.text_input(
+                'Name for captured image (optional)',
+                key=name_key,
+                placeholder='e.g. Scanned document',
+            )
+            values[f'{label}__image_names'] = [camera_name]
     elif comp_type == 'Table':
         _render_table_component(component, key_prefix, idx, values)
 
@@ -760,6 +784,7 @@ def build_pdf(form_name, components, values, form_columns=1):
             elif comp_type in ('Image Upload', 'Camera Input'):
                 block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
                 uploaded_value = values.get(label)
+                image_names = values.get(f'{label}__image_names', [])
                 images_to_render = []
                 if comp_type == 'Image Upload':
                     if isinstance(uploaded_value, list):
@@ -774,8 +799,15 @@ def build_pdf(form_name, components, values, form_columns=1):
                     block['lines'].extend(_text_block_lines('(no image uploaded)', 'Helvetica', 12, content_width))
                 else:
                     for image_idx, uploaded_img in enumerate(images_to_render, start=1):
-                        if comp_type == 'Image Upload' and len(images_to_render) > 1:
-                            block['lines'].extend(_text_block_lines(f'Image {image_idx}:', 'Helvetica', 11, content_width))
+                        provided_name = image_names[image_idx - 1].strip() if image_idx - 1 < len(image_names) else ''
+                        if provided_name:
+                            caption = provided_name
+                        elif len(images_to_render) > 1:
+                            caption = f'Image {image_idx}'
+                        else:
+                            caption = ''
+                        if caption:
+                            block['lines'].extend(_text_block_lines(f'{caption}:', 'Helvetica', 11, content_width))
                         try:
                             image = Image.open(uploaded_img)
                             img_width, img_height = image.size
