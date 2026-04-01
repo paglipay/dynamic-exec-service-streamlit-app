@@ -3233,11 +3233,114 @@ with render_tab:
 
             if st.session_state.get('render_loaded_values'):
                 _loaded_label = st.session_state.get('render_loaded_label', 'Loaded submission')
+                st.markdown(f'**Loaded:** {_loaded_label}')
+
+                # Initialise per-label image states whenever a fresh submission is loaded
+                if st.session_state.get('render_loaded_img_init_needed'):
+                    _lv = st.session_state.render_loaded_values
+                    for _ic_comp in st.session_state.builder_components:
+                        _ic_type = _ic_comp.get('type')
+                        _ic_label = _ic_comp.get('label', '')
+                        if _ic_type == 'Image Upload':
+                            _ic_imgs = _lv.get(_ic_label, []) or []
+                            _ic_names = _lv.get(f'{_ic_label}__image_names', []) or []
+                            st.session_state[f'render_loaded_img_{_ic_label}'] = [
+                                {'buf': _img, 'name': _ic_names[_ii] if _ii < len(_ic_names) else ''}
+                                for _ii, _img in enumerate(_ic_imgs) if _img is not None
+                            ]
+                        elif _ic_type == 'Camera Input':
+                            _ic_cam = _lv.get(_ic_label)
+                            _ic_cnames = _lv.get(f'{_ic_label}__image_names', []) or []
+                            st.session_state[f'render_loaded_cam_{_ic_label}'] = (
+                                {'buf': _ic_cam, 'name': _ic_cnames[0] if _ic_cnames else ''}
+                                if _ic_cam is not None else None
+                            )
+                    st.session_state.render_loaded_img_init_needed = False
+
+                # Image preview / delete / add per image component
+                for _ic_comp in st.session_state.builder_components:
+                    _ic_type = _ic_comp.get('type')
+                    _ic_label = _ic_comp.get('label', '')
+
+                    if _ic_type == 'Image Upload':
+                        _img_sk = f'render_loaded_img_{_ic_label}'
+                        _cur_entries = list(st.session_state.get(_img_sk, []))
+                        if _cur_entries:
+                            st.markdown(f'**{_ic_label}**')
+                            _keep_entries = []
+                            for _ei, _entry in enumerate(_cur_entries):
+                                _entry['buf'].seek(0)
+                                _c_img, _c_del = st.columns([5, 1])
+                                with _c_img:
+                                    st.image(_entry['buf'], use_container_width=True)
+                                    if _entry.get('name'):
+                                        st.caption(_entry['name'])
+                                with _c_del:
+                                    if not st.button('🗑️', key=f'render_del_loaded_img_{_ic_label}_{_ei}', help='Remove this image'):
+                                        _entry['buf'].seek(0)
+                                        _keep_entries.append(_entry)
+                            st.session_state[_img_sk] = _keep_entries
+                        st.file_uploader(
+                            f'Add images — {_ic_label}',
+                            type=['png', 'jpg', 'jpeg'],
+                            accept_multiple_files=True,
+                            key=f'render_add_loaded_img_{_ic_label}',
+                        )
+
+                    elif _ic_type == 'Camera Input':
+                        _cam_sk = f'render_loaded_cam_{_ic_label}'
+                        _cam_entry = st.session_state.get(_cam_sk)
+                        st.markdown(f'**{_ic_label}**')
+                        if _cam_entry:
+                            _cam_entry['buf'].seek(0)
+                            _c_img, _c_del = st.columns([5, 1])
+                            with _c_img:
+                                st.image(_cam_entry['buf'], use_container_width=True)
+                                if _cam_entry.get('name'):
+                                    st.caption(_cam_entry['name'])
+                            with _c_del:
+                                if st.button('🗑️', key=f'render_del_loaded_cam_{_ic_label}', help='Remove this image'):
+                                    st.session_state[_cam_sk] = None
+                            _cam_entry['buf'].seek(0)
+                        st.file_uploader(
+                            f'Replace / add — {_ic_label}',
+                            type=['png', 'jpg', 'jpeg'],
+                            key=f'render_add_loaded_cam_{_ic_label}',
+                        )
+
                 if st.button('📄 Generate PDF from Loaded', use_container_width=True):
+                    # Merge current image session state + new uploads into the loaded values
+                    _merged_vals = dict(st.session_state.render_loaded_values)
+                    for _ic_comp in st.session_state.builder_components:
+                        _ic_type = _ic_comp.get('type')
+                        _ic_label = _ic_comp.get('label', '')
+                        if _ic_type == 'Image Upload':
+                            _entries = list(st.session_state.get(f'render_loaded_img_{_ic_label}', []))
+                            _new_files = st.session_state.get(f'render_add_loaded_img_{_ic_label}') or []
+                            _all_bufs, _all_names = [], []
+                            for _e in _entries:
+                                _e['buf'].seek(0)
+                                _all_bufs.append(_e['buf'])
+                                _all_names.append(_e.get('name', ''))
+                            for _nf in _new_files:
+                                _all_bufs.append(_nf)
+                                _all_names.append(getattr(_nf, 'name', '') or '')
+                            _merged_vals[_ic_label] = _all_bufs
+                            _merged_vals[f'{_ic_label}__image_names'] = _all_names
+                        elif _ic_type == 'Camera Input':
+                            _cam_entry = st.session_state.get(f'render_loaded_cam_{_ic_label}')
+                            _new_cam = st.session_state.get(f'render_add_loaded_cam_{_ic_label}')
+                            if _new_cam is not None:
+                                _merged_vals[_ic_label] = _new_cam
+                            elif _cam_entry:
+                                _cam_entry['buf'].seek(0)
+                                _merged_vals[_ic_label] = _cam_entry['buf']
+                            else:
+                                _merged_vals[_ic_label] = None
                     _pdf_data = build_pdf(
                         export_name,
                         st.session_state.builder_components,
-                        st.session_state.render_loaded_values,
+                        _merged_vals,
                         form_columns=st.session_state.get('builder_layout_columns', 1),
                     )
                     st.session_state.generated_pdf_data = _pdf_data
