@@ -158,6 +158,15 @@ def _coerce_table_rows(value):
     return max(1, min(25, row_count))
 
 
+def _coerce_pdf_col_width(value):
+    """Coerce a column's relative PDF width (1–10). Default 1 = equal width."""
+    try:
+        w = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(10, w))
+
+
 def _clean_dropdown_options(options):
     if not isinstance(options, list):
         options = []
@@ -185,6 +194,7 @@ def _normalize_table_columns(columns):
         cleaned_column = {
             'name': name.strip(),
             'type': col_type,
+            'pdf_width': _coerce_pdf_col_width(column.get('pdf_width', 1)),
         }
 
         if col_type == 'Dropdown':
@@ -193,7 +203,7 @@ def _normalize_table_columns(columns):
 
         normalized.append(cleaned_column)
 
-    return normalized or [{'name': 'Column 1', 'type': 'Text Input'}]
+    return normalized or [{'name': 'Column 1', 'type': 'Text Input', 'pdf_width': 1}]
 
 
 def _parse_date_value(value):
@@ -940,13 +950,17 @@ def build_pdf(form_name, components, values, form_columns=1):
                     table_columns = [column.get('name', 'Column') for column in columns]
                     table_col_count = max(1, len(table_columns))
                     table_width = content_width
-                    col_width = table_width / float(table_col_count)
+
+                    raw_weights = [_coerce_pdf_col_width(column.get('pdf_width', 1)) for column in columns]
+                    total_weight = sum(raw_weights) or table_col_count
+                    col_widths = [table_width * w / total_weight for w in raw_weights]
+
                     table_font_size = 9
                     table_line_h = 11
 
                     header_cells = [
-                        wrap_text(col_name, 'Helvetica-Bold', table_font_size, max(20, col_width - 6))
-                        for col_name in table_columns
+                        wrap_text(col_name, 'Helvetica-Bold', table_font_size, max(20, col_widths[ci] - 6))
+                        for ci, col_name in enumerate(table_columns)
                     ]
                     header_height = max(1, max(len(lines) for lines in header_cells)) * table_line_h + 4
 
