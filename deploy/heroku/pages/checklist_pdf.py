@@ -951,12 +951,38 @@ def build_pdf(form_name, components, values, form_columns=1):
                     table_col_count = max(1, len(table_columns))
                     table_width = content_width
 
-                    raw_weights = [_coerce_pdf_col_width(column.get('pdf_width', 1)) for column in columns]
-                    total_weight = sum(raw_weights) or table_col_count
-                    col_widths = [table_width * w / total_weight for w in raw_weights]
-
                     table_font_size = 9
                     table_line_h = 11
+
+                    # Auto-size columns by measuring header + cell content widths,
+                    # then multiply by pdf_width as a relative scaling factor.
+                    natural_widths = []
+                    for column in columns:
+                        col_name = column.get('name', 'Column')
+                        col_type = column.get('type', 'Text Input')
+                        nat_w = stringWidth(col_name, 'Helvetica-Bold', table_font_size) + 8
+                        for row_data in row_values:
+                            if not isinstance(row_data, dict):
+                                continue
+                            cell_value = row_data.get(col_name)
+                            if col_type == 'Checkbox':
+                                display_text = 'Yes'
+                            elif col_type == 'Date Picker':
+                                if cell_value is None:
+                                    display_text = ''
+                                else:
+                                    display_text = cell_value.isoformat() if hasattr(cell_value, 'isoformat') else str(cell_value)
+                            elif col_type in ('Image Upload', 'Camera Input'):
+                                display_text = '(image attached)' if cell_value else ''
+                            else:
+                                display_text = str(cell_value or '').split('\n')[0]
+                            cell_w = stringWidth(display_text, 'Helvetica', table_font_size) + 8
+                            nat_w = max(nat_w, cell_w)
+                        pdf_w = _coerce_pdf_col_width(column.get('pdf_width', 1))
+                        natural_widths.append(max(20, nat_w) * pdf_w)
+
+                    total_natural = sum(natural_widths) or table_col_count
+                    col_widths = [table_width * w / total_natural for w in natural_widths]
 
                     header_cells = [
                         wrap_text(col_name, 'Helvetica-Bold', table_font_size, max(20, col_widths[ci] - 6))
