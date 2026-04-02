@@ -993,9 +993,11 @@ def build_pdf(form_name, components, values, form_columns=1):
                             else:
                                 display_text = str(cell_value or '')
 
+                            ci = columns.index(column)
+                            cell_col_w = col_widths[ci] if ci < len(col_widths) else col_widths[-1]
                             wrapped = []
                             for raw_line in display_text.split('\n'):
-                                wrapped.extend(wrap_text(raw_line, 'Helvetica', table_font_size, max(20, col_width - 6)))
+                                wrapped.extend(wrap_text(raw_line, 'Helvetica', table_font_size, max(20, cell_col_w - 6)))
                             if not wrapped:
                                 wrapped = ['']
 
@@ -1009,7 +1011,7 @@ def build_pdf(form_name, components, values, form_columns=1):
                     block['table'] = {
                         'width': table_width,
                         'columns': table_columns,
-                        'col_width': col_width,
+                        'col_widths': col_widths,
                         'header_cells': header_cells,
                         'header_height': header_height,
                         'rows': table_rows,
@@ -1064,17 +1066,24 @@ def build_pdf(form_name, components, values, form_columns=1):
                     table_top = text_y - 2
                     table_left = cell_x
                     table_width = table_block['width']
-                    col_width = table_block['col_width']
+                    col_widths = table_block['col_widths']
                     header_height = table_block['header_height']
                     row_heights = table_block['row_heights']
                     total_table_height = header_height + sum(row_heights)
                     table_bottom = table_top - total_table_height
 
+                    # Compute cumulative x positions for each column boundary
+                    col_x_positions = []
+                    cx = table_left
+                    for cw in col_widths:
+                        col_x_positions.append(cx)
+                        cx += cw
+
                     pdf_canvas.setLineWidth(0.6)
                     pdf_canvas.rect(table_left, table_bottom, table_width, total_table_height)
 
                     for col_idx in range(1, len(table_block['columns'])):
-                        x_line = table_left + (col_idx * col_width)
+                        x_line = col_x_positions[col_idx]
                         pdf_canvas.line(x_line, table_top, x_line, table_bottom)
 
                     header_bottom = table_top - header_height
@@ -1087,7 +1096,7 @@ def build_pdf(form_name, components, values, form_columns=1):
 
                     header_text_y = table_top - table_block['line_height']
                     for col_idx, header_lines in enumerate(table_block['header_cells']):
-                        text_x = table_left + (col_idx * col_width) + 3
+                        text_x = col_x_positions[col_idx] + 3
                         line_y = header_text_y
                         pdf_canvas.setFont('Helvetica-Bold', table_block['font_size'])
                         for header_line in header_lines:
@@ -1098,7 +1107,7 @@ def build_pdf(form_name, components, values, form_columns=1):
                     for row_idx, row_cells in enumerate(table_block['rows']):
                         row_height = row_heights[row_idx]
                         for col_idx, cell_lines in enumerate(row_cells):
-                            text_x = table_left + (col_idx * col_width) + 3
+                            text_x = col_x_positions[col_idx] + 3
                             line_y = row_top - table_block['line_height']
                             pdf_canvas.setFont('Helvetica', table_block['font_size'])
                             for cell_line in cell_lines:
@@ -2820,9 +2829,19 @@ with builder_tab:
                 list(TABLE_COLUMN_TYPES),
                 key=f'builder_table_col_type_{col_idx}',
             )
+            col_pdf_width = st.number_input(
+                f'Column {col_idx + 1} PDF width (1–10, relative)',
+                min_value=1,
+                max_value=10,
+                value=1,
+                step=1,
+                key=f'builder_table_col_pdf_width_{col_idx}',
+                help='Relative width in the PDF. Higher = wider column.',
+            )
             table_column_entry = {
                 'name': col_header.strip(),
                 'type': col_type,
+                'pdf_width': int(col_pdf_width),
             }
             if col_type == 'Dropdown':
                 options_text = st.text_area(
@@ -3052,9 +3071,19 @@ with builder_tab:
                     index=default_col_type_index,
                     key=f'edit_table_col_type_{selected_idx}_{col_idx}',
                 )
+                edit_col_pdf_width = st.number_input(
+                    f'Column {col_idx + 1} PDF width (1–10, relative)',
+                    min_value=1,
+                    max_value=10,
+                    value=_coerce_pdf_col_width(current_column.get('pdf_width', 1)),
+                    step=1,
+                    key=f'edit_table_col_pdf_width_{selected_idx}_{col_idx}',
+                    help='Relative width in the PDF. Higher = wider column.',
+                )
                 updated_column = {
                     'name': edit_col_name.strip(),
                     'type': edit_col_type,
+                    'pdf_width': int(edit_col_pdf_width),
                 }
                 if edit_col_type == 'Dropdown':
                     existing_col_options = current_column.get('options', [])
