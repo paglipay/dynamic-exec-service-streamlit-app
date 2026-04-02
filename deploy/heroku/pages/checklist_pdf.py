@@ -3206,6 +3206,10 @@ with render_tab:
             )
             st.session_state.render_pending_restore = None
 
+        # Apply pending save name BEFORE the save name widget is instantiated
+        if 'render_pending_save_name' in st.session_state:
+            st.session_state['render_save_doc_name'] = st.session_state.pop('render_pending_save_name')
+
         # Initialise per-label loaded image states so _render_one_component can pick them up
         if st.session_state.get('render_loaded_img_init_needed'):
             _lv_init = st.session_state.render_loaded_values
@@ -3343,8 +3347,8 @@ with render_tab:
                         st.session_state.render_loaded_values = _restored
                         st.session_state.render_loaded_label = _sub_labels[_selected_idx]
                         st.session_state.render_loaded_img_init_needed = True
-                        # Pre-fill the Save name with the loaded submission's name
-                        st.session_state['render_save_doc_name'] = _sub_labels[_selected_idx]
+                        # Pre-fill the Save name with the loaded submission's name (applied before widget renders)
+                        st.session_state['render_pending_save_name'] = _sub_labels[_selected_idx]
                         # Store for application before widgets are instantiated on next run
                         st.session_state.render_pending_restore = _restored
                         trigger_rerun()
