@@ -2405,12 +2405,12 @@ def show_pdf_preview_modal():
     if preview_images:
         st.caption(f'{len(preview_images)} page(s)')
         if len(preview_images) == 1:
-            st.image(preview_images[0], use_column_width=True, caption='Page 1')
+            st.image(preview_images[0], use_container_width=True, caption='Page 1')
         else:
             page_tabs = st.tabs([f'Page {i + 1}' for i in range(len(preview_images))])
             for idx, tab in enumerate(page_tabs):
                 with tab:
-                    st.image(preview_images[idx], use_column_width=True, caption=f'Page {idx + 1}')
+                    st.image(preview_images[idx], use_container_width=True, caption=f'Page {idx + 1}')
     else:
         st.info('PDF image preview not available — install poppler-utils to enable it.')
         st.code('sudo apt-get install poppler-utils && pip install pdf2image', language='bash')
