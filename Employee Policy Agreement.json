@@ -1,0 +1,72 @@
+{
+  "name": "Employee Policy Agreement",
+  "form_columns": 4,
+  "components": [
+    { "type": "Text", "label": "=== Employee Policy Agreement ===", "span": 4 },
+
+    { "type": "Text Input", "label": "Agreement ID", "default_value": "EPA-2026-001", "span": 2 },
+    { "type": "Date Picker", "label": "Agreement Date", "default_value": "2026-03-21", "span": 2 },
+    { "type": "Date Picker", "label": "Effective Date", "default_value": "2026-03-21", "span": 2 },
+    { "type": "Date Picker", "label": "Next Policy Review Date", "default_value": "2027-03-21", "span": 2 },
+
+    { "type": "Text", "label": "=== Employee Information ===", "span": 4 },
+
+    { "type": "Text Input", "label": "Employee Full Name", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Employee ID", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Department", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Job Title", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Work Email", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Supervisor Name", "default_value": "", "span": 2 },
+
+    { "type": "Text", "label": "=== 1) Code of Conduct and Professional Behavior ===", "span": 4 },
+    { "type": "Text", "label": "Employees are expected to maintain professionalism, respect coworkers and clients, avoid harassment/discrimination, and follow organizational values in all work-related interactions.", "span": 4 },
+    { "type": "Checkbox", "label": "Acknowledged and agreed: Code of Conduct and Professional Behavior.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== 2) Attendance, Timekeeping, and Workplace Responsibility ===", "span": 4 },
+    { "type": "Text", "label": "Employees must follow approved schedules, report attendance accurately, submit leave/absence requests properly, and meet assigned job responsibilities.", "span": 4 },
+    { "type": "Checkbox", "label": "Acknowledged and agreed: Attendance, Timekeeping, and Workplace Responsibility.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== 3) Information Security and Account Protection ===", "span": 4 },
+    { "type": "Text", "label": "Employees must protect passwords and credentials, use approved security controls, and immediately report suspected compromise, phishing, or unauthorized access.", "span": 4 },
+    { "type": "Checkbox", "label": "Acknowledged and agreed: Information Security and Account Protection.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== 4) Confidentiality and Data Privacy ===", "span": 4 },
+    { "type": "Text", "label": "Employees must handle company and personal data responsibly, access only what is required for their role, and comply with confidentiality/privacy obligations and legal requirements.", "span": 4 },
+    { "type": "Checkbox", "label": "Acknowledged and agreed: Confidentiality and Data Privacy.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== 5) Acceptable Use of Company Systems ===", "span": 4 },
+    { "type": "Text", "label": "Company systems, devices, network, and applications are for authorized business use. Prohibited acts include malicious activity, unauthorized software, and misuse of company resources.", "span": 4 },
+    { "type": "Checkbox", "label": "Acknowledged and agreed: Acceptable Use of Company Systems.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== 6) Remote Work, Devices, and Physical Security ===", "span": 4 },
+    { "type": "Text", "label": "When working remotely or using portable devices, employees must secure equipment, prevent unauthorized viewing/access, and follow device handling and reporting procedures.", "span": 4 },
+    { "type": "Checkbox", "label": "Acknowledged and agreed: Remote Work, Devices, and Physical Security.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== 7) Reporting, Investigations, and Cooperation ===", "span": 4 },
+    { "type": "Text", "label": "Employees must promptly report incidents, policy breaches, safety concerns, and suspected misconduct, and cooperate in internal review or investigation processes.", "span": 4 },
+    { "type": "Checkbox", "label": "Acknowledged and agreed: Reporting, Investigations, and Cooperation.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== 8) Disciplinary Action and Policy Updates ===", "span": 4 },
+    { "type": "Text", "label": "Violations may result in disciplinary action up to and including termination, subject to company policy and applicable law. Policies may be updated and communicated periodically.", "span": 4 },
+    { "type": "Checkbox", "label": "Acknowledged and agreed: Disciplinary Action and Policy Updates.", "default": false, "span": 4 },
+
+    { "type": "Text", "label": "=== Final Agreement and Consent ===", "span": 4 },
+    { "type": "Text", "label": "By signing below, I confirm that I have read this Employee Policy Agreement, had the opportunity to ask questions, and agree to comply with all applicable company policies and procedures.", "span": 4 },
+
+    { "type": "Checkbox", "label": "I acknowledge and agree to all policy sections listed above.", "default": false, "span": 4 },
+    { "type": "Checkbox", "label": "I understand that this acknowledgment remains in effect during my employment unless superseded by a newer policy acknowledgment.", "default": false, "span": 4 },
+
+    { "type": "Date Picker", "label": "Employee Acknowledgment Date", "default_value": "", "span": 2 },
+    { "type": "Date Picker", "label": "HR/Manager Review Date", "default_value": "", "span": 2 },
+
+    { "type": "Signature", "label": "Employee Signature", "default_value": "", "span": 2 },
+    { "type": "Signature", "label": "Manager / HR Signature", "default_value": "", "span": 2 },
+
+    { "type": "Text Input", "label": "Manager / HR Name", "default_value": "", "span": 2 },
+    { "type": "Text Input", "label": "Manager / HR Title", "default_value": "", "span": 2 },
+
+    { "type": "Textarea", "label": "Comments / Exceptions (if any)", "default_value": "", "span": 4 }
+  ],
+  "email_recipients_text": "",
+  "email_optional_message": ""
+}

@@ -347,7 +347,15 @@ def _sanitize_table_editor_value(value, col_type, options=None):
         return bool(value)
 
     if col_type == 'Date Picker':
-        return value if value not in ('', None) else None
+        if value in ('', None):
+            return None
+        # Convert date object back to ISO string format for storage
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        # Already a string, return as-is
+        return str(value) if value else None
 
     if col_type == 'Dropdown':
         cleaned_options = _clean_dropdown_options(options or []) or ['Option 1']
@@ -472,7 +480,14 @@ def _render_table_component(component, key_prefix, idx, values):
         editor_row = {}
         for column in editor_columns:
             col_name = column.get('name', 'Column')
-            editor_row[col_name] = row_entry.get(col_name, _table_default_cell_value(column))
+            col_type = column.get('type', 'Text Input')
+            raw_value = row_entry.get(col_name, _table_default_cell_value(column))
+            
+            # Convert string dates to date objects for Date Picker columns
+            if col_type == 'Date Picker' and raw_value not in (None, ''):
+                raw_value = _parse_date_value(raw_value)
+            
+            editor_row[col_name] = raw_value
         editor_rows.append(editor_row)
 
     if not editor_rows:
@@ -589,17 +604,147 @@ def _render_one_component(component, key_prefix, idx, values):
             placeholder='Type full name as signature',
         )
     elif comp_type == 'Image Upload':
-        values[label] = st.file_uploader(
-            label,
-            type=['png', 'jpg', 'jpeg'],
-            accept_multiple_files=True,
-            key=f'{key_prefix}_image_{idx}',
+        desc_key = f'{key_prefix}_image_desc_{idx}'
+        _init_widget_state(desc_key, '')
+        values[f'{label}__description'] = st.text_input(
+            f'{label} — description (optional)',
+            key=desc_key,
+            placeholder='e.g. Site inspection photos',
         )
+        _loaded_img_sk = f'render_loaded_img_{label}'
+        if _loaded_img_sk in st.session_state:
+            _cur_entries = list(st.session_state[_loaded_img_sk])
+            _keep_entries = []
+            for _ei, _entry in enumerate(_cur_entries):
+                _entry['buf'].seek(0)
+                _c_img, _c_del = st.columns([5, 1])
+                with _c_img:
+                    st.image(_entry['buf'], use_container_width=True)
+                with _c_del:
+                    if not st.button('🗑️', key=f'{key_prefix}_del_loaded_img_{label}_{_ei}', help='Remove'):
+                        _entry['buf'].seek(0)
+                        _keep_entries.append(_entry)
+                _lname_key = f'{key_prefix}_loaded_img_name_{label}_{_ei}'
+                _init_widget_state(_lname_key, _entry.get('name', ''))
+                _entry['name'] = st.text_input(
+                    f'Name for image {_ei + 1} (optional)',
+                    key=_lname_key,
+                    placeholder='e.g. Front view',
+                )
+            st.session_state[_loaded_img_sk] = _keep_entries
+            new_uploads = st.file_uploader(
+                f'Add more — {label}',
+                type=['png', 'jpg', 'jpeg'],
+                accept_multiple_files=True,
+                key=f'{key_prefix}_image_{idx}',
+            )
+            new_names = []
+            if new_uploads:
+                for _ni, _nf in enumerate(new_uploads):
+                    st.image(_nf, use_container_width=True)
+                    _nn_key = f'{key_prefix}_image_name_{idx}_{_ni}'
+                    _init_widget_state(_nn_key, '')
+                    new_names.append(st.text_input(
+                        f'Name for "{getattr(_nf, "name", "")}" (optional)',
+                        key=_nn_key,
+                        placeholder='e.g. Front view',
+                    ))
+            _all_bufs = [e['buf'] for e in st.session_state[_loaded_img_sk]]
+            _all_names = [e.get('name', '') for e in st.session_state[_loaded_img_sk]]
+            if new_uploads:
+                _all_bufs.extend(new_uploads)
+                _all_names.extend(new_names)
+            values[label] = _all_bufs
+            values[f'{label}__image_names'] = _all_names
+        else:
+            uploaded_files = st.file_uploader(
+                label,
+                type=['png', 'jpg', 'jpeg'],
+                accept_multiple_files=True,
+                key=f'{key_prefix}_image_{idx}',
+            )
+            values[label] = uploaded_files
+            if uploaded_files:
+                image_names = []
+                for img_idx, uploaded_file in enumerate(uploaded_files):
+                    default_name = getattr(uploaded_file, 'name', '') or ''
+                    name_key = f'{key_prefix}_image_name_{idx}_{img_idx}'
+                    _init_widget_state(name_key, '')
+                    st.image(uploaded_file, use_container_width=True)
+                    image_name = st.text_input(
+                        f'Name for "{default_name}" (optional)',
+                        key=name_key,
+                        placeholder='e.g. Front view',
+                    )
+                    image_names.append(image_name)
+                values[f'{label}__image_names'] = image_names
     elif comp_type == 'Camera Input':
-        values[label] = st.camera_input(
-            label,
-            key=f'{key_prefix}_camera_{idx}',
+        desc_key = f'{key_prefix}_camera_desc_{idx}'
+        _init_widget_state(desc_key, '')
+        values[f'{label}__description'] = st.text_input(
+            f'{label} — description (optional)',
+            key=desc_key,
+            placeholder='e.g. Equipment condition photo',
         )
+        _loaded_cam_sk = f'render_loaded_cam_{label}'
+        if _loaded_cam_sk in st.session_state:
+            _cam_entry = st.session_state[_loaded_cam_sk]
+            if _cam_entry:
+                _cam_entry['buf'].seek(0)
+                _c_img, _c_del = st.columns([5, 1])
+                with _c_img:
+                    st.image(_cam_entry['buf'], use_container_width=True)
+                with _c_del:
+                    if st.button('🗑️', key=f'{key_prefix}_del_loaded_cam_{label}', help='Remove'):
+                        st.session_state[_loaded_cam_sk] = None
+                        _cam_entry = None
+                if _cam_entry:
+                    _cam_entry['buf'].seek(0)
+                    _cname_key = f'{key_prefix}_loaded_cam_name_{label}'
+                    _init_widget_state(_cname_key, _cam_entry.get('name', ''))
+                    _cam_entry['name'] = st.text_input(
+                        'Name for captured image (optional)',
+                        key=_cname_key,
+                        placeholder='e.g. Front view',
+                    )
+            new_cam = st.file_uploader(
+                f'Replace / add — {label}',
+                type=['png', 'jpg', 'jpeg'],
+                key=f'{key_prefix}_camera_{idx}',
+            )
+            if new_cam is not None:
+                st.image(new_cam, use_container_width=True)
+                _new_cam_name_key = f'{key_prefix}_camera_name_{idx}'
+                _init_widget_state(_new_cam_name_key, '')
+                _new_cam_name = st.text_input(
+                    'Name for new image (optional)',
+                    key=_new_cam_name_key,
+                    placeholder='e.g. Front view',
+                )
+                values[label] = new_cam
+                values[f'{label}__image_names'] = [_new_cam_name]
+            elif _cam_entry:
+                _cam_entry['buf'].seek(0)
+                values[label] = _cam_entry['buf']
+                values[f'{label}__image_names'] = [_cam_entry.get('name', '')]
+            else:
+                values[label] = None
+        else:
+            captured = st.camera_input(
+                label,
+                key=f'{key_prefix}_camera_{idx}',
+            )
+            values[label] = captured
+            if captured is not None:
+                name_key = f'{key_prefix}_camera_name_{idx}'
+                _init_widget_state(name_key, '')
+                st.image(captured, use_container_width=True)
+                camera_name = st.text_input(
+                    'Name for captured image (optional)',
+                    key=name_key,
+                    placeholder='e.g. Front view',
+                )
+                values[f'{label}__image_names'] = [camera_name]
     elif comp_type == 'Table':
         _render_table_component(component, key_prefix, idx, values)
 
@@ -743,8 +888,11 @@ def build_pdf(form_name, components, values, form_columns=1):
                 block['lines'].extend(_text_block_lines(f'{label}: {value_text}', 'Helvetica', 12, content_width))
 
             elif comp_type in ('Image Upload', 'Camera Input'):
-                block['lines'].extend(_text_block_lines(f'{label}:', 'Helvetica', 12, content_width))
+                description = str(values.get(f'{label}__description', '') or '').strip()
+                if description:
+                    block['lines'].extend(_text_block_lines(description, 'Helvetica-Bold', 12, content_width))
                 uploaded_value = values.get(label)
+                image_names = values.get(f'{label}__image_names', [])
                 images_to_render = []
                 if comp_type == 'Image Upload':
                     if isinstance(uploaded_value, list):
@@ -759,13 +907,15 @@ def build_pdf(form_name, components, values, form_columns=1):
                     block['lines'].extend(_text_block_lines('(no image uploaded)', 'Helvetica', 12, content_width))
                 else:
                     for image_idx, uploaded_img in enumerate(images_to_render, start=1):
-                        if comp_type == 'Image Upload' and len(images_to_render) > 1:
-                            block['lines'].extend(_text_block_lines(f'Image {image_idx}:', 'Helvetica', 11, content_width))
+                        provided_name = image_names[image_idx - 1].strip() if image_idx - 1 < len(image_names) else ''
+                        if not provided_name and len(images_to_render) > 1:
+                            provided_name = f'Image {image_idx}'
                         try:
                             image = Image.open(uploaded_img)
                             img_width, img_height = image.size
                             if img_width > 0:
-                                max_img_w = content_width
+                                # Reserve right-side space for caption when one is present
+                                max_img_w = content_width * 0.62 if provided_name else content_width
                                 display_width = min(max_img_w, float(img_width))
                                 display_height = display_width * (float(img_height) / float(img_width))
                                 display_height = min(display_height, 180.0)
@@ -773,6 +923,7 @@ def build_pdf(form_name, components, values, form_columns=1):
                                     'image': image,
                                     'width': display_width,
                                     'height': display_height,
+                                    'caption': provided_name,
                                 })
                             else:
                                 block['lines'].extend(_text_block_lines('(image has invalid size)', 'Helvetica', 12, content_width))
@@ -947,15 +1098,22 @@ def build_pdf(form_name, components, values, form_columns=1):
                     text_y = table_bottom - 6
 
                 for image_item in block['images']:
+                    img_y = text_y - image_item['height']
                     pdf_canvas.drawImage(
                         ImageReader(image_item['image']),
                         cell_x,
-                        text_y - image_item['height'],
+                        img_y,
                         width=image_item['width'],
                         height=image_item['height'],
                         preserveAspectRatio=True,
                         mask='auto',
                     )
+                    caption = image_item.get('caption', '')
+                    if caption:
+                        caption_x = cell_x + image_item['width'] + 8
+                        caption_y = img_y + image_item['height'] / 2 - 5
+                        pdf_canvas.setFont('Helvetica', 10)
+                        pdf_canvas.drawString(caption_x, caption_y, caption)
                     text_y -= image_item['height'] + 6
 
             y_pos -= row_height + 6
@@ -1432,7 +1590,7 @@ def sign_pdf_bytes(pdf_data):
             return signed_file.read()
 
 
-def send_signed_pdf_email(recipients, message_text, signed_pdf_data, filename, form_name):
+def send_signed_pdf_email(recipients, message_text, signed_pdf_data, filename, form_name, submission_name=''):
     if not recipients:
         raise ValueError('At least one recipient email is required.')
 
@@ -1442,7 +1600,10 @@ def send_signed_pdf_email(recipients, message_text, signed_pdf_data, filename, f
     message['To'] = ', '.join(recipients)
     if sender:
         message['From'] = sender
-    message['Subject'] = f'Signed checklist PDF: {form_name}'
+    _subject = f'Signed checklist PDF: {form_name}'
+    if submission_name:
+        _subject += f' - {submission_name}'
+    message['Subject'] = _subject
     body = (message_text or '').strip() or 'Please find the signed checklist PDF attached.'
     message.set_content(body)
     message.add_attachment(
@@ -1617,6 +1778,311 @@ def load_persisted_forms(username):
     }
 
 
+def _make_collection_name_from_form(form_name):
+    """Derive a safe MongoDB collection name from a form name."""
+    safe = ''.join(ch if ch.isalnum() or ch in ('_', '-') else '_' for ch in (form_name or 'unnamed'))
+    return f'submission_{safe}'[:120]
+
+
+def _get_submission_collection(form_name):
+    """Return a MongoDB collection scoped to a form name, or None."""
+    if MongoClient is None:
+        return None
+    mongo_uri = _get_setting('MONGODB_URI')
+    if not mongo_uri:
+        return None
+
+    configured_db_name = _get_setting('MONGODB_DB')
+    db_name = str(configured_db_name).strip() if configured_db_name else ''
+    if not db_name:
+        db_name = _database_name_from_uri(mongo_uri) or 'app_data'
+
+    coll_name = _make_collection_name_from_form(form_name)
+    try:
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
+        client.admin.command('ping')
+        return client[db_name][coll_name]
+    except Exception:
+        return None
+
+
+def _file_to_b64(file_like):
+    """Read an uploaded file / BytesIO and return a base64 string."""
+    try:
+        if hasattr(file_like, 'seek'):
+            file_like.seek(0)
+        return base64.b64encode(file_like.read()).decode('utf-8')
+    except Exception:
+        return None
+
+
+def _serialize_live_values(values, components):
+    """Convert live_values dict to a MongoDB-safe structure.
+
+    Images (UploadedFile / BytesIO) are encoded as base64 strings.
+    Everything else is kept as-is (strings, bools, dates coerced to ISO).
+    """
+    serialized = {}
+    for key, val in values.items():
+        if key.endswith('__image_names') or key.endswith('__description'):
+            serialized[key] = val
+            continue
+
+        comp = next(
+            (c for c in components if c.get('label') == key),
+            None,
+        )
+        comp_type = comp.get('type') if comp else None
+
+        if comp_type == 'Image Upload':
+            if isinstance(val, list):
+                serialized[key] = [
+                    {'b64': _file_to_b64(f), 'name': getattr(f, 'name', '')}
+                    for f in val if f is not None
+                ]
+            else:
+                serialized[key] = None
+        elif comp_type == 'Camera Input':
+            serialized[key] = {'b64': _file_to_b64(val), 'name': 'camera.jpg'} if val is not None else None
+        elif comp_type == 'Date Picker':
+            if val is not None:
+                serialized[key] = val.isoformat() if hasattr(val, 'isoformat') else str(val)
+            else:
+                serialized[key] = None
+        elif comp_type == 'Table':
+            if isinstance(val, list):
+                rows = []
+                for row in val:
+                    if not isinstance(row, dict):
+                        rows.append(row)
+                        continue
+                    clean_row = {}
+                    for col_key, cell in row.items():
+                        if hasattr(cell, 'read'):
+                            clean_row[col_key] = {'b64': _file_to_b64(cell), 'name': getattr(cell, 'name', '')}
+                        elif isinstance(cell, date) and not isinstance(cell, datetime):
+                            clean_row[col_key] = cell.isoformat()
+                        elif isinstance(cell, datetime):
+                            clean_row[col_key] = cell.date().isoformat()
+                        else:
+                            clean_row[col_key] = cell
+                    rows.append(clean_row)
+                serialized[key] = rows
+            else:
+                serialized[key] = val
+        else:
+            serialized[key] = val
+
+    return serialized
+
+
+def _b64_to_bytesio(b64_str, name='image.jpg'):
+    """Return a BytesIO with a .name attribute from a base64 string."""
+    try:
+        data = base64.b64decode(b64_str)
+        buf = BytesIO(data)
+        buf.name = name
+        return buf
+    except Exception:
+        return None
+
+
+def _deserialize_live_values(stored, components):
+    """Reconstruct live_values from a stored (serialized) dict.
+
+    Image fields are returned as BytesIO objects (usable by build_pdf).
+    Note: Streamlit file_uploader widgets cannot be pre-populated; images
+    loaded from MongoDB are only available for PDF export, not re-displayed.
+    """
+    restored = {}
+    for key, val in stored.items():
+        if key.endswith('__image_names') or key.endswith('__description'):
+            restored[key] = val
+            continue
+
+        comp = next(
+            (c for c in components if c.get('label') == key),
+            None,
+        )
+        comp_type = comp.get('type') if comp else None
+
+        if comp_type == 'Image Upload':
+            if isinstance(val, list):
+                restored[key] = [
+                    _b64_to_bytesio(item['b64'], item.get('name', 'image.jpg'))
+                    for item in val
+                    if isinstance(item, dict) and item.get('b64')
+                ]
+            else:
+                restored[key] = []
+        elif comp_type == 'Camera Input':
+            if isinstance(val, dict) and val.get('b64'):
+                restored[key] = _b64_to_bytesio(val['b64'], val.get('name', 'camera.jpg'))
+            else:
+                restored[key] = None
+        elif comp_type == 'Date Picker':
+            restored[key] = _parse_date_value(val)
+        elif comp_type == 'Table':
+            if isinstance(val, list):
+                rows = []
+                for row in val:
+                    if not isinstance(row, dict):
+                        rows.append(row)
+                        continue
+                    clean_row = {}
+                    for col_key, cell in row.items():
+                        if isinstance(cell, dict) and cell.get('b64'):
+                            clean_row[col_key] = _b64_to_bytesio(cell['b64'], cell.get('name', 'image.jpg'))
+                        else:
+                            clean_row[col_key] = cell
+                    rows.append(clean_row)
+                restored[key] = rows
+            else:
+                restored[key] = val
+        else:
+            restored[key] = val
+
+    return restored
+
+
+def _restore_widget_state_from_values(restored, components, key_prefix='live_render'):
+    """Push deserialized submission values into Streamlit session state widget keys
+    so the form renders with the loaded values on the next rerun.
+
+    Image Upload / Camera Input widget state cannot be set (Streamlit limitation),
+    but descriptions, image names, and all text/date/dropdown/checkbox fields are restored.
+    Table row data is also restored.
+    """
+    for idx, component in enumerate(components):
+        comp_type = component.get('type')
+        label = component.get('label', '')
+
+        if comp_type == 'Text Input':
+            val = restored.get(label, '')
+            st.session_state[f'{key_prefix}_text_{idx}'] = str(val or '')
+
+        elif comp_type == 'Textarea':
+            val = restored.get(label, '')
+            st.session_state[f'{key_prefix}_textarea_{idx}'] = str(val or '')
+
+        elif comp_type == 'Signature':
+            val = restored.get(label, '')
+            st.session_state[f'{key_prefix}_signature_{idx}'] = str(val or '')
+
+        elif comp_type == 'Date Picker':
+            val = restored.get(label)
+            parsed = _parse_date_value(val) if not isinstance(val, date) else val
+            if parsed is not None:
+                st.session_state[f'{key_prefix}_date_{idx}'] = parsed
+
+        elif comp_type == 'Dropdown':
+            val = restored.get(label, '')
+            options = component.get('options', [])
+            cleaned = [str(o).strip() for o in options if str(o).strip()]
+            if val in cleaned:
+                st.session_state[f'{key_prefix}_dropdown_{idx}'] = val
+
+        elif comp_type == 'Checkbox':
+            val = restored.get(label, False)
+            st.session_state[f'{key_prefix}_checkbox_{idx}'] = bool(val)
+
+        elif comp_type == 'Image Upload':
+            desc = restored.get(f'{label}__description', '')
+            st.session_state[f'{key_prefix}_image_desc_{idx}'] = str(desc or '')
+            names = restored.get(f'{label}__image_names', [])
+            if isinstance(names, list):
+                for img_idx, name in enumerate(names):
+                    st.session_state[f'{key_prefix}_image_name_{idx}_{img_idx}'] = str(name or '')
+
+        elif comp_type == 'Camera Input':
+            desc = restored.get(f'{label}__description', '')
+            st.session_state[f'{key_prefix}_camera_desc_{idx}'] = str(desc or '')
+            names = restored.get(f'{label}__image_names', [])
+            if isinstance(names, list) and names:
+                st.session_state[f'{key_prefix}_camera_name_{idx}'] = str(names[0] or '')
+
+        elif comp_type == 'Table':
+            rows_state_key = f'{key_prefix}_table_rows_data_{idx}'
+            row_data = restored.get(label)
+            if isinstance(row_data, list):
+                st.session_state[rows_state_key] = row_data
+
+
+def save_form_submission(form_name, doc_name, values, components, username):
+    """Save a filled form submission to the form's own collection.
+
+    - If doc_name is empty: display_name = timestamp; always inserts a new doc.
+    - If doc_name is provided: display_name = doc_name; upserts (overwrites) any
+      existing doc with the same username + form_name + display_name.
+    """
+    coll = _get_submission_collection(form_name)
+    if coll is None:
+        return False, 'MongoDB unavailable.'
+
+    ts = datetime.now(timezone.utc)
+    named = doc_name.strip()
+    display_name = named if named else ts.strftime('%Y-%m-%d %H:%M:%S UTC')
+
+    try:
+        serialized = _serialize_live_values(values, components)
+    except Exception as exc:
+        return False, f'Serialization error: {exc}'
+
+    payload = {
+        'username': username,
+        'form_name': form_name,
+        'display_name': display_name,
+        'saved_at': ts,
+        'values': serialized,
+    }
+
+    try:
+        if named:
+            # Overwrite existing doc with same name, or insert new one.
+            coll.update_one(
+                {'username': username, 'form_name': form_name, 'display_name': display_name},
+                {'$set': payload},
+                upsert=True,
+            )
+        else:
+            coll.insert_one(payload)
+        return True, display_name
+    except Exception as exc:
+        return False, str(exc)
+
+
+def list_form_submissions(form_name, username):
+    """Return list of (display_name, str(_id)) for saved submissions."""
+    coll = _get_submission_collection(form_name)
+    if coll is None:
+        return []
+    try:
+        docs = coll.find(
+            {'username': username, 'form_name': form_name},
+            {'display_name': 1, 'saved_at': 1},
+        ).sort('saved_at', -1).limit(50)
+        return [(d.get('display_name', str(d['_id'])), str(d['_id'])) for d in docs]
+    except Exception:
+        return []
+
+
+def load_form_submission(form_name, doc_id, username):
+    """Load a single saved submission; returns (values_dict | None, error_str | None)."""
+    coll = _get_submission_collection(form_name)
+    if coll is None:
+        return None, 'MongoDB unavailable.'
+    try:
+        from bson import ObjectId
+        doc = coll.find_one({'_id': ObjectId(doc_id), 'username': username, 'form_name': form_name})
+    except Exception as exc:
+        return None, str(exc)
+
+    if not isinstance(doc, dict):
+        return None, 'Document not found.'
+
+    return doc.get('values', {}), None
+
+
 def persist_forms_state():
     username = get_authenticated_username()
     if not username:
@@ -1705,6 +2171,12 @@ def init_state():
         st.session_state.generated_pdf_data = None
     if 'generated_pdf_name' not in st.session_state:
         st.session_state.generated_pdf_name = 'form.pdf'
+    if 'render_loaded_values' not in st.session_state:
+        st.session_state.render_loaded_values = None
+    if 'render_loaded_label' not in st.session_state:
+        st.session_state.render_loaded_label = ''
+    if 'render_pending_restore' not in st.session_state:
+        st.session_state.render_pending_restore = None
     if 'email_recipients_text' not in st.session_state:
         st.session_state.email_recipients_text = ''
     if 'email_optional_message' not in st.session_state:
@@ -1933,12 +2405,12 @@ def show_pdf_preview_modal():
     if preview_images:
         st.caption(f'{len(preview_images)} page(s)')
         if len(preview_images) == 1:
-            st.image(preview_images[0], use_column_width=True, caption='Page 1')
+            st.image(preview_images[0], use_container_width=True, caption='Page 1')
         else:
             page_tabs = st.tabs([f'Page {i + 1}' for i in range(len(preview_images))])
             for idx, tab in enumerate(page_tabs):
                 with tab:
-                    st.image(preview_images[idx], use_column_width=True, caption=f'Page {idx + 1}')
+                    st.image(preview_images[idx], use_container_width=True, caption=f'Page {idx + 1}')
     else:
         st.info('PDF image preview not available — install poppler-utils to enable it.')
         st.code('sudo apt-get install poppler-utils && pip install pdf2image', language='bash')
@@ -1995,6 +2467,7 @@ def show_pdf_preview_modal():
                     signed_pdf_data=signed_pdf_data,
                     filename=f'{pdf_name}_signed.pdf',
                     form_name=pdf_name,
+                    submission_name=st.session_state.get('generated_pdf_submission_name', ''),
                 )
                 st.success(f'Sent signed PDF to {len(recipient_emails)} recipient(s).')
             except Exception as exc:
@@ -2724,6 +3197,41 @@ with render_tab:
         st.caption(f'{comp_count} field(s) — fill in the form below, then generate a PDF preview.')
         st.markdown('---')
 
+        # Apply any pending restore BEFORE widgets are instantiated
+        if st.session_state.get('render_pending_restore'):
+            _restore_widget_state_from_values(
+                st.session_state.render_pending_restore,
+                st.session_state.builder_components,
+                key_prefix='live_render',
+            )
+            st.session_state.render_pending_restore = None
+
+        # Apply pending save name BEFORE the save name widget is instantiated
+        if 'render_pending_save_name' in st.session_state:
+            st.session_state['render_save_doc_name'] = st.session_state.pop('render_pending_save_name')
+
+        # Initialise per-label loaded image states so _render_one_component can pick them up
+        if st.session_state.get('render_loaded_img_init_needed'):
+            _lv_init = st.session_state.render_loaded_values
+            for _lv_comp in st.session_state.builder_components:
+                _lv_type = _lv_comp.get('type')
+                _lv_label = _lv_comp.get('label', '')
+                if _lv_type == 'Image Upload':
+                    _lv_imgs = _lv_init.get(_lv_label, []) or []
+                    _lv_names = _lv_init.get(f'{_lv_label}__image_names', []) or []
+                    st.session_state[f'render_loaded_img_{_lv_label}'] = [
+                        {'buf': _img, 'name': _lv_names[_ii] if _ii < len(_lv_names) else ''}
+                        for _ii, _img in enumerate(_lv_imgs) if _img is not None
+                    ]
+                elif _lv_type == 'Camera Input':
+                    _lv_cam = _lv_init.get(_lv_label)
+                    _lv_cnames = _lv_init.get(f'{_lv_label}__image_names', []) or []
+                    st.session_state[f'render_loaded_cam_{_lv_label}'] = (
+                        {'buf': _lv_cam, 'name': _lv_cnames[0] if _lv_cnames else ''}
+                        if _lv_cam is not None else None
+                    )
+            st.session_state.render_loaded_img_init_needed = False
+
         live_values = render_components(
             st.session_state.builder_components,
             'live_render',
@@ -2755,8 +3263,107 @@ with render_tab:
                 )
                 st.session_state.generated_pdf_data = pdf_data
                 st.session_state.generated_pdf_name = export_name
+                st.session_state.generated_pdf_submission_name = ''
                 show_pdf_preview_modal()
-        with col2:
             if st.session_state.generated_pdf_data:
                 if st.button('👁️ View Last Preview', use_container_width=True):
+                    show_pdf_preview_modal()
+
+        # ── Save to MongoDB ───────────────────────────────────────────────────
+        st.markdown('---')
+        st.markdown('#### 💾 Save Submission')
+        _submission_coll_available = _get_submission_collection(active_form_name) is not None
+
+        if not _submission_coll_available:
+            st.info('MongoDB is not configured (set MONGODB_URI). Saving is unavailable.')
+        else:
+            _current_user = get_authenticated_username()
+            save_doc_name_key = 'render_save_doc_name'
+            if save_doc_name_key not in st.session_state:
+                st.session_state[save_doc_name_key] = ''
+
+            _save_name_input = st.text_input(
+                'Save name (optional)',
+                key=save_doc_name_key,
+                placeholder='e.g. Site visit April 2026',
+            )
+
+            if st.button('💾 Save to MongoDB', use_container_width=True):
+                _ok, _label = save_form_submission(
+                    active_form_name,
+                    _save_name_input,
+                    live_values,
+                    st.session_state.builder_components,
+                    _current_user,
+                )
+                if _ok:
+                    st.success(f'✅ Saved as "{_label}"')
+                    # clear cached submission list so the load dropdown refreshes
+                    if 'render_submission_list' in st.session_state:
+                        del st.session_state['render_submission_list']
+                else:
+                    st.error(f'Save failed: {_label}')
+
+        # ── Load from MongoDB ─────────────────────────────────────────────────
+        st.markdown('#### 📂 Load Saved Submission')
+        if not _submission_coll_available:
+            st.info('MongoDB is not configured — loading is unavailable.')
+        else:
+            _current_user = get_authenticated_username()
+
+            if st.button('🔄 Refresh list', key='render_refresh_submissions'):
+                if 'render_submission_list' in st.session_state:
+                    del st.session_state['render_submission_list']
+
+            if 'render_submission_list' not in st.session_state:
+                st.session_state.render_submission_list = list_form_submissions(active_form_name, _current_user)
+
+            _submissions = st.session_state.render_submission_list
+
+            if not _submissions:
+                st.caption('No saved submissions found for this form.')
+            else:
+                _sub_labels = [label for label, _ in _submissions]
+                _sub_ids = [doc_id for _, doc_id in _submissions]
+                _selected_idx = st.selectbox(
+                    'Saved submissions',
+                    range(len(_sub_labels)),
+                    format_func=lambda i: _sub_labels[i],
+                    key='render_load_submission_select',
+                )
+                if st.button('📂 Load selected submission', use_container_width=True):
+                    _loaded_values, _load_err = load_form_submission(
+                        active_form_name,
+                        _sub_ids[_selected_idx],
+                        _current_user,
+                    )
+                    if _load_err:
+                        st.error(f'Load failed: {_load_err}')
+                    else:
+                        _restored = _deserialize_live_values(
+                            _loaded_values,
+                            st.session_state.builder_components,
+                        )
+                        st.session_state.render_loaded_values = _restored
+                        st.session_state.render_loaded_label = _sub_labels[_selected_idx]
+                        st.session_state.render_loaded_img_init_needed = True
+                        # Pre-fill the Save name with the loaded submission's name (applied before widget renders)
+                        st.session_state['render_pending_save_name'] = _sub_labels[_selected_idx]
+                        # Store for application before widgets are instantiated on next run
+                        st.session_state.render_pending_restore = _restored
+                        trigger_rerun()
+
+            if st.session_state.get('render_loaded_values'):
+                _loaded_label = st.session_state.get('render_loaded_label', 'Loaded submission')
+                st.markdown(f'**Loaded:** {_loaded_label}')
+                if st.button('📄 Generate PDF from Loaded', use_container_width=True):
+                    _pdf_data = build_pdf(
+                        export_name,
+                        st.session_state.builder_components,
+                        live_values,
+                        form_columns=st.session_state.get('builder_layout_columns', 1),
+                    )
+                    st.session_state.generated_pdf_data = _pdf_data
+                    st.session_state.generated_pdf_name = export_name
+                    st.session_state.generated_pdf_submission_name = st.session_state.get('render_loaded_label', '')
                     show_pdf_preview_modal()
