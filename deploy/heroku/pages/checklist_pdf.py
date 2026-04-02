@@ -3279,7 +3279,7 @@ with render_tab:
                 st.session_state[save_doc_name_key] = ''
 
             _save_name_input = st.text_input(
-                'Save name (optional — a timestamp is always appended)',
+                'Save name (optional)',
                 key=save_doc_name_key,
                 placeholder='e.g. Site visit April 2026',
             )
