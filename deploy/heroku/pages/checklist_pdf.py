@@ -1590,7 +1590,7 @@ def sign_pdf_bytes(pdf_data):
             return signed_file.read()
 
 
-def send_signed_pdf_email(recipients, message_text, signed_pdf_data, filename, form_name):
+def send_signed_pdf_email(recipients, message_text, signed_pdf_data, filename, form_name, submission_name=''):
     if not recipients:
         raise ValueError('At least one recipient email is required.')
 
@@ -1600,7 +1600,10 @@ def send_signed_pdf_email(recipients, message_text, signed_pdf_data, filename, f
     message['To'] = ', '.join(recipients)
     if sender:
         message['From'] = sender
-    message['Subject'] = f'Signed checklist PDF: {form_name}'
+    _subject = f'Signed checklist PDF: {form_name}'
+    if submission_name:
+        _subject += f' - {submission_name}'
+    message['Subject'] = _subject
     body = (message_text or '').strip() or 'Please find the signed checklist PDF attached.'
     message.set_content(body)
     message.add_attachment(
@@ -2464,6 +2467,7 @@ def show_pdf_preview_modal():
                     signed_pdf_data=signed_pdf_data,
                     filename=f'{pdf_name}_signed.pdf',
                     form_name=pdf_name,
+                    submission_name=st.session_state.get('generated_pdf_submission_name', ''),
                 )
                 st.success(f'Sent signed PDF to {len(recipient_emails)} recipient(s).')
             except Exception as exc:
@@ -3255,8 +3259,8 @@ with render_tab:
                 )
                 st.session_state.generated_pdf_data = pdf_data
                 st.session_state.generated_pdf_name = export_name
+                st.session_state.generated_pdf_submission_name = ''
                 show_pdf_preview_modal()
-        with col2:
             if st.session_state.generated_pdf_data:
                 if st.button('👁️ View Last Preview', use_container_width=True):
                     show_pdf_preview_modal()
@@ -3355,4 +3359,5 @@ with render_tab:
                     )
                     st.session_state.generated_pdf_data = _pdf_data
                     st.session_state.generated_pdf_name = export_name
+                    st.session_state.generated_pdf_submission_name = st.session_state.get('render_loaded_label', '')
                     show_pdf_preview_modal()
