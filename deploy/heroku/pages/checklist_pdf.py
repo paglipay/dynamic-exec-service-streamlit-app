@@ -3343,6 +3343,8 @@ with render_tab:
                         st.session_state.render_loaded_values = _restored
                         st.session_state.render_loaded_label = _sub_labels[_selected_idx]
                         st.session_state.render_loaded_img_init_needed = True
+                        # Pre-fill the Save name with the loaded submission's name
+                        st.session_state['render_save_doc_name'] = _sub_labels[_selected_idx]
                         # Store for application before widgets are instantiated on next run
                         st.session_state.render_pending_restore = _restored
                         trigger_rerun()
