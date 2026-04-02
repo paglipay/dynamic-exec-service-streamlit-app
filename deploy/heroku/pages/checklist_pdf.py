@@ -914,8 +914,7 @@ def build_pdf(form_name, components, values, form_columns=1):
                             image = Image.open(uploaded_img)
                             img_width, img_height = image.size
                             if img_width > 0:
-                                # Reserve right-side space for caption when one is present
-                                max_img_w = content_width * 0.62 if provided_name else content_width
+                                max_img_w = content_width
                                 display_width = min(max_img_w, float(img_width))
                                 display_height = display_width * (float(img_height) / float(img_width))
                                 display_height = min(display_height, 180.0)
@@ -1011,7 +1010,7 @@ def build_pdf(form_name, components, values, form_columns=1):
             text_height = len(block['lines']) * line_h
             if block.get('table') is not None:
                 text_height += block['table']['header_height'] + sum(block['table']['row_heights']) + 6
-            image_height = sum(item['height'] + 6 for item in block['images'])
+            image_height = sum(item['height'] + 6 + (14 if item.get('caption') else 0) for item in block['images'])
             block['height'] = text_height + image_height + 6
             return block
 
@@ -1110,11 +1109,11 @@ def build_pdf(form_name, components, values, form_columns=1):
                     )
                     caption = image_item.get('caption', '')
                     if caption:
-                        caption_x = cell_x + image_item['width'] + 8
-                        caption_y = img_y + image_item['height'] / 2 - 5
                         pdf_canvas.setFont('Helvetica', 10)
-                        pdf_canvas.drawString(caption_x, caption_y, caption)
-                    text_y -= image_item['height'] + 6
+                        pdf_canvas.drawString(cell_x, img_y - 12, caption)
+                        text_y -= image_item['height'] + 6 + 14
+                    else:
+                        text_y -= image_item['height'] + 6
 
             y_pos -= row_height + 6
 
