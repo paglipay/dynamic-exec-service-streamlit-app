@@ -147,7 +147,7 @@ def detect_objects(image: Image.Image) -> list[dict]:
     prompt = (
         "Identify all objects in this image that fall into these categories: "
         "person, car, van, truck, motorcycle, bicycle, "
-        # "house, apartment building, shop/storefront, office building, industrial building, "
+        "house, apartment building, shop/storefront, office building, industrial building, "
         "wall/fence, garage, shed. "
         "Return a JSON array. Each element must have: "
         "label (string, use the specific category name above), "
@@ -212,8 +212,8 @@ def detect_objects(image: Image.Image) -> list[dict]:
 _CATEGORY_GROUPS = {
     "People":              ["person"],
     "Vehicles":            ["car", "van", "truck", "motorcycle", "bicycle"],
-    # "Private buildings":   ["house", "apartment building", "garage", "shed"],
-    # "Commercial buildings":["shop/storefront", "office building", "industrial building"],
+    "Private buildings":   ["house", "apartment building", "garage", "shed"],
+    "Commercial buildings":["shop/storefront", "office building", "industrial building"],
     "Walls & fences":      ["wall/fence"],
 }
 
