@@ -50,13 +50,39 @@ def _to_png_bytes(img: Image.Image) -> bytes:
     img.save(buf, format="PNG")
     return buf.getvalue()
 
+# OpenAI edit only supports these output sizes; pick the best fit for the input.
+_API_SIZES = [(1024, 1024), (1536, 1024), (1024, 1536)]
+
+def _best_api_size(w: int, h: int) -> tuple[int, int]:
+    """Return the API size whose aspect ratio is closest to w:h."""
+    input_ratio = w / h
+    return min(_API_SIZES, key=lambda s: abs(s[0] / s[1] - input_ratio))
+
+def _letterbox(img: Image.Image, target_w: int, target_h: int) -> tuple[Image.Image, tuple[int, int, int, int]]:
+    """
+    Fit *img* inside (target_w × target_h) with black padding.
+    Returns (padded_image, crop_box) where crop_box is the region
+    inside the padded image that contains the actual image content.
+    """
+    img.thumbnail((target_w, target_h), Image.LANCZOS)
+    fw, fh = img.size
+    ox = (target_w - fw) // 2
+    oy = (target_h - fh) // 2
+    padded = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 255))
+    padded.paste(img, (ox, oy))
+    return padded, (ox, oy, ox + fw, oy + fh)
+
 def edit_image(image: Image.Image, mask: Image.Image) -> Image.Image:
     """
     Send image + mask to gpt-image-1 for inpainting.
     Raises RuntimeError with a user-friendly message on failure.
     """
-    # OpenAI edit requires the source image to be RGBA
-    source_rgba = image.convert("RGBA")
+    orig_size = image.size
+
+    # Letterbox both image and mask to the closest supported API size
+    api_w, api_h = _best_api_size(*orig_size)
+    source_rgba, crop_box = _letterbox(image.convert("RGBA"), api_w, api_h)
+    mask_lb, _ = _letterbox(mask.convert("RGBA"), api_w, api_h)
 
     def _get_secret(name: str) -> str:
         """Read from st.secrets if available, fall back to os.environ."""
@@ -76,7 +102,7 @@ def edit_image(image: Image.Image, mask: Image.Image) -> Image.Image:
         result = client.images.edit(
             model="gpt-image-1",
             image=("image.png", _to_png_bytes(source_rgba), "image/png"),
-            mask=("mask.png",  _to_png_bytes(mask),         "image/png"),
+            mask=("mask.png",  _to_png_bytes(mask_lb),      "image/png"),
             prompt=(
                 "Remove or blur all cars, buildings, and people naturally. "
                 "Keep pavement and environment consistent."
@@ -89,7 +115,10 @@ def edit_image(image: Image.Image, mask: Image.Image) -> Image.Image:
     if not b64:
         raise RuntimeError("API returned no image data.")
 
-    return Image.open(io.BytesIO(base64.b64decode(b64)))
+    # Crop the padding region and resize back to the original dimensions
+    result_full = Image.open(io.BytesIO(base64.b64decode(b64)))
+    result_cropped = result_full.crop(crop_box)
+    return result_cropped.resize(orig_size, Image.LANCZOS)
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 
