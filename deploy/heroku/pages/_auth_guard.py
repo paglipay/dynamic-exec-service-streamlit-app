@@ -183,6 +183,24 @@ def require_authentication(page_name: str, required_roles: list[str] | None = No
     if not _get_bool_setting(AUTH_ENABLED_SETTING, True):
         return
 
+    # If a previous require_authentication call this session already confirmed the
+    # user is logged in, skip rebuilding the authenticator (which registers a
+    # Streamlit widget with key='init' and would raise a duplicate-key error when
+    # called more than once per render from main.py + a loaded sub-page).
+    if st.session_state.get("auth_username"):
+        username = st.session_state["auth_username"]
+        if required_roles:
+            try:
+                credentials = _build_credentials()
+            except Exception:
+                credentials = {}
+            user_record = credentials.get("usernames", {}).get(username, {})
+            user_roles = user_record.get("roles", []) or []
+            if not set(required_roles).intersection(user_roles):
+                st.error("You are logged in but do not have access to this page.")
+                st.stop()
+        return
+
     # --- staged execution with per-step debug ---
     stage = "initializing"
     exc_info = None
