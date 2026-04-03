@@ -412,10 +412,10 @@ with st.expander("⚙️ Settings", expanded=True):
         )
 
     st.divider()
-    enable_detect = st.toggle(
-        "Show detect button per image",
-        value=True,
-        help="When off, detection is skipped and the detect button is hidden for all images.",
+    auto_detect = st.toggle(
+        "Auto-detect objects on upload",
+        value=False,
+        help="When on, objects are detected automatically as soon as an image is uploaded (no button click needed). The detect button is still shown to manually re-run detection.",
     )
     enable_preview = st.toggle(
         "Show mask preview option per image",
@@ -444,23 +444,26 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
         # ── Step 1: detect ────────────────────────────────────────────────────
         file_id = uploaded_file.name + str(uploaded_file.size)
         cache_key = f"boxes_{file_id}"
-        if enable_detect:
-            if st.button("🔍 Detect objects", key=f"detect_{file_id}"):
-                with st.spinner("Detecting objects…"):
-                    if use_local_detect:
-                        st.session_state[cache_key] = detect_objects_local(image)
-                    else:
-                        st.session_state[cache_key] = detect_objects(image)
-        else:
-            st.session_state.pop(cache_key, None)
+
+        # Auto-detect: run once when the result isn’t cached yet
+        if auto_detect and cache_key not in st.session_state:
+            with st.spinner("Auto-detecting objects…"):
+                if use_local_detect:
+                    st.session_state[cache_key] = detect_objects_local(image)
+                else:
+                    st.session_state[cache_key] = detect_objects(image)
+
+        if st.button("🔍 Detect objects", key=f"detect_{file_id}"):
+            with st.spinner("Detecting objects…"):
+                if use_local_detect:
+                    st.session_state[cache_key] = detect_objects_local(image)
+                else:
+                    st.session_state[cache_key] = detect_objects(image)
 
         boxes = st.session_state.get(cache_key)
 
         if boxes is None:
-            if enable_detect:
-                st.info("Click **Detect objects** above.")
-            else:
-                st.info("Enable **Show detect button** in Settings to detect objects.")
+            st.info("Click **Detect objects** above.")
             continue
 
         if not boxes:
