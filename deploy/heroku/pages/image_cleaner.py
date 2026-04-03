@@ -223,7 +223,7 @@ _GROUP_DEFAULT_EFFECTS: dict[str, str] = {
     "People":         "Remove (inpaint)",
     "Vehicles":       "Remove (inpaint)",
     "Walls & fences": "No effect",
-    "Walls & fences": "Blur",
+    "Buildings": "Gaussian blur",
 }
 
 def _label_matches(label: str, selected_groups: list[str]) -> bool:
