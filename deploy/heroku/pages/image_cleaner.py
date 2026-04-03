@@ -422,6 +422,11 @@ with st.expander("⚙️ Settings", expanded=True):
         value=False,
         help="When on, the mask preview is shown automatically after objects are detected. The preview checkbox is still shown to toggle it manually.",
     )
+    auto_process = st.toggle(
+        "Auto-process images after detection",
+        value=False,
+        help="When on, inpainting runs automatically once objects are detected (using the active inpainting settings). A ZIP download button appears below all tabs when every image has been processed.",
+    )
 
 # ── File uploader ─────────────────────────────────────────────────────────────
 uploaded_files = st.file_uploader(
@@ -518,30 +523,45 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
                 st.image(checker, use_container_width=True)
 
         # ── Step 4: process ───────────────────────────────────────────────────
+        result_key = f"result_{file_id}"
+
+        def _run_inpaint(img, ab):
+            msk = build_mask(img, ab)
+            if use_local_inpaint:
+                return local_inpaint(img, msk, radius=radius)
+            else:
+                return edit_image(img, msk, quality=quality)
+
         if not active_boxes:
             st.warning("No objects selected — nothing to remove.")
-        elif st.button("✨ Process image", key=f"process_{file_id}"):
-            with st.spinner("Building mask…"):
-                mask = build_mask(image, active_boxes)
-
-            if use_local_inpaint:
-                with st.spinner("Running local inpainting…"):
-                    result_img = local_inpaint(image, mask, radius=radius)
-            else:
-                with st.spinner("Editing with AI…"):
+        else:
+            # Auto-process: run once when result isn't cached yet
+            if auto_process and result_key not in st.session_state:
+                with st.spinner("Auto-processing…"):
                     try:
-                        result_img = edit_image(image, mask, quality=quality)
+                        st.session_state[result_key] = _run_inpaint(image, active_boxes)
                     except RuntimeError as err:
                         st.error(str(err))
-                        continue
 
-            st.subheader("✅ Result")
-            st.image(result_img, use_container_width=True)
+            if not auto_process and st.button("✨ Process image", key=f"process_{file_id}"):
+                with st.spinner("Building mask…"):
+                    try:
+                        st.session_state[result_key] = _run_inpaint(image, active_boxes)
+                    except RuntimeError as err:
+                        st.error(str(err))
 
-            st.download_button(
-                label="⬇️ Download cleaned image",
-                data=_to_png_bytes(result_img),
-                file_name=f"cleaned_{uploaded_file.name}",
-                mime="image/png",
-                key=f"dl_{file_id}",
-            )
+            if result_key in st.session_state:
+                result_img = st.session_state[result_key]
+                st.subheader("✅ Result")
+                st.image(result_img, use_container_width=True)
+                st.download_button(
+                    label="⬇️ Download cleaned image",
+                    data=_to_png_bytes(result_img),
+                    file_name=f"cleaned_{uploaded_file.name}",
+                    mime="image/png",
+                    key=f"dl_{file_id}",
+                )
+            elif auto_process:
+                pass  # spinner already shown above; result will appear on next rerun
+            else:
+                st.info("Click **Process image** when ready.")
