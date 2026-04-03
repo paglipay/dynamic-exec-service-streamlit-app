@@ -151,18 +151,27 @@ def build_mask(image: Image.Image, boxes: list[dict], selected_groups: list[str]
 
     The OpenAI edit endpoint treats transparent pixels as the edit target.
     """
-    # Start fully opaque (keep everything)
-    mask = Image.new("RGBA", image.size, (0, 0, 0, 255))
-    draw = ImageDraw.Draw(mask)
+    w, h = image.size
+
+    # Draw a greyscale stencil: white = region to edit, black = keep.
+    # ImageDraw reliably fills RGB/L images; we convert to RGBA alpha at the end.
+    stencil = Image.new("L", (w, h), 0)   # all black = keep everything
+    draw = ImageDraw.Draw(stencil)
     for box in boxes:
         if selected_groups is not None and not _label_matches(box["label"], selected_groups):
             continue
-        x, y, w, h = box["x"], box["y"], box["w"], box["h"]
+        bx, by, bw, bh = box["x"], box["y"], box["w"], box["h"]
         if "outline" in box and len(box["outline"]) >= 3:
             pts = [tuple(p) for p in box["outline"]]
-            draw.polygon(pts, fill=(0, 0, 0, 0))
+            draw.polygon(pts, fill=255)
         else:
-            draw.rectangle([x, y, x + w, y + h], fill=(0, 0, 0, 0))
+            draw.rectangle([bx, by, bx + bw, by + bh], fill=255)
+
+    # Build RGBA mask: transparent where stencil is white, opaque where black.
+    mask = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    # Invert stencil so white→0 (transparent) and black→255 (opaque)
+    inv_stencil = stencil.point(lambda p: 255 - p)
+    mask.putalpha(inv_stencil)
     return mask
 
 # ── OpenAI edit ───────────────────────────────────────────────────────────────
