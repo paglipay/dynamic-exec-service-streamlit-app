@@ -1,5 +1,6 @@
 import io
 import base64
+import os
 
 import streamlit as st
 from PIL import Image, ImageDraw
@@ -57,7 +58,14 @@ def edit_image(image: Image.Image, mask: Image.Image) -> Image.Image:
     # OpenAI edit requires the source image to be RGBA
     source_rgba = image.convert("RGBA")
 
-    api_key = st.secrets.get("OPENAI_API_KEY") or st.secrets.get("AI_API_KEY")
+    def _get_secret(name: str) -> str:
+        """Read from st.secrets if available, fall back to os.environ."""
+        try:
+            return str(st.secrets.get(name) or "")
+        except Exception:
+            return os.environ.get(name, "")
+
+    api_key = _get_secret("OPENAI_API_KEY") or _get_secret("AI_API_KEY")
     if not api_key:
         raise RuntimeError(
             "OpenAI API key is not configured. Set OPENAI_API_KEY (or AI_API_KEY) "
