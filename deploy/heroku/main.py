@@ -47,6 +47,7 @@ APP_CATALOG = {
     "🖼️ Media": [
         ("cam_img_rename.py",  "📷 Camera Renamer"),
         ("image_generator.py", "🎨 Image Generator"),
+        ("image_cleaner.py",   "🛡️ AI Privacy Image Cleaner"),
     ],
     "📊 Data": [
         ("data_dash.py",           "📊 Data Dashboard"),
