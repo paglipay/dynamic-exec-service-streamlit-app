@@ -354,9 +354,29 @@ if uploaded_file:
         st.session_state.detected_boxes = None
         st.session_state.detect_file = file_id
 
+    detect_method = st.radio(
+        "Detection method",
+        options=[
+            "Local — MediaPipe EfficientDet (free, people & vehicles only)",
+            "API — GPT-4o-mini (costs tokens, detects buildings too)",
+        ],
+        help=(
+            "**Local**: no API key needed, detects people + vehicles only. "
+            "~13 MB model downloaded once.  \n"
+            "**API**: detects buildings, shops, walls etc. in addition to people/vehicles."
+        ),
+    )
+    use_local_detect = detect_method.startswith("Local")
+
+    if use_local_detect:
+        st.caption("ℹ️ Building categories are not available with local detection.")
+
     if st.button("🔍 Detect objects"):
         with st.spinner("Detecting objects…"):
-            st.session_state.detected_boxes = detect_objects(image)
+            if use_local_detect:
+                st.session_state.detected_boxes = detect_objects_local(image)
+            else:
+                st.session_state.detected_boxes = detect_objects(image)
 
     boxes = st.session_state.get("detected_boxes")
 
