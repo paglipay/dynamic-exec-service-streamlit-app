@@ -417,10 +417,10 @@ with st.expander("⚙️ Settings", expanded=True):
         value=False,
         help="When on, objects are detected automatically as soon as an image is uploaded (no button click needed). The detect button is still shown to manually re-run detection.",
     )
-    enable_preview = st.toggle(
-        "Show mask preview option per image",
-        value=True,
-        help="When off, the mask preview checkbox is hidden for all images.",
+    auto_preview = st.toggle(
+        "Auto-preview mask after detection",
+        value=False,
+        help="When on, the mask preview is shown automatically after objects are detected. The preview checkbox is still shown to toggle it manually.",
     )
 
 # ── File uploader ─────────────────────────────────────────────────────────────
@@ -497,7 +497,12 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
         active_boxes = [boxes[i] for i in sorted(active_indices)]
 
         # ── Step 3: preview ───────────────────────────────────────────────────
-        if enable_preview and st.checkbox("🔎 Preview mask for selected objects", key=f"prev_{file_id}"):
+        show_preview = st.checkbox(
+            "🔎 Preview mask for selected objects",
+            value=auto_preview,
+            key=f"prev_{file_id}",
+        )
+        if show_preview:
             preview_mask = build_mask(image, active_boxes)
             col1, col2 = st.columns(2)
             with col1:
