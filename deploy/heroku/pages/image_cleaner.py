@@ -507,9 +507,6 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
     with tab:
         image = ImageOps.exif_transpose(Image.open(uploaded_file)).convert("RGB")
 
-        st.subheader("Original")
-        st.image(image, use_container_width=True)
-
         # ── Step 1: detect ────────────────────────────────────────────────────
         file_id = uploaded_file.name + str(uploaded_file.size)
         cache_key = f"boxes_{file_id}"
@@ -642,8 +639,11 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
 
             if result_key in st.session_state:
                 result_img = st.session_state[result_key]
-                st.subheader("✅ Result")
-                st.image(result_img, use_container_width=True)
+                tab_orig, tab_result = st.tabs(["Original", "✅ Result"])
+                with tab_orig:
+                    st.image(image, use_container_width=True)
+                with tab_result:
+                    st.image(result_img, use_container_width=True)
                 st.download_button(
                     label="⬇️ Download cleaned image",
                     data=_to_png_bytes(result_img),
