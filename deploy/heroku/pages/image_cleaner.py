@@ -8,7 +8,7 @@ import urllib.request
 import cv2
 import numpy as np
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 from openai import OpenAI
 
 # ── YOLOv8n-ONNX model (downloaded on first use, cached in /tmp) ─────────────
@@ -505,7 +505,7 @@ tabs = st.tabs([f.name for f in uploaded_files])
 
 for tab, uploaded_file in zip(tabs, uploaded_files):
     with tab:
-        image = Image.open(uploaded_file).convert("RGB")
+        image = ImageOps.exif_transpose(Image.open(uploaded_file)).convert("RGB")
 
         st.subheader("Original")
         st.image(image, use_container_width=True)
