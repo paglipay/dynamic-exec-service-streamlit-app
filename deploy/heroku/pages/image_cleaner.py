@@ -63,10 +63,18 @@ def detect_objects_local(image: Image.Image, conf_thresh: float = 0.4) -> list[d
         return []
 
     iw, ih = image.size
+
+    # YOLOv5 expects 640×640 RGB float NCHW, values 0–1
+    # Cast to match whatever dtype the model was exported with
+    resized = image.convert("RGB").resize((640, 640), Image.LANCZOS)
+    inp = np.array(resized, dtype=np.float32) / 255.0
+    inp = np.transpose(inp, (2, 0, 1))[np.newaxis]  # HWC → NCHW
+
+    input_detail = session.get_inputs()[0]
     input_name = input_detail.name
     if input_detail.type == "tensor(float16)":
         inp = inp.astype(np.float16)
-    raw = session.run(None, {input_name: inp})[0]  # shape (1, 84, 8400)
+    raw = session.run(None, {input_name: inp})[0]  # shape (1, 25200, 85)
 
     # YOLOv5 output: (1, 25200, 85)  →  [cx, cy, w, h, obj_conf, class0…class79]
     preds = raw[0]  # (25200, 85)
@@ -357,31 +365,20 @@ def local_inpaint(image: Image.Image, mask: Image.Image, radius: int = 15) -> Im
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 st.title("🛡️ AI Privacy Image Cleaner")
-st.caption("Upload an image → auto-detect cars, people & buildings → inpaint with AI.")
+st.caption("Upload images → auto-detect people & vehicles → inpaint locally or with AI.")
 
-uploaded_file = st.file_uploader("Upload image", type=["png", "jpg", "jpeg"])
-
-if uploaded_file:
-    image = Image.open(uploaded_file).convert("RGB")
-
-    st.subheader("Original")
-    st.image(image, use_container_width=True)
-
-    # ── Step 1: detect ────────────────────────────────────────────────────────
-    file_id = uploaded_file.name + str(uploaded_file.size)
-    if st.session_state.get("detect_file") != file_id:
-        st.session_state.detected_boxes = None
-        st.session_state.detect_file = file_id
-
+# ── Global settings (above file uploader so they apply to all files) ──────────
+with st.expander("⚙️ Settings", expanded=True):
     detect_method = st.radio(
         "Detection method",
         options=[
-            "Local — YOLOv8n ONNX (free, people & vehicles only)",
+            "Local — YOLOv5n ONNX (free, people & vehicles only)",
             "API — GPT-4o-mini (costs tokens, detects buildings too)",
         ],
+        index=0,
         help=(
-            "**Local**: no API key needed. ~12 MB ONNX model downloaded once to /tmp. "
-            "Detects people, cars, trucks, motorcycles, bicycles.  \n"
+            "**Local**: no API key needed. ~7 MB ONNX model downloaded once to /tmp. "
+            "Detects people, cars, trucks, motorcycles, bicycles.\n\n"
             "**API**: detects buildings, shops, walls etc. in addition to people/vehicles."
         ),
     )
@@ -389,78 +386,19 @@ if uploaded_file:
     if use_local_detect:
         st.caption("ℹ️ Building categories are not available with local detection.")
 
-    if st.button("🔍 Detect objects"):
-        with st.spinner("Detecting objects…"):
-            if use_local_detect:
-                st.session_state.detected_boxes = detect_objects_local(image)
-            else:
-                st.session_state.detected_boxes = detect_objects(image)
-
-    boxes = st.session_state.get("detected_boxes")
-
-    if boxes is None:
-        st.info("Click **Detect objects** to find people, vehicles, and buildings.")
-        st.stop()
-
-    if not boxes:
-        st.warning("No objects detected in this image.")
-        st.stop()
-
-    # ── Step 2: per-object include/exclude ────────────────────────────────────
-    st.subheader("Detected objects — select which to remove")
-    st.caption("Uncheck any object you want to keep unchanged.")
-
-    from collections import defaultdict
-    label_groups: dict[str, list[int]] = defaultdict(list)
-    for i, box in enumerate(boxes):
-        label_groups[box["label"]].append(i)
-
-    active_indices: set[int] = set()
-    for label, indices in sorted(label_groups.items()):
-        default_on = _label_matches(label, ["People", "Vehicles"])
-        with st.expander(f"{label} ({len(indices)} detected)", expanded=True):
-            cols = st.columns(min(len(indices), 4))
-            for col, idx in zip(cols * len(indices), indices):
-                box = boxes[idx]
-                checked = col.checkbox(
-                    f"#{idx + 1}  ({box['x']}, {box['y']})",
-                    value=default_on,
-                    key=f"obj_{file_id}_{idx}",
-                )
-                if checked:
-                    active_indices.add(idx)
-
-    active_boxes = [boxes[i] for i in sorted(active_indices)]
-
-    # ── Step 3: preview ───────────────────────────────────────────────────────
-    if st.checkbox("🔎 Preview mask for selected objects"):
-        preview_mask = build_mask(image, active_boxes)
-        col1, col2 = st.columns(2)
-        with col1:
-            st.caption("All detections")
-            st.image(draw_debug_overlay(image, boxes), use_container_width=True)
-        with col2:
-            st.caption("Mask (red = will be inpainted)")
-            checker = Image.new("RGB", preview_mask.size, (180, 180, 180))
-            checker.paste(
-                Image.new("RGB", preview_mask.size, (220, 50, 50)),
-                mask=preview_mask.split()[3].point(lambda p: 255 - p),
-            )
-            st.image(checker, use_container_width=True)
-
-    # ── Step 4: process ───────────────────────────────────────────────────────
-    method = st.radio(
+    inpaint_method = st.radio(
         "Inpainting method",
-        options=["OpenAI API (gpt-image-1)", "Local — OpenCV Telea (free, no API)"],
+        options=["Local — OpenCV Telea (free, no API)", "OpenAI API (gpt-image-1)"],
+        index=0,
         help=(
-            "**OpenAI API**: high-quality generative fill, costs tokens, ≈soft mask edges.\n\n"
             "**Local OpenCV**: pixel-precise mask, free, instant — "
-            "best for thin objects; large areas may look smeared."
+            "best for thin objects; large areas may look smeared.\n\n"
+            "**OpenAI API**: high-quality generative fill, costs tokens, ≈soft mask edges."
         ),
     )
-    use_local = method.startswith("Local")
+    use_local_inpaint = inpaint_method.startswith("Local")
 
-    if not use_local:
+    if not use_local_inpaint:
         quality = st.select_slider(
             "Output quality",
             options=["low", "medium", "high"],
@@ -469,34 +407,115 @@ if uploaded_file:
         )
     else:
         radius = st.slider(
-            "Inpaint radius (px)",
-            min_value=3, max_value=40, value=15,
+            "Inpaint radius (px)", min_value=3, max_value=40, value=15,
             help="Larger radius = smoother fill but slower and more bleed.",
         )
 
-    if not active_boxes:
-        st.warning("No objects selected — nothing to remove.")
-    elif st.button("✨ Process image"):
-        with st.spinner("Building mask…"):
-            mask = build_mask(image, active_boxes)
+# ── File uploader ─────────────────────────────────────────────────────────────
+uploaded_files = st.file_uploader(
+    "Upload image(s)", type=["png", "jpg", "jpeg"], accept_multiple_files=True
+)
 
-        if use_local:
-            with st.spinner("Running local inpainting…"):
-                result_img = local_inpaint(image, mask, radius=radius)
-        else:
-            with st.spinner("Editing with AI…"):
-                try:
-                    result_img = edit_image(image, mask, quality=quality)
-                except RuntimeError as err:
-                    st.error(str(err))
-                    st.stop()
+if not uploaded_files:
+    st.info("Upload one or more images to get started.")
+    st.stop()
 
-        st.subheader("✅ Result")
-        st.image(result_img, use_container_width=True)
+tabs = st.tabs([f.name for f in uploaded_files])
 
-        st.download_button(
-            label="⬇️ Download cleaned image",
-            data=_to_png_bytes(result_img),
-            file_name="cleaned.png",
-            mime="image/png",
-        )
+for tab, uploaded_file in zip(tabs, uploaded_files):
+    with tab:
+        image = Image.open(uploaded_file).convert("RGB")
+
+        st.subheader("Original")
+        st.image(image, use_container_width=True)
+
+        # ── Step 1: detect ────────────────────────────────────────────────────
+        file_id = uploaded_file.name + str(uploaded_file.size)
+        cache_key = f"boxes_{file_id}"
+        if st.button("🔍 Detect objects", key=f"detect_{file_id}"):
+            with st.spinner("Detecting objects…"):
+                if use_local_detect:
+                    st.session_state[cache_key] = detect_objects_local(image)
+                else:
+                    st.session_state[cache_key] = detect_objects(image)
+
+        boxes = st.session_state.get(cache_key)
+
+        if boxes is None:
+            st.info("Click **Detect objects** above.")
+            continue
+
+        if not boxes:
+            st.warning("No objects detected in this image.")
+            continue
+
+        # ── Step 2: per-object include/exclude ────────────────────────────────
+        st.subheader("Detected objects — select which to remove")
+        st.caption("Uncheck any object you want to keep unchanged.")
+
+        from collections import defaultdict
+        label_groups: dict[str, list[int]] = defaultdict(list)
+        for i, box in enumerate(boxes):
+            label_groups[box["label"]].append(i)
+
+        active_indices: set[int] = set()
+        for label, indices in sorted(label_groups.items()):
+            default_on = _label_matches(label, ["People", "Vehicles"])
+            with st.expander(f"{label} ({len(indices)} detected)", expanded=True):
+                cols = st.columns(min(len(indices), 4))
+                for col, idx in zip(cols * len(indices), indices):
+                    box = boxes[idx]
+                    checked = col.checkbox(
+                        f"#{idx + 1}  ({box['x']}, {box['y']})",
+                        value=default_on,
+                        key=f"obj_{file_id}_{idx}",
+                    )
+                    if checked:
+                        active_indices.add(idx)
+
+        active_boxes = [boxes[i] for i in sorted(active_indices)]
+
+        # ── Step 3: preview ───────────────────────────────────────────────────
+        if st.checkbox("🔎 Preview mask for selected objects", key=f"prev_{file_id}"):
+            preview_mask = build_mask(image, active_boxes)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption("All detections")
+                st.image(draw_debug_overlay(image, boxes), use_container_width=True)
+            with col2:
+                st.caption("Mask (red = will be inpainted)")
+                checker = Image.new("RGB", preview_mask.size, (180, 180, 180))
+                checker.paste(
+                    Image.new("RGB", preview_mask.size, (220, 50, 50)),
+                    mask=preview_mask.split()[3].point(lambda p: 255 - p),
+                )
+                st.image(checker, use_container_width=True)
+
+        # ── Step 4: process ───────────────────────────────────────────────────
+        if not active_boxes:
+            st.warning("No objects selected — nothing to remove.")
+        elif st.button("✨ Process image", key=f"process_{file_id}"):
+            with st.spinner("Building mask…"):
+                mask = build_mask(image, active_boxes)
+
+            if use_local_inpaint:
+                with st.spinner("Running local inpainting…"):
+                    result_img = local_inpaint(image, mask, radius=radius)
+            else:
+                with st.spinner("Editing with AI…"):
+                    try:
+                        result_img = edit_image(image, mask, quality=quality)
+                    except RuntimeError as err:
+                        st.error(str(err))
+                        continue
+
+            st.subheader("✅ Result")
+            st.image(result_img, use_container_width=True)
+
+            st.download_button(
+                label="⬇️ Download cleaned image",
+                data=_to_png_bytes(result_img),
+                file_name=f"cleaned_{uploaded_file.name}",
+                mime="image/png",
+                key=f"dl_{file_id}",
+            )
