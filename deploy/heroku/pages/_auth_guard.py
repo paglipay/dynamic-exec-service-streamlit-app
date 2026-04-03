@@ -102,14 +102,22 @@ def _build_authenticator(credentials: dict[str, Any]):
     expiry_raw = _get_setting(COOKIE_EXPIRY_SETTING, 7)
     cookie_expiry_days = float(expiry_raw)
 
+    import inspect
     try:
+        sig = inspect.signature(stauth.Authenticate.__init__)
+        params = list(sig.parameters.keys())  # ['self', ...]
+        use_kwargs = "cookie_name" in params and "cookie_key" in params
+    except Exception:
+        use_kwargs = False
+
+    if use_kwargs:
         return stauth.Authenticate(
             credentials=credentials,
             cookie_name=cookie_name,
             cookie_key=cookie_key,
             cookie_expiry_days=cookie_expiry_days,
         )
-    except TypeError:
+    else:
         return stauth.Authenticate(
             credentials,
             cookie_name,
