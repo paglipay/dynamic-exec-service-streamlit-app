@@ -2,12 +2,32 @@ import io
 import base64
 import os
 import json
+import tempfile
+import urllib.request
 
 import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw
 from openai import OpenAI
+
+# ── MediaPipe model (downloaded on first use, cached in /tmp) ─────────────────
+
+_MP_MODEL_URL  = (
+    "https://storage.googleapis.com/mediapipe-models/object_detector/"
+    "efficientdet_lite0/float32/1/efficientdet_lite0.tflite"
+)
+_MP_MODEL_PATH = os.path.join(tempfile.gettempdir(), "efficientdet_lite0.tflite")
+
+# MediaPipe COCO labels → our category labels
+_MP_LABEL_MAP = {
+    "person":     "person",
+    "car":        "car",
+    "truck":      "truck",
+    "bus":        "van",
+    "motorcycle": "motorcycle",
+    "bicycle":    "bicycle",
+}
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -23,6 +43,60 @@ def _get_secret(name: str) -> str:
         return os.environ.get(name, "")
 
 # ── Detection ─────────────────────────────────────────────────────────────────
+
+@st.cache_resource(show_spinner="Loading local detection model…")
+def _get_mediapipe_detector():
+    """Download EfficientDet Lite0 once, return a cached MediaPipe ObjectDetector."""
+    import mediapipe as mp
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision as mp_vision
+
+    if not os.path.exists(_MP_MODEL_PATH):
+        urllib.request.urlretrieve(_MP_MODEL_URL, _MP_MODEL_PATH)
+
+    base_options = mp_python.BaseOptions(model_asset_path=_MP_MODEL_PATH)
+    options = mp_vision.ObjectDetectorOptions(
+        base_options=base_options,
+        score_threshold=0.4,
+        max_results=50,
+    )
+    return mp_vision.ObjectDetector.create_from_options(options)
+
+
+def detect_objects_local(image: Image.Image) -> list[dict]:
+    """
+    Detect people and vehicles locally using MediaPipe EfficientDet Lite0.
+    No API call. Does NOT detect buildings (not in COCO).
+    Returns a list of dicts: {label, x, y, w, h}.
+    """
+    try:
+        import mediapipe as mp
+        detector = _get_mediapipe_detector()
+        img_rgb = np.array(image.convert("RGB"))
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+        result = detector.detect(mp_image)
+    except Exception as exc:
+        st.warning(f"Local detection failed: {exc}")
+        return []
+
+    iw, ih = image.size
+    boxes = []
+    for det in result.detections:
+        if not det.categories:
+            continue
+        cat = det.categories[0].category_name.lower()
+        label = _MP_LABEL_MAP.get(cat)
+        if label is None:
+            continue
+        bb = det.bounding_box
+        boxes.append({
+            "label": label,
+            "x": max(0, bb.origin_x),
+            "y": max(0, bb.origin_y),
+            "w": min(iw - bb.origin_x, bb.width),
+            "h": min(ih - bb.origin_y, bb.height),
+        })
+    return boxes
 
 def detect_objects(image: Image.Image) -> list[dict]:
     """
