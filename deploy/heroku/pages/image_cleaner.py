@@ -565,3 +565,35 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
                 pass  # spinner already shown above; result will appear on next rerun
             else:
                 st.info("Click **Process image** when ready.")
+
+# ── ZIP download (shown when auto-process produced results for every file) ────
+if auto_process and uploaded_files:
+    import io as _io
+    import zipfile
+
+    result_items = []
+    for uf in uploaded_files:
+        fid = uf.name + str(uf.size)
+        rk = f"result_{fid}"
+        if rk in st.session_state:
+            result_items.append((f"cleaned_{uf.name}", st.session_state[rk]))
+
+    if result_items:
+        all_done = len(result_items) == len(uploaded_files)
+        zip_buf = _io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for fname, img in result_items:
+                zf.writestr(fname, _to_png_bytes(img))
+        zip_buf.seek(0)
+
+        label = (
+            "⬇️ Download all cleaned images (.zip)"
+            if all_done
+            else f"⬇️ Download {len(result_items)}/{len(uploaded_files)} cleaned images (.zip)"
+        )
+        st.download_button(
+            label=label,
+            data=zip_buf,
+            file_name="cleaned_images.zip",
+            mime="application/zip",
+        )
