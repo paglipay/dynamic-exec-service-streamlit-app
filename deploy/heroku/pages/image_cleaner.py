@@ -667,8 +667,8 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
             else:
                 st.info("Click **Process image** when ready.")
 
-# ── ZIP download (shown when auto-process produced results for every file) ────
-if auto_process and uploaded_files:
+# ── ZIP download (shown when at least 2 results are ready) ───────────────────
+if uploaded_files:
     import io as _io
     import zipfile
 
@@ -679,22 +679,37 @@ if auto_process and uploaded_files:
         if rk in st.session_state:
             result_items.append((f"cleaned_{uf.name}", st.session_state[rk]))
 
-    if result_items:
+    if len(result_items) >= 2:
         all_done = len(result_items) == len(uploaded_files)
-        zip_buf = _io.BytesIO()
-        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for fname, img in result_items:
-                zf.writestr(fname, _to_png_bytes(img))
-        zip_buf.seek(0)
-
-        label = (
+        zip_label = (
             "⬇️ Download all cleaned images (.zip)"
             if all_done
             else f"⬇️ Download {len(result_items)}/{len(uploaded_files)} cleaned images (.zip)"
         )
-        st.download_button(
-            label=label,
-            data=zip_buf,
-            file_name="cleaned_images.zip",
-            mime="application/zip",
-        )
+
+        # Invalidate cached zip whenever the set of ready files changes
+        current_zip_files = frozenset(name for name, _ in result_items)
+        if st.session_state.get("_zip_files_set") != current_zip_files:
+            st.session_state.pop("_zip_data", None)
+            st.session_state.pop("_zip_files_set", None)
+
+        if "_zip_data" not in st.session_state:
+            st.divider()
+            if st.button("🗜️ Prepare ZIP for download", help="Packages all processed images into a single .zip file. Only runs when clicked."):
+                with st.spinner("Building ZIP…"):
+                    zip_buf = _io.BytesIO()
+                    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for fname, img in result_items:
+                            zf.writestr(fname, _to_png_bytes(img))
+                    zip_buf.seek(0)
+                    st.session_state["_zip_data"] = zip_buf.getvalue()
+                    st.session_state["_zip_files_set"] = current_zip_files
+                st.rerun()
+        else:
+            st.divider()
+            st.download_button(
+                label=zip_label,
+                data=st.session_state["_zip_data"],
+                file_name="cleaned_images.zip",
+                mime="application/zip",
+            )
