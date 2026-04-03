@@ -1,4 +1,5 @@
 import io
+import gc
 import base64
 import os
 import json
@@ -491,10 +492,25 @@ with st.expander("⚙️ Settings", expanded=False):
         value=False,
         help="When on, inpainting runs automatically once objects are detected (using the active inpainting settings). A ZIP download button appears below all tabs when every image has been processed.",
     )
+    clear_on_download = st.toggle(
+        "Clear processed image from memory after download",
+        value=True,
+        help="Removes the processed result from session state once you download it, freeing memory. Re-process the image if you need it again. Recommended to keep enabled for app stability.",
+    )
+    st.divider()
+    max_dim = st.slider(
+        "Max processing dimension (px)", min_value=512, max_value=4096, value=2048, step=256,
+        help="Images larger than this are downscaled before processing. Lower = much less memory usage and faster inpainting. 2048 px is a good balance for most use cases.",
+    )
 
 # ── File uploader ─────────────────────────────────────────────────────────────
+# Key rotation forces Streamlit to recreate the widget (clearing uploaded files)
+if "_uploader_key" not in st.session_state:
+    st.session_state["_uploader_key"] = 0
+
 uploaded_files = st.file_uploader(
-    "Upload image(s)", type=["png", "jpg", "jpeg"], accept_multiple_files=True
+    "Upload image(s)", type=["png", "jpg", "jpeg"], accept_multiple_files=True,
+    key=f"uploader_{st.session_state['_uploader_key']}",
 )
 
 if not uploaded_files:
@@ -506,6 +522,9 @@ tabs = st.tabs([f.name for f in uploaded_files])
 for tab, uploaded_file in zip(tabs, uploaded_files):
     with tab:
         image = ImageOps.exif_transpose(Image.open(uploaded_file)).convert("RGB")
+        # Downscale large images to cap memory usage during processing
+        if max(image.size) > max_dim:
+            image.thumbnail((max_dim, max_dim), Image.LANCZOS)
 
         # ── Image viewer (top of page — original until result is ready) ────────
         file_id = uploaded_file.name + str(uploaded_file.size)
@@ -640,7 +659,12 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
             if auto_process and result_key not in st.session_state:
                 with st.spinner("Auto-processing…"):
                     try:
-                        st.session_state[result_key] = _apply_all_effects(image, object_effects)
+                        _r = _apply_all_effects(image, object_effects)
+                        _buf = io.BytesIO()
+                        _r.save(_buf, format="JPEG", quality=92)
+                        st.session_state[result_key] = _buf.getvalue()
+                        del _r, _buf
+                        gc.collect()
                         st.session_state[jump_key] = True
                     except RuntimeError as err:
                         st.error(str(err))
@@ -648,19 +672,34 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
             if not auto_process and st.button("✨ Process image", key=f"process_{file_id}"):
                 with st.spinner("Applying effects…"):
                     try:
-                        st.session_state[result_key] = _apply_all_effects(image, object_effects)
+                        _r = _apply_all_effects(image, object_effects)
+                        _buf = io.BytesIO()
+                        _r.save(_buf, format="JPEG", quality=92)
+                        st.session_state[result_key] = _buf.getvalue()
+                        del _r, _buf
+                        gc.collect()
                         st.session_state[jump_key] = True
                     except RuntimeError as err:
                         st.error(str(err))
 
             if result_key in st.session_state:
-                result_img = st.session_state[result_key]
+                def _clear_single_result(rk, jk):
+                    st.session_state.pop(rk, None)
+                    st.session_state.pop(jk, None)
+
+                _single_dl_kwargs = {}
+                if clear_on_download:
+                    _single_dl_kwargs["on_click"] = _clear_single_result
+                    _single_dl_kwargs["args"] = (result_key, jump_key)
+
+                _dl_stem = os.path.splitext(uploaded_file.name)[0]
                 st.download_button(
                     label="⬇️ Download cleaned image",
-                    data=_to_png_bytes(result_img),
-                    file_name=f"cleaned_{uploaded_file.name}",
-                    mime="image/png",
+                    data=st.session_state[result_key],
+                    file_name=f"cleaned_{_dl_stem}.jpg",
+                    mime="image/jpeg",
                     key=f"dl_{file_id}",
+                    **_single_dl_kwargs,
                 )
             elif auto_process:
                 pass  # spinner already shown above; result will appear on next rerun
@@ -677,7 +716,8 @@ if uploaded_files:
         fid = uf.name + str(uf.size)
         rk = f"result_{fid}"
         if rk in st.session_state:
-            result_items.append((f"cleaned_{uf.name}", st.session_state[rk]))
+            _z_stem = os.path.splitext(uf.name)[0]
+            result_items.append((f"cleaned_{_z_stem}.jpg", st.session_state[rk]))
 
     if len(result_items) >= 2:
         all_done = len(result_items) == len(uploaded_files)
@@ -698,18 +738,36 @@ if uploaded_files:
             if st.button("🗜️ Prepare ZIP for download", help="Packages all processed images into a single .zip file. Only runs when clicked."):
                 with st.spinner("Building ZIP…"):
                     zip_buf = _io.BytesIO()
-                    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for fname, img in result_items:
-                            zf.writestr(fname, _to_png_bytes(img))
+                    # ZIP_STORED: JPEG is already compressed, DEFLATE wastes CPU
+                    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_STORED) as zf:
+                        for fname, img_bytes in result_items:
+                            zf.writestr(fname, img_bytes)
                     zip_buf.seek(0)
                     st.session_state["_zip_data"] = zip_buf.getvalue()
                     st.session_state["_zip_files_set"] = current_zip_files
                 st.rerun()
         else:
             st.divider()
+
+            def _clear_all_results(fids):
+                for fid in fids:
+                    st.session_state.pop(f"result_{fid}", None)
+                    st.session_state.pop(f"jump_result_{fid}", None)
+                st.session_state.pop("_zip_data", None)
+                st.session_state.pop("_zip_files_set", None)
+                # Rotate uploader key to evict all files from the uploader widget
+                st.session_state["_uploader_key"] = st.session_state.get("_uploader_key", 0) + 1
+
+            _zip_dl_kwargs = {}
+            if clear_on_download:
+                _all_fids = [uf.name + str(uf.size) for uf in uploaded_files]
+                _zip_dl_kwargs["on_click"] = _clear_all_results
+                _zip_dl_kwargs["args"] = (_all_fids,)
+
             st.download_button(
                 label=zip_label,
                 data=st.session_state["_zip_data"],
                 file_name="cleaned_images.zip",
                 mime="application/zip",
+                **_zip_dl_kwargs,
             )
