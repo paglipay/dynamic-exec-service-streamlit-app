@@ -511,12 +511,15 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
         file_id = uploaded_file.name + str(uploaded_file.size)
         result_key = f"result_{file_id}"
 
+        jump_key = f"jump_result_{file_id}"
         if result_key in st.session_state:
-            _tab_orig, _tab_result = st.tabs(["Original", "✅ Result"], default_index=1)
-            with _tab_orig:
-                st.image(image, use_container_width=True)
+            _tab_result, _tab_orig = st.tabs(["✅ Result", "Original"])
             with _tab_result:
                 st.image(st.session_state[result_key], use_container_width=True)
+            with _tab_orig:
+                st.image(image, use_container_width=True)
+            # Clear the jump flag (no longer needed since Result is the first/default tab)
+            st.session_state.pop(jump_key, None)
         else:
             st.subheader("Original")
             st.image(image, use_container_width=True)
@@ -638,6 +641,7 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
                 with st.spinner("Auto-processing…"):
                     try:
                         st.session_state[result_key] = _apply_all_effects(image, object_effects)
+                        st.session_state[jump_key] = True
                     except RuntimeError as err:
                         st.error(str(err))
 
@@ -645,6 +649,7 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
                 with st.spinner("Applying effects…"):
                     try:
                         st.session_state[result_key] = _apply_all_effects(image, object_effects)
+                        st.session_state[jump_key] = True
                     except RuntimeError as err:
                         st.error(str(err))
 
