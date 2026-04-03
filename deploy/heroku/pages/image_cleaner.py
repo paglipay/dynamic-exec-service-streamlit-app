@@ -14,9 +14,9 @@ from openai import OpenAI
 # ── YOLOv8n-ONNX model (downloaded on first use, cached in /tmp) ─────────────
 
 _YOLO_MODEL_URL  = (
-    "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.onnx"
+    "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
 )
-_YOLO_MODEL_PATH = os.path.join(tempfile.gettempdir(), "yolov8n.onnx")
+_YOLO_MODEL_PATH = os.path.join(tempfile.gettempdir(), "yolov5n.onnx")
 
 # COCO class indices we care about → our label names
 _YOLO_CLASSES = {
@@ -72,15 +72,18 @@ def detect_objects_local(image: Image.Image, conf_thresh: float = 0.4) -> list[d
     input_name = session.get_inputs()[0].name
     raw = session.run(None, {input_name: inp})[0]  # shape (1, 84, 8400)
 
-    # raw[0] rows: [cx, cy, w, h, class0_conf, class1_conf, …]
-    preds = raw[0].T  # (8400, 84)
+    # YOLOv5 output: (1, 25200, 85)  →  [cx, cy, w, h, obj_conf, class0…class79]
+    preds = raw[0]  # (25200, 85)
     boxes = []
     sx, sy = iw / 640, ih / 640
 
     for row in preds:
-        class_scores = row[4:]
+        obj_conf = float(row[4])
+        if obj_conf < conf_thresh:
+            continue
+        class_scores = row[5:]
         cls_id = int(np.argmax(class_scores))
-        conf = float(class_scores[cls_id])
+        conf = obj_conf * float(class_scores[cls_id])
         if conf < conf_thresh:
             continue
         label = _YOLO_CLASSES.get(cls_id)
