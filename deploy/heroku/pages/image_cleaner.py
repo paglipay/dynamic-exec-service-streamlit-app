@@ -507,8 +507,14 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
     with tab:
         image = ImageOps.exif_transpose(Image.open(uploaded_file)).convert("RGB")
 
-        # ── Step 1: detect ────────────────────────────────────────────────────
+        # ── Original image (always visible until result is ready) ─────────────
         file_id = uploaded_file.name + str(uploaded_file.size)
+        result_key = f"result_{file_id}"
+        if result_key not in st.session_state:
+            st.subheader("Original")
+            st.image(image, use_container_width=True)
+
+        # ── Step 1: detect ────────────────────────────────────────────────────
         cache_key = f"boxes_{file_id}"
 
         # Auto-detect: run once when the result isn’t cached yet
@@ -600,8 +606,6 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
                 st.image(checker, use_container_width=True)
 
         # ── Step 4: process ───────────────────────────────────────────────────
-        result_key = f"result_{file_id}"
-
         def _apply_all_effects(img, obj_effects):
             remove_boxes = [boxes[i] for i, e in obj_effects.items() if e == "Remove (inpaint)"]
             blur_boxes   = [boxes[i] for i, e in obj_effects.items() if e == "Gaussian blur"]
