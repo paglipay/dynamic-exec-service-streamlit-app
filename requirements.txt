@@ -3,6 +3,8 @@ matplotlib
 pandas
 seaborn
 numpy
+opencv-python-headless
+onnxruntime
 pyserial
 requests
 openpyxl
@@ -20,3 +22,4 @@ pymongo
 google-auth
 google-api-python-client
 google-auth-oauthlib
+openai

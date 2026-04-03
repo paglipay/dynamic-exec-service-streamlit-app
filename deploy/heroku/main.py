@@ -1,53 +1,116 @@
-import streamlit as st
-import os
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
-st.set_page_config(page_title="Streamlit Multi-App Launcher")
+import streamlit as st
+
+st.set_page_config(
+    page_title="Contractor Tool Kit",
+    page_icon="🔧",
+    layout="wide",
+)
 
 PAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages")
 if PAGE_DIR not in sys.path:
     sys.path.insert(0, PAGE_DIR)
 
-auth_module_path = os.path.join(PAGE_DIR, "_auth_guard.py")
-auth_spec = importlib.util.spec_from_file_location("auth_guard", auth_module_path)
-auth_mod = importlib.util.module_from_spec(auth_spec)
-auth_spec.loader.exec_module(auth_mod)
-require_authentication = auth_mod.require_authentication
 
-assistant_module_path = os.path.join(PAGE_DIR, "_ai_assistant_panel.py")
-assistant_spec = importlib.util.spec_from_file_location(
-    "assistant_panel", assistant_module_path
-)
-assistant_mod = importlib.util.module_from_spec(assistant_spec)
-assistant_spec.loader.exec_module(assistant_mod)
-render_ai_assistant_panel = assistant_mod.render_ai_assistant_panel
+def _load(name: str, filename: str):
+    path = os.path.join(PAGE_DIR, filename)
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-require_authentication("Multi-App Launcher")
-render_ai_assistant_panel("Multi-App Launcher")
 
-st.title("Streamlit Multi-App Launcher")
-st.write("Select and run Streamlit apps from the pages/ directory below.")
+require_authentication = _load("auth_guard", "_auth_guard.py").require_authentication
+render_ai_assistant_panel = _load("assistant_panel", "_ai_assistant_panel.py").render_ai_assistant_panel
+_brand_mod = _load("brand", "_brand.py")
+apply_branding = _brand_mod.apply_branding
+render_footer = _brand_mod.render_footer
 
-# Get list of Python files in pages folder
-app_files = [
-    f
-    for f in os.listdir(PAGE_DIR)
-    if f.endswith('.py') and not Path(f).name.startswith("_")
-]
-selected_app = st.selectbox("Select app", app_files)
+require_authentication("Contractor Tool Kit")
+apply_branding()
+render_ai_assistant_panel("Contractor Tool Kit")
 
-if selected_app:
-    app_path = os.path.join(PAGE_DIR, selected_app)
+# ── App catalog ────────────────────────────────────────────────────────────
+COLS = 3
 
-    st.write(f"## Showing {selected_app}")
+APP_CATALOG = {
+    "📄 Documents": [
+        ("checklist_pdf.py",  "✅ Checklist PDF"),
+        ("word_template.py",  "📝 Word Template"),
+        ("pdf_sign.py",       "✍️ PDF Sign"),
+        ("json_submitter.py", "📋 JSON Submitter"),
+    ],
+    "🖼️ Media": [
+        ("cam_img_rename.py",  "📷 Camera Renamer"),
+        ("image_generator.py", "🎨 Image Generator"),
+    ],
+    "📊 Data": [
+        ("data_dash.py",           "📊 Data Dashboard"),
+        ("interactive_plotter.py", "📈 Plotter"),
+    ],
+    "🛠️ Dev Tools": [
+        ("api_explorer.py",               "🔌 API Explorer"),
+        ("python_terminal_interactive.py", "🐍 Python Terminal"),
+        ("text_processing_tool.py",        "🔤 Text Processing"),
+        ("dynamic_page.py",               "⚡ Dynamic Page"),
+        ("streamlit_app_maker_app.py",    "🏗️ App Maker"),
+        ("ansible_basic.py",              "⚙️ Ansible"),
+        ("serial_console.py",             "🖥️ Serial Console"),
+    ],
+    "🎯 Utilities": [
+        ("to_do_list.py",       "☑️ To-Do List"),
+        ("custom_game_quiz.py", "🎮 Game Quiz"),
+        ("streamlit_app.py",    "📖 README Viewer"),
+    ],
+    "🆘 Support": [
+        ("contact_support.py", "🆘 Contact & Support"),
+    ],
+}
+
+# ── Session state ──────────────────────────────────────────────────────────
+if "selected_app" not in st.session_state:
+    st.session_state["selected_app"] = None
+
+selected = st.session_state["selected_app"]
+
+# ── Home: card grid ────────────────────────────────────────────────────────
+if not selected:
+    st.title("🔧 Contractor Tool Kit")
+    st.caption("Select a tool below to get started.")
+    st.divider()
+
+    for section, apps in APP_CATALOG.items():
+        existing = [(f, label) for f, label in apps if os.path.exists(os.path.join(PAGE_DIR, f))]
+        if not existing:
+            continue
+        st.markdown(f'<div class="ctk-section">{section}</div>', unsafe_allow_html=True)
+        cols = st.columns(COLS)
+        for i, (filename, label) in enumerate(existing):
+            with cols[i % COLS]:
+                if st.button(label, key=f"card_{filename}", use_container_width=True):
+                    st.session_state["selected_app"] = filename
+                    st.rerun()
+
+    render_footer()
+
+# ── Tool view ──────────────────────────────────────────────────────────────
+else:
+    app_path = os.path.join(PAGE_DIR, selected)
+
+    if st.button("← Back to Tool Kit"):
+        st.session_state["selected_app"] = None
+        st.rerun()
+
+    st.divider()
 
     if os.getenv("STREAMLIT_SHOW_SOURCE_CODE", "").strip().lower() in {"1", "true", "yes", "on"}:
         with st.expander("Source code", expanded=False):
-            with open(app_path, 'r', encoding='utf-8') as f:
-                code = f.read()
-            st.code(code, language='python')
+            with open(app_path, "r", encoding="utf-8") as f:
+                st.code(f.read(), language="python")
 
     try:
         spec = importlib.util.spec_from_file_location("mod", app_path)
@@ -57,8 +120,6 @@ if selected_app:
 
         if hasattr(mod, "app"):
             mod.app()
-        else:
-            st.warning("Selected app does not have an 'app' function to run.")
 
-    except Exception as e:
-        st.error(f"Failed to run app: {e}")
+    except Exception as exc:
+        st.error(f"Failed to load tool: {exc}")

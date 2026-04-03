@@ -102,14 +102,22 @@ def _build_authenticator(credentials: dict[str, Any]):
     expiry_raw = _get_setting(COOKIE_EXPIRY_SETTING, 7)
     cookie_expiry_days = float(expiry_raw)
 
+    import inspect
     try:
+        sig = inspect.signature(stauth.Authenticate.__init__)
+        params = list(sig.parameters.keys())  # ['self', ...]
+        use_kwargs = "cookie_name" in params and "cookie_key" in params
+    except Exception:
+        use_kwargs = False
+
+    if use_kwargs:
         return stauth.Authenticate(
             credentials=credentials,
             cookie_name=cookie_name,
             cookie_key=cookie_key,
             cookie_expiry_days=cookie_expiry_days,
         )
-    except TypeError:
+    else:
         return stauth.Authenticate(
             credentials,
             cookie_name,
@@ -171,8 +179,38 @@ def _render_logout(authenticator) -> None:
             continue
 
 
+def _render_session_logout() -> None:
+    """Logout button that works without the authenticator object.
+    Clears all auth-related session state and cookie, then reruns."""
+    name = st.session_state.get("auth_name") or st.session_state.get("auth_username", "")
+    st.sidebar.caption(f"Signed in as {name}")
+    if st.sidebar.button("Logout", key="_session_logout_btn"):
+        for key in ("auth_name", "auth_username", "auth_roles",
+                    "name", "username", "authentication_status"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
+
 def require_authentication(page_name: str, required_roles: list[str] | None = None) -> None:
     if not _get_bool_setting(AUTH_ENABLED_SETTING, True):
+        return
+
+    # If a previous require_authentication call this session already confirmed the
+    # user is logged in, skip rebuilding the authenticator (which registers a
+    # Streamlit widget with key='init' and would raise a duplicate-key error when
+    # called more than once per render from main.py + a loaded sub-page).
+    if st.session_state.get("auth_username"):
+        username = st.session_state["auth_username"]
+        if required_roles:
+            try:
+                credentials = _build_credentials()
+            except Exception:
+                credentials = {}
+            user_record = credentials.get("usernames", {}).get(username, {})
+            user_roles = user_record.get("roles", []) or []
+            if not set(required_roles).intersection(user_roles):
+                st.error("You are logged in but do not have access to this page.")
+                st.stop()
         return
 
     # --- staged execution with per-step debug ---
@@ -188,6 +226,8 @@ def require_authentication(page_name: str, required_roles: list[str] | None = No
 
         stage = "building authenticator"
         authenticator = _build_authenticator(credentials)
+        # Stash so _brand.py can call authenticator.logout() to expire the cookie.
+        st.session_state["_ctk_authenticator"] = authenticator
 
         stage = "rendering login widget"
         name, authentication_status, username = _run_login(authenticator)
@@ -279,6 +319,3 @@ def require_authentication(page_name: str, required_roles: list[str] | None = No
     st.session_state["auth_name"] = name
     st.session_state["auth_username"] = username
     st.session_state["auth_roles"] = user_roles
-
-    st.sidebar.caption(f"Signed in as {name or username}")
-    _render_logout(authenticator)
