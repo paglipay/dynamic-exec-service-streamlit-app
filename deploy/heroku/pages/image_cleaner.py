@@ -507,10 +507,16 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
     with tab:
         image = ImageOps.exif_transpose(Image.open(uploaded_file)).convert("RGB")
 
-        # ── Original image (always visible until result is ready) ─────────────
+        # ── Image viewer (top of page — original until result is ready) ────────
         file_id = uploaded_file.name + str(uploaded_file.size)
         result_key = f"result_{file_id}"
-        if result_key not in st.session_state:
+        if result_key in st.session_state:
+            _tab_orig, _tab_result = st.tabs(["Original", "✅ Result"])
+            with _tab_orig:
+                st.image(image, use_container_width=True)
+            with _tab_result:
+                st.image(st.session_state[result_key], use_container_width=True)
+        else:
             st.subheader("Original")
             st.image(image, use_container_width=True)
 
@@ -643,11 +649,6 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
 
             if result_key in st.session_state:
                 result_img = st.session_state[result_key]
-                tab_orig, tab_result = st.tabs(["Original", "✅ Result"])
-                with tab_orig:
-                    st.image(image, use_container_width=True)
-                with tab_result:
-                    st.image(result_img, use_container_width=True)
                 st.download_button(
                     label="⬇️ Download cleaned image",
                     data=_to_png_bytes(result_img),
