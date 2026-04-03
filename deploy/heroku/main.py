@@ -26,7 +26,9 @@ def _load(name: str, filename: str):
 
 require_authentication = _load("auth_guard", "_auth_guard.py").require_authentication
 render_ai_assistant_panel = _load("assistant_panel", "_ai_assistant_panel.py").render_ai_assistant_panel
-apply_branding = _load("brand", "_brand.py").apply_branding
+_brand_mod = _load("brand", "_brand.py")
+apply_branding = _brand_mod.apply_branding
+render_footer = _brand_mod.render_footer
 
 require_authentication("Contractor Tool Kit")
 apply_branding()
@@ -64,6 +66,9 @@ APP_CATALOG = {
         ("custom_game_quiz.py", "🎮 Game Quiz"),
         ("streamlit_app.py",    "📖 README Viewer"),
     ],
+    "🆘 Support": [
+        ("contact_support.py", "🆘 Contact & Support"),
+    ],
 }
 
 # ── Session state ──────────────────────────────────────────────────────────
@@ -89,6 +94,8 @@ if not selected:
                 if st.button(label, key=f"card_{filename}", use_container_width=True):
                     st.session_state["selected_app"] = filename
                     st.rerun()
+
+    render_footer()
 
 # ── Tool view ──────────────────────────────────────────────────────────────
 else:

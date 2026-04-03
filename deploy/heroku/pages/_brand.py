@@ -160,3 +160,48 @@ def render_sidebar_brand() -> None:
 def apply_branding() -> None:
     inject_brand_css()
     render_sidebar_brand()
+
+
+def render_footer() -> None:
+    """Persistent footer strip — call once from the home screen."""
+    st.markdown(
+        """
+        <style>
+        .ctk-footer {
+            margin-top: 48px;
+            padding: 18px 0 8px;
+            border-top: 1px solid #E0E0DA;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .ctk-footer-copy {
+            font-size: 0.75rem;
+            color: #AAA;
+        }
+        .ctk-footer-links {
+            display: flex;
+            gap: 20px;
+        }
+        .ctk-footer-links a {
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: #E87722;
+            text-decoration: none;
+            letter-spacing: 0.2px;
+        }
+        .ctk-footer-links a:hover { text-decoration: underline; }
+        </style>
+        <div class="ctk-footer">
+            <span class="ctk-footer-copy">© 2026 Contractor Tool Kit · Built for the trades</span>
+            <div class="ctk-footer-links">
+                <a href="?contact=ticket">🎫 Support</a>
+                <a href="?contact=sales">💼 Contact Sales</a>
+                <a href="?contact=help">📚 Help Center</a>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
