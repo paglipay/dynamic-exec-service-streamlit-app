@@ -63,15 +63,6 @@ def detect_objects_local(image: Image.Image, conf_thresh: float = 0.4) -> list[d
         return []
 
     iw, ih = image.size
-
-    # YOLOv5 expects 640×640 RGB float NCHW, values 0–1
-    # Cast to match whatever dtype the model was exported with
-    resized = image.convert("RGB").resize((640, 640), Image.LANCZOS)
-    inp = np.array(resized, dtype=np.float32) / 255.0
-    inp = np.transpose(inp, (2, 0, 1))[np.newaxis]  # HWC → NCHW
-
-    session = _get_yolo_session()
-    input_detail = session.get_inputs()[0]
     input_name = input_detail.name
     if input_detail.type == "tensor(float16)":
         inp = inp.astype(np.float16)
