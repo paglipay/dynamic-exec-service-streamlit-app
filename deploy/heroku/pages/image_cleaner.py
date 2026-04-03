@@ -510,8 +510,9 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
         # ── Image viewer (top of page — original until result is ready) ────────
         file_id = uploaded_file.name + str(uploaded_file.size)
         result_key = f"result_{file_id}"
+
         if result_key in st.session_state:
-            _tab_orig, _tab_result = st.tabs(["Original", "✅ Result"])
+            _tab_orig, _tab_result = st.tabs(["Original", "✅ Result"], default_index=1)
             with _tab_orig:
                 st.image(image, use_container_width=True)
             with _tab_result:
