@@ -127,7 +127,7 @@ def detect_objects_local(image: Image.Image, conf_thresh: float = 0.4) -> list[d
 
 def detect_objects(image: Image.Image) -> list[dict]:
     """
-    Use GPT-4o-mini vision to detect cars, buildings, and people.
+    Use GPT-4o-mini vision to detect cars, and people.
     Returns a list of dicts: {label, x, y, w, h} in pixel coordinates.
     Falls back to an empty list if detection fails.
     """
@@ -147,7 +147,7 @@ def detect_objects(image: Image.Image) -> list[dict]:
     prompt = (
         "Identify all objects in this image that fall into these categories: "
         "person, car, van, truck, motorcycle, bicycle, "
-        "house, apartment building, shop/storefront, office building, industrial building, "
+        # "house, apartment building, shop/storefront, office building, industrial building, "
         "wall/fence, garage, shed. "
         "Return a JSON array. Each element must have: "
         "label (string, use the specific category name above), "
@@ -212,9 +212,18 @@ def detect_objects(image: Image.Image) -> list[dict]:
 _CATEGORY_GROUPS = {
     "People":              ["person"],
     "Vehicles":            ["car", "van", "truck", "motorcycle", "bicycle"],
-    "Private buildings":   ["house", "apartment building", "garage", "shed"],
-    "Commercial buildings":["shop/storefront", "office building", "industrial building"],
+    # "Private buildings":   ["house", "apartment building", "garage", "shed"],
+    # "Commercial buildings":["shop/storefront", "office building", "industrial building"],
     "Walls & fences":      ["wall/fence"],
+}
+
+_EFFECTS = ["No effect", "Remove (inpaint)", "Gaussian blur", "Pixelate"]
+
+_GROUP_DEFAULT_EFFECTS: dict[str, str] = {
+    "People":         "Remove (inpaint)",
+    "Vehicles":       "Remove (inpaint)",
+    "Walls & fences": "No effect",
+    "Walls & fences": "Blur",
 }
 
 def _label_matches(label: str, selected_groups: list[str]) -> bool:
@@ -325,7 +334,7 @@ def edit_image(image: Image.Image, mask: Image.Image, quality: str = "medium") -
             image=("image.png", _to_png_bytes(source_rgba), "image/png"),
             mask=("mask.png",  _to_png_bytes(mask_lb),      "image/png"),
             prompt=(
-                "Remove or blur all cars, buildings, and people naturally. "
+                "Remove or blur all cars and people naturally. "
                 "Keep pavement and environment consistent."
             ),
             quality=quality,
@@ -361,6 +370,39 @@ def local_inpaint(image: Image.Image, mask: Image.Image, radius: int = 15) -> Im
         cv2.INPAINT_TELEA,
     )
     return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+
+
+def apply_gaussian_blur(image: Image.Image, boxes: list[dict], sigma: int = 15) -> Image.Image:
+    """Gaussian-blur the bounding-box regions of *boxes* in *image*."""
+    result = np.array(image.convert("RGB"))
+    for box in boxes:
+        x, y, w, h = box["x"], box["y"], box["w"], box["h"]
+        roi = result[y : y + h, x : x + w]
+        if roi.size == 0:
+            continue
+        ksize = sigma * 2 + 1
+        result[y : y + h, x : x + w] = cv2.GaussianBlur(roi, (ksize, ksize), 0)
+    return Image.fromarray(result)
+
+
+def apply_pixelate(image: Image.Image, boxes: list[dict], block_size: int = 15) -> Image.Image:
+    """Pixelate (mosaic-censor) the bounding-box regions of *boxes* in *image*."""
+    result = np.array(image.convert("RGB"))
+    for box in boxes:
+        x, y, w, h = box["x"], box["y"], box["w"], box["h"]
+        roi = result[y : y + h, x : x + w]
+        if roi.size == 0 or w == 0 or h == 0:
+            continue
+        small = cv2.resize(
+            roi,
+            (max(1, w // block_size), max(1, h // block_size)),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        result[y : y + h, x : x + w] = cv2.resize(
+            small, (w, h), interpolation=cv2.INTER_NEAREST
+        )
+    return Image.fromarray(result)
+
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 
@@ -410,6 +452,28 @@ with st.expander("⚙️ Settings", expanded=True):
             "Inpaint radius (px)", min_value=3, max_value=40, value=15,
             help="Larger radius = smoother fill but slower and more bleed.",
         )
+
+    st.divider()
+    st.caption("**Default effect per object type**")
+    group_effects: dict[str, str] = {}
+    _gcols = st.columns(len(_CATEGORY_GROUPS))
+    for _gc, grp in zip(_gcols, _CATEGORY_GROUPS):
+        group_effects[grp] = _gc.selectbox(
+            grp,
+            options=_EFFECTS,
+            index=_EFFECTS.index(_GROUP_DEFAULT_EFFECTS.get(grp, "No effect")),
+            key=f"grp_effect_{grp}",
+        )
+
+    _bcol, _pcol = st.columns(2)
+    blur_sigma  = _bcol.slider(
+        "Blur strength", 5, 49, 15, step=2,
+        help="Higher = stronger Gaussian blur. Applied to 'Gaussian blur' objects.",
+    )
+    pixel_block = _pcol.slider(
+        "Pixelate block (px)", 5, 50, 15, step=5,
+        help="Higher = larger mosaic squares. Applied to 'Pixelate' objects.",
+    )
 
     st.divider()
     auto_detect = st.toggle(
@@ -475,31 +539,47 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
             st.warning("No objects detected in this image.")
             continue
 
-        # ── Step 2: per-object include/exclude ────────────────────────────────
-        st.subheader("Detected objects — select which to remove")
-        st.caption("Uncheck any object you want to keep unchanged.")
+        # ── Step 2: per-object effect selection ──────────────────────────────
+        st.subheader("Detected objects — choose effect for each")
+        st.caption(
+            "Each object defaults to the group setting above. "
+            "Override per-object by choosing from the dropdown."
+        )
 
         from collections import defaultdict
         label_groups: dict[str, list[int]] = defaultdict(list)
         for i, box in enumerate(boxes):
             label_groups[box["label"]].append(i)
 
-        active_indices: set[int] = set()
+        # idx → resolved effect (only entries where effect != "No effect")
+        object_effects: dict[int, str] = {}
         for label, indices in sorted(label_groups.items()):
-            default_on = _label_matches(label, ["People", "Vehicles"])
-            with st.expander(f"{label} ({len(indices)} detected)", expanded=True):
-                cols = st.columns(min(len(indices), 4))
-                for col, idx in zip(cols * len(indices), indices):
-                    box = boxes[idx]
-                    checked = col.checkbox(
-                        f"#{idx + 1}  ({box['x']}, {box['y']})",
-                        value=default_on,
-                        key=f"obj_{file_id}_{idx}",
-                    )
-                    if checked:
-                        active_indices.add(idx)
+            # Resolve which group this label belongs to
+            grp_default = "No effect"
+            for grp, cats in _CATEGORY_GROUPS.items():
+                if any(c in label.lower() or label.lower() in c for c in cats):
+                    grp_default = group_effects.get(grp, "No effect")
+                    break
 
-        active_boxes = [boxes[i] for i in sorted(active_indices)]
+            with st.expander(
+                f"{label} ({len(indices)} detected) — default: **{grp_default}**",
+                expanded=True,
+            ):
+                cols = st.columns(min(len(indices), 3))
+                for i, idx in enumerate(indices):
+                    col = cols[i % len(cols)]
+                    box = boxes[idx]
+                    chosen = col.selectbox(
+                        f"#{idx + 1}  ({box['x']}, {box['y']})",
+                        options=["— group default —"] + _EFFECTS,
+                        index=0,
+                        key=f"eff_{file_id}_{idx}",
+                    )
+                    resolved = grp_default if chosen == "— group default —" else chosen
+                    if resolved != "No effect":
+                        object_effects[idx] = resolved
+
+        active_boxes = [boxes[i] for i in sorted(object_effects)]
 
         # ── Step 3: preview ───────────────────────────────────────────────────
         show_preview = st.checkbox(
@@ -525,28 +605,38 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
         # ── Step 4: process ───────────────────────────────────────────────────
         result_key = f"result_{file_id}"
 
-        def _run_inpaint(img, ab):
-            msk = build_mask(img, ab)
-            if use_local_inpaint:
-                return local_inpaint(img, msk, radius=radius)
-            else:
-                return edit_image(img, msk, quality=quality)
+        def _apply_all_effects(img, obj_effects):
+            remove_boxes = [boxes[i] for i, e in obj_effects.items() if e == "Remove (inpaint)"]
+            blur_boxes   = [boxes[i] for i, e in obj_effects.items() if e == "Gaussian blur"]
+            pixel_boxes  = [boxes[i] for i, e in obj_effects.items() if e == "Pixelate"]
+            result = img.copy()
+            if blur_boxes:
+                result = apply_gaussian_blur(result, blur_boxes, sigma=blur_sigma)
+            if pixel_boxes:
+                result = apply_pixelate(result, pixel_boxes, block_size=pixel_block)
+            if remove_boxes:
+                msk = build_mask(result, remove_boxes)
+                if use_local_inpaint:
+                    result = local_inpaint(result, msk, radius=radius)
+                else:
+                    result = edit_image(result, msk, quality=quality)
+            return result
 
-        if not active_boxes:
-            st.warning("No objects selected — nothing to remove.")
+        if not object_effects:
+            st.warning("No objects have an effect assigned — nothing to process.")
         else:
             # Auto-process: run once when result isn't cached yet
             if auto_process and result_key not in st.session_state:
                 with st.spinner("Auto-processing…"):
                     try:
-                        st.session_state[result_key] = _run_inpaint(image, active_boxes)
+                        st.session_state[result_key] = _apply_all_effects(image, object_effects)
                     except RuntimeError as err:
                         st.error(str(err))
 
             if not auto_process and st.button("✨ Process image", key=f"process_{file_id}"):
-                with st.spinner("Building mask…"):
+                with st.spinner("Applying effects…"):
                     try:
-                        st.session_state[result_key] = _run_inpaint(image, active_boxes)
+                        st.session_state[result_key] = _apply_all_effects(image, object_effects)
                     except RuntimeError as err:
                         st.error(str(err))
 
