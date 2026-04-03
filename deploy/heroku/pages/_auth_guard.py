@@ -211,7 +211,6 @@ def require_authentication(page_name: str, required_roles: list[str] | None = No
             if not set(required_roles).intersection(user_roles):
                 st.error("You are logged in but do not have access to this page.")
                 st.stop()
-        _render_session_logout()
         return
 
     # --- staged execution with per-step debug ---
@@ -318,6 +317,3 @@ def require_authentication(page_name: str, required_roles: list[str] | None = No
     st.session_state["auth_name"] = name
     st.session_state["auth_username"] = username
     st.session_state["auth_roles"] = user_roles
-
-    st.sidebar.caption(f"Signed in as {name or username}")
-    _render_logout(authenticator)

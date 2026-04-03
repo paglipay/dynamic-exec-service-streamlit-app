@@ -107,6 +107,18 @@ def render_sidebar_brand() -> None:
     )
     st.sidebar.divider()
 
+    # Show signed-in user and logout (rendered once per cycle since
+    # apply_branding() is only called from main.py).
+    _auth_username = st.session_state.get("auth_username")
+    if _auth_username:
+        _auth_name = st.session_state.get("auth_name") or _auth_username
+        st.sidebar.caption(f"Signed in as **{_auth_name}**")
+        if st.sidebar.button("Logout", key="_ctk_logout_btn"):
+            for _k in ("auth_name", "auth_username", "auth_roles",
+                       "name", "username", "authentication_status"):
+                st.session_state.pop(_k, None)
+            st.rerun()
+
 
 def apply_branding() -> None:
     inject_brand_css()
