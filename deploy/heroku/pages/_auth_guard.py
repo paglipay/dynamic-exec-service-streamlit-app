@@ -179,6 +179,18 @@ def _render_logout(authenticator) -> None:
             continue
 
 
+def _render_session_logout() -> None:
+    """Logout button that works without the authenticator object.
+    Clears all auth-related session state and cookie, then reruns."""
+    name = st.session_state.get("auth_name") or st.session_state.get("auth_username", "")
+    st.sidebar.caption(f"Signed in as {name}")
+    if st.sidebar.button("Logout", key="_session_logout_btn"):
+        for key in ("auth_name", "auth_username", "auth_roles",
+                    "name", "username", "authentication_status"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
+
 def require_authentication(page_name: str, required_roles: list[str] | None = None) -> None:
     if not _get_bool_setting(AUTH_ENABLED_SETTING, True):
         return
@@ -199,6 +211,7 @@ def require_authentication(page_name: str, required_roles: list[str] | None = No
             if not set(required_roles).intersection(user_roles):
                 st.error("You are logged in but do not have access to this page.")
                 st.stop()
+        _render_session_logout()
         return
 
     # --- staged execution with per-step debug ---
