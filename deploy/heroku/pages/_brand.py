@@ -65,7 +65,32 @@ def inject_brand_css() -> None:
             padding: 18px 0 6px 2px;
         }
 
-        /* ── Button card style ── */
+        /* ── Sidebar buttons (e.g. Logout) — visible on dark bg ── */
+        [data-testid="stSidebar"] .stButton > button {
+            background: transparent !important;
+            border: 1.5px solid #E87722 !important;
+            color: #E87722 !important;
+            font-size: 0.78rem !important;
+            font-weight: 600 !important;
+            padding: 6px 14px !important;
+            border-radius: 8px !important;
+            line-height: 1.4 !important;
+            transition: background 0.15s, color 0.15s !important;
+        }
+        [data-testid="stSidebar"] .stButton > button:hover {
+            background: #E87722 !important;
+            color: #ffffff !important;
+            border-color: #E87722 !important;
+        }
+        [data-testid="stSidebar"] .stButton > button:focus,
+        [data-testid="stSidebar"] .stButton > button:active {
+            background: #C45E00 !important;
+            color: #ffffff !important;
+            border-color: #C45E00 !important;
+            box-shadow: 0 0 0 2px rgba(232,119,34,0.35) !important;
+        }
+
+        /* ── Button card style (main area only) ── */
         .stButton > button {
             border-radius: 10px !important;
             border: 1.5px solid #E0E0DA !important;
@@ -114,8 +139,20 @@ def render_sidebar_brand() -> None:
         _auth_name = st.session_state.get("auth_name") or _auth_username
         st.sidebar.caption(f"Signed in as **{_auth_name}**")
         if st.sidebar.button("Logout", key="_ctk_logout_btn"):
+            # Call the authenticator's logout to expire the persistent cookie.
+            # Without this, the cookie re-authenticates the user on next load.
+            _authenticator = st.session_state.get("_ctk_authenticator")
+            if _authenticator is not None:
+                try:
+                    _authenticator.logout()
+                except Exception:
+                    try:
+                        _authenticator.logout("Logout", "main")
+                    except Exception:
+                        pass
             for _k in ("auth_name", "auth_username", "auth_roles",
-                       "name", "username", "authentication_status"):
+                       "name", "username", "authentication_status",
+                       "_ctk_authenticator"):
                 st.session_state.pop(_k, None)
             st.rerun()
 

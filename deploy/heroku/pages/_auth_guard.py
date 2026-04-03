@@ -226,6 +226,8 @@ def require_authentication(page_name: str, required_roles: list[str] | None = No
 
         stage = "building authenticator"
         authenticator = _build_authenticator(credentials)
+        # Stash so _brand.py can call authenticator.logout() to expire the cookie.
+        st.session_state["_ctk_authenticator"] = authenticator
 
         stage = "rendering login widget"
         name, authentication_status, username = _run_login(authenticator)
