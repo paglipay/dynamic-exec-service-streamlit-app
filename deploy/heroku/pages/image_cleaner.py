@@ -25,6 +25,19 @@ def detect_objects(image: Image.Image) -> list[dict]:
         {"label": "car",      "x": int(w * 0.5), "y": int(h * 0.4), "w": int(w * 0.5), "h": int(h * 0.6)},
     ]
 
+# ── Debug overlay ────────────────────────────────────────────────────────────
+
+def draw_debug_overlay(image: Image.Image, boxes: list[dict]) -> Image.Image:
+    """Draw labelled bounding boxes on a copy of *image* for preview."""
+    overlay = image.convert("RGB").copy()
+    draw = ImageDraw.Draw(overlay, "RGBA")
+    for box in boxes:
+        x, y, w, h = box["x"], box["y"], box["w"], box["h"]
+        draw.rectangle([x, y, x + w, y + h], outline=(255, 50, 50, 255), width=3)
+        draw.rectangle([x, y, x + len(box["label"]) * 7 + 6, y + 18], fill=(255, 50, 50, 200))
+        draw.text((x + 3, y + 2), box["label"], fill=(255, 255, 255, 255))
+    return overlay
+
 # ── Mask ──────────────────────────────────────────────────────────────────────
 
 def build_mask(image: Image.Image, boxes: list[dict]) -> Image.Image:
@@ -50,13 +63,8 @@ def _to_png_bytes(img: Image.Image) -> bytes:
     img.save(buf, format="PNG")
     return buf.getvalue()
 
-# OpenAI edit only supports these output sizes; pick the best fit for the input.
-_API_SIZES = [(1024, 1024), (1536, 1024), (1024, 1536)]
-
-def _best_api_size(w: int, h: int) -> tuple[int, int]:
-    """Return the API size whose aspect ratio is closest to w:h."""
-    input_ratio = w / h
-    return min(_API_SIZES, key=lambda s: abs(s[0] / s[1] - input_ratio))
+# Always use the smallest supported size — result is cropped+resized back anyway.
+_API_SIZE = (1024, 1024)
 
 def _letterbox(img: Image.Image, target_w: int, target_h: int) -> tuple[Image.Image, tuple[int, int, int, int]]:
     """
@@ -72,15 +80,16 @@ def _letterbox(img: Image.Image, target_w: int, target_h: int) -> tuple[Image.Im
     padded.paste(img, (ox, oy))
     return padded, (ox, oy, ox + fw, oy + fh)
 
-def edit_image(image: Image.Image, mask: Image.Image) -> Image.Image:
+def edit_image(image: Image.Image, mask: Image.Image, quality: str = "medium") -> Image.Image:
     """
     Send image + mask to gpt-image-1 for inpainting.
+    quality: "low" | "medium" | "high"  (low ≈ 6× cheaper than high)
     Raises RuntimeError with a user-friendly message on failure.
     """
     orig_size = image.size
 
-    # Letterbox both image and mask to the closest supported API size
-    api_w, api_h = _best_api_size(*orig_size)
+    # Letterbox both image and mask to the fixed API size
+    api_w, api_h = _API_SIZE
     source_rgba, crop_box = _letterbox(image.convert("RGBA"), api_w, api_h)
     mask_lb, _ = _letterbox(mask.convert("RGBA"), api_w, api_h)
 
@@ -107,6 +116,7 @@ def edit_image(image: Image.Image, mask: Image.Image) -> Image.Image:
                 "Remove or blur all cars, buildings, and people naturally. "
                 "Keep pavement and environment consistent."
             ),
+            quality=quality,
         )
     except Exception as exc:
         raise RuntimeError(f"OpenAI API error: {exc}") from exc
@@ -133,6 +143,30 @@ if uploaded_file:
     st.subheader("Original")
     st.image(image, use_container_width=True)
 
+    quality = st.select_slider(
+        "Output quality",
+        options=["low", "medium", "high"],
+        value="medium",
+        help="low ≈ cheapest  |  medium = good balance  |  high = best quality",
+    )
+
+    debug = st.checkbox("🔎 Preview detections & mask before editing")
+
+    if debug:
+        with st.spinner("Running detection…"):
+            dbg_boxes = detect_objects(image)
+            dbg_mask  = build_mask(image, dbg_boxes)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.caption("Detected regions")
+            st.image(draw_debug_overlay(image, dbg_boxes), use_container_width=True)
+        with col2:
+            st.caption("Mask (red = will be inpainted)")
+            checkerboard = Image.new("RGB", dbg_mask.size, (180, 180, 180))
+            checkerboard.paste(Image.new("RGB", dbg_mask.size, (220, 50, 50)), mask=dbg_mask.split()[3].point(lambda p: 255 - p))
+            st.image(checkerboard, use_container_width=True)
+
     if st.button("🔍 Process image"):
 
         with st.spinner("Detecting objects…"):
@@ -141,15 +175,9 @@ if uploaded_file:
         with st.spinner("Building mask…"):
             mask = build_mask(image, boxes)
 
-        st.subheader("Mask (transparent = edited region)")
-        # Show mask on a grey background so transparent areas are visible
-        checkerboard = Image.new("RGB", mask.size, (180, 180, 180))
-        checkerboard.paste(Image.new("RGB", mask.size, (255, 255, 255)), mask=mask.split()[3])
-        st.image(checkerboard, use_container_width=True)
-
         with st.spinner("Editing with AI…"):
             try:
-                result_img = edit_image(image, mask)
+                result_img = edit_image(image, mask, quality=quality)
             except RuntimeError as err:
                 st.error(str(err))
                 st.stop()
