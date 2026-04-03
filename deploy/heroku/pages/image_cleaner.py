@@ -1,6 +1,7 @@
 import io
 import base64
 import os
+import json
 
 import streamlit as st
 from PIL import Image, ImageDraw
@@ -12,28 +13,97 @@ st.set_page_config(page_title="AI Privacy Image Cleaner", page_icon="🛡️")
 
 # ── Detection ─────────────────────────────────────────────────────────────────
 
+def _get_secret(name: str) -> str:
+    """Read from st.secrets if available, fall back to os.environ."""
+    try:
+        return str(st.secrets.get(name) or "")
+    except Exception:
+        return os.environ.get(name, "")
+
+# ── Detection ─────────────────────────────────────────────────────────────────
+
 def detect_objects(image: Image.Image) -> list[dict]:
     """
-    Placeholder detector — returns hardcoded bounding boxes.
-    TODO: replace with YOLO / Detectron2 inference.
-
-    Returns a list of dicts: {label, x, y, w, h}
+    Use GPT-4o-mini vision to detect cars, buildings, and people.
+    Returns a list of dicts: {label, x, y, w, h} in pixel coordinates.
+    Falls back to an empty list if detection fails.
     """
-    w, h = image.size
-    return [
-        {"label": "building", "x": int(w * 0.6), "y": 0,            "w": int(w * 0.4), "h": int(h * 0.4)},
-        {"label": "car",      "x": int(w * 0.5), "y": int(h * 0.4), "w": int(w * 0.5), "h": int(h * 0.6)},
-    ]
+    api_key = _get_secret("OPENAI_API_KEY") or _get_secret("AI_API_KEY")
+    if not api_key:
+        return []
+
+    # Downscale for the detection call to save tokens
+    thumb = image.copy()
+    thumb.thumbnail((512, 512), Image.LANCZOS)
+    tw, th = thumb.size
+
+    buf = io.BytesIO()
+    thumb.save(buf, format="JPEG", quality=75)
+    b64_thumb = base64.b64encode(buf.getvalue()).decode()
+
+    prompt = (
+        "Identify all cars, buildings, and people visible in this image. "
+        "Return a JSON array. Each element must have: "
+        "label (string), x, y, w, h (integer bounding box, top-left origin). "
+        "For people ALSO include an 'outline' key: an array of [x,y] integer pairs "
+        "forming a tight polygon around the person's body silhouette (10-20 points). "
+        f"The image is {tw}×{th} pixels. "
+        "Return ONLY the raw JSON array, no markdown, no explanation."
+    )
+
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=512,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_thumb}", "detail": "low"}},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+        raw = response.choices[0].message.content.strip()
+        boxes_thumb = json.loads(raw)
+    except Exception:
+        return []
+
+    boxes = []
+    for b in boxes_thumb:
+        try:
+            entry = {
+                "label": str(b["label"]),
+                "x": max(0, int(b["x"] * sx)),
+                "y": max(0, int(b["y"] * sy)),
+                "w": min(iw, int(b["w"] * sx)),
+                "h": min(ih, int(b["h"] * sy)),
+            }
+            if "outline" in b and isinstance(b["outline"], list):
+                entry["outline"] = [
+                    [max(0, int(p[0] * sx)), max(0, int(p[1] * sy))]
+                    for p in b["outline"] if len(p) == 2
+                ]
+            boxes.append(entry)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return boxes
 
 # ── Debug overlay ────────────────────────────────────────────────────────────
 
 def draw_debug_overlay(image: Image.Image, boxes: list[dict]) -> Image.Image:
-    """Draw labelled bounding boxes on a copy of *image* for preview."""
+    """Draw labelled bounding boxes (and polygons for people) on a copy of *image*."""
     overlay = image.convert("RGB").copy()
     draw = ImageDraw.Draw(overlay, "RGBA")
     for box in boxes:
         x, y, w, h = box["x"], box["y"], box["w"], box["h"]
-        draw.rectangle([x, y, x + w, y + h], outline=(255, 50, 50, 255), width=3)
+        if "outline" in box and len(box["outline"]) >= 3:
+            pts = [tuple(p) for p in box["outline"]]
+            draw.polygon(pts, outline=(255, 50, 50, 255))
+            # also draw a thin bbox so the label anchor is clear
+            draw.rectangle([x, y, x + w, y + h], outline=(255, 50, 50, 120), width=1)
+        else:
+            draw.rectangle([x, y, x + w, y + h], outline=(255, 50, 50, 255), width=3)
         draw.rectangle([x, y, x + len(box["label"]) * 7 + 6, y + 18], fill=(255, 50, 50, 200))
         draw.text((x + 3, y + 2), box["label"], fill=(255, 255, 255, 255))
     return overlay
@@ -52,8 +122,11 @@ def build_mask(image: Image.Image, boxes: list[dict]) -> Image.Image:
     draw = ImageDraw.Draw(mask)
     for box in boxes:
         x, y, w, h = box["x"], box["y"], box["w"], box["h"]
-        # Transparent = "please edit this region"
-        draw.rectangle([x, y, x + w, y + h], fill=(0, 0, 0, 0))
+        if "outline" in box and len(box["outline"]) >= 3:
+            pts = [tuple(p) for p in box["outline"]]
+            draw.polygon(pts, fill=(0, 0, 0, 0))
+        else:
+            draw.rectangle([x, y, x + w, y + h], fill=(0, 0, 0, 0))
     return mask
 
 # ── OpenAI edit ───────────────────────────────────────────────────────────────
