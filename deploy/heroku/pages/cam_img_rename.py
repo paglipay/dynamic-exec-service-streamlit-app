@@ -1,4 +1,6 @@
-import os
+import io
+import tempfile
+import zipfile
 from pathlib import Path
 from datetime import datetime
 
@@ -9,23 +11,32 @@ st.set_page_config(page_title="Camera Media Renamer")
 require_authentication("Camera Media Renamer")
 st.title("Camera Media Renamer")
 st.caption(
-    "Renames video and image files in a folder using a sequential scheme: "
-    "`01.mp4`, `01_INSTALL.jpg`, `01A.jpg`, `01B.jpg`, `02.mp4`, …"
+    "Upload video and image files. They are sorted by date taken and renamed using the scheme: "
+    "`01.mp4`, `01_INSTALL.jpg`, `01A.jpg`, `01B.jpg`, `02.mp4`, … "
+    "Download the result as a ZIP."
 )
 
 # ---------------------------------------------------------------------------
-# Date-extraction helpers (inline – no external media_date_utils dependency)
+# Constants
 # ---------------------------------------------------------------------------
 
 VIDEO_EXTS = {'.mov', '.mp4', '.avi', '.mkv', '.wmv', '.flv', '.mpeg', '.mpg'}
 IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'}
+ACCEPTED_TYPES = [
+    "image/jpeg", "image/png", "image/bmp", "image/gif", "image/tiff", "image/webp",
+    "video/quicktime", "video/mp4", "video/x-msvideo", "video/x-matroska",
+    "video/x-ms-wmv", "video/x-flv", "video/mpeg",
+]
+
+# ---------------------------------------------------------------------------
+# Date-extraction helpers
+# ---------------------------------------------------------------------------
 
 
-def _get_image_date_taken(path: str):
-    """Return the EXIF DateTimeOriginal as a float timestamp, or None."""
+def _image_date_from_bytes(data: bytes) -> float | None:
     try:
         from PIL import Image, ExifTags
-        with Image.open(path) as img:
+        with Image.open(io.BytesIO(data)) as img:
             exif_data = img._getexif()
             if not exif_data:
                 return None
@@ -38,13 +49,14 @@ def _get_image_date_taken(path: str):
     return None
 
 
-def _get_video_date_taken(path: str):
-    """Return video creation time as a float timestamp, or None."""
-    # Try hachoir first
+def _video_date_from_bytes(data: bytes, suffix: str) -> float | None:
     try:
         from hachoir.parser import createParser
         from hachoir.metadata import extractMetadata
-        parser = createParser(path)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        parser = createParser(tmp_path)
         if parser:
             with parser:
                 metadata = extractMetadata(parser)
@@ -62,42 +74,53 @@ def _get_video_date_taken(path: str):
                                     pass
     except Exception:
         pass
+    finally:
+        import os
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
     return None
 
 
-def _get_taken_time(path: str, ext: str):
+def _taken_time(data: bytes, ext: str, upload_index: int) -> float:
+    """Best-effort date taken; falls back to upload order (index) so sort is stable."""
     if ext in IMAGE_EXTS:
-        t = _get_image_date_taken(path)
+        t = _image_date_from_bytes(data)
     elif ext in VIDEO_EXTS:
-        t = _get_video_date_taken(path)
+        t = _video_date_from_bytes(data, ext)
     else:
         t = None
-    return t if t is not None else os.stat(path).st_mtime
+    return t if t is not None else float(upload_index)
 
 
-def _build_rename_plan(folder: str):
-    """Return list of (src_path, dst_path) pairs, skipping no-ops."""
+# ---------------------------------------------------------------------------
+# Rename-plan builder (works entirely in memory)
+# ---------------------------------------------------------------------------
+
+
+def _build_plan(uploaded_files):
+    """
+    Returns list of (original_name, new_name, bytes) for every file that gets
+    a new name.  Files that are unchanged are still included so the ZIP is complete.
+    """
     entries = []
-    try:
-        for entry in os.scandir(folder):
-            if not entry.is_file():
-                continue
-            ext = Path(entry.name).suffix.lower()
-            if ext not in IMAGE_EXTS and ext not in VIDEO_EXTS:
-                continue
-            taken = _get_taken_time(entry.path, ext)
-            entries.append((entry.path, ext, taken))
-    except PermissionError as exc:
-        raise exc
+    for i, uf in enumerate(uploaded_files):
+        ext = Path(uf.name).suffix.lower()
+        if ext not in IMAGE_EXTS and ext not in VIDEO_EXTS:
+            continue
+        data = uf.getvalue()
+        taken = _taken_time(data, ext, i)
+        entries.append((uf.name, ext, data, taken))
 
-    entries.sort(key=lambda x: x[2])
+    entries.sort(key=lambda x: x[3])
 
-    plan = []
+    plan = []  # (original_name, new_name, data)
     video_count = 0
     image_count = 0
     current_prefix = None
 
-    for src, ext, _ in entries:
+    for original_name, ext, data, _ in entries:
         is_video = ext in VIDEO_EXTS
         is_image = ext in IMAGE_EXTS
 
@@ -116,93 +139,56 @@ def _build_rename_plan(folder: str):
         else:
             continue  # skip images before first video
 
-        dst = os.path.join(folder, new_name)
-        if os.path.abspath(src) != os.path.abspath(dst):
-            plan.append((src, dst))
+        plan.append((original_name, new_name, data))
 
     return plan
+
+
+def _build_zip(plan) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for _, new_name, data in plan:
+            zf.writestr(new_name, data)
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 
-folder = st.text_input("Folder path", placeholder="/path/to/media/folder")
+uploaded_files = st.file_uploader(
+    "Upload media files",
+    type=list(IMAGE_EXTS | {e.lstrip('.') for e in VIDEO_EXTS}),
+    accept_multiple_files=True,
+    help="Select all video and image files from your camera roll.",
+)
 
-col_scan, col_reset = st.columns([1, 5])
-scan_clicked = col_scan.button("Scan", use_container_width=True)
+if uploaded_files:
+    with st.spinner(f"Processing {len(uploaded_files)} file(s)…"):
+        plan = _build_plan(uploaded_files)
 
-if scan_clicked:
-    folder = folder.strip()
-    if not folder:
-        st.warning("Please enter a folder path.")
-    elif not os.path.isdir(folder):
-        st.error(f"Directory not found: `{folder}`")
-    else:
-        with st.spinner("Scanning files…"):
-            try:
-                plan = _build_rename_plan(folder)
-                st.session_state["rename_plan"] = plan
-                st.session_state["rename_folder"] = folder
-                st.session_state["rename_done"] = False
-            except PermissionError as exc:
-                st.error(f"Permission denied: {exc}")
-                st.session_state.pop("rename_plan", None)
-
-if "rename_plan" in st.session_state and not st.session_state.get("rename_done"):
-    plan = st.session_state["rename_plan"]
-    scanned_folder = st.session_state["rename_folder"]
+    skipped = len(uploaded_files) - len(plan)
 
     if not plan:
-        st.info("No files need renaming in the selected folder.")
+        st.warning("No renameable files found. Make sure you upload at least one video.")
     else:
-        st.subheader(f"{len(plan)} file(s) to rename")
+        st.subheader(f"{len(plan)} file(s) will be renamed")
+        if skipped:
+            st.caption(f"{skipped} file(s) skipped (images uploaded before any video, or unsupported type).")
 
         rows = [
-            {
-                "Current name": os.path.basename(src),
-                "New name": os.path.basename(dst),
-            }
-            for src, dst in plan
+            {"Original name": orig, "New name": new}
+            for orig, new, _ in plan
         ]
         st.dataframe(rows, use_container_width=True)
 
-        # Conflict check: warn if a destination already exists and is not a source
-        sources = {os.path.abspath(s) for s, _ in plan}
-        conflicts = [
-            dst for _, dst in plan
-            if os.path.exists(dst) and os.path.abspath(dst) not in sources
-        ]
-        if conflicts:
-            st.warning(
-                f"{len(conflicts)} destination file(s) already exist and would be overwritten:\n"
-                + "\n".join(f"- `{os.path.basename(c)}`" for c in conflicts)
-            )
-
-        if st.button("Rename files", type="primary"):
-            errors = []
-            renamed = 0
-            progress = st.progress(0)
-            for i, (src, dst) in enumerate(plan):
-                try:
-                    os.rename(src, dst)
-                    renamed += 1
-                except OSError as exc:
-                    errors.append(f"`{os.path.basename(src)}` → `{os.path.basename(dst)}`: {exc}")
-                progress.progress((i + 1) / len(plan))
-
-            st.session_state["rename_done"] = True
-            st.session_state["rename_results"] = (renamed, errors)
-            st.rerun()
-
-if st.session_state.get("rename_done"):
-    renamed, errors = st.session_state.get("rename_results", (0, []))
-    st.success(f"Renamed {renamed} file(s) successfully.")
-    if errors:
-        st.error("Some files could not be renamed:")
-        for e in errors:
-            st.write(f"- {e}")
-    if st.button("Start over"):
-        for key in ("rename_plan", "rename_folder", "rename_done", "rename_results"):
-            st.session_state.pop(key, None)
-        st.rerun()
+        zip_bytes = _build_zip(plan)
+        st.download_button(
+            label="Download renamed files (.zip)",
+            data=zip_bytes,
+            file_name="renamed_media.zip",
+            mime="application/zip",
+            type="primary",
+        )
+else:
+    st.info("Upload video and image files above to get started.")
