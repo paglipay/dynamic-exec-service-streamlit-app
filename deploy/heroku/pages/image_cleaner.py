@@ -411,6 +411,18 @@ with st.expander("⚙️ Settings", expanded=True):
             help="Larger radius = smoother fill but slower and more bleed.",
         )
 
+    st.divider()
+    enable_detect = st.toggle(
+        "Show detect button per image",
+        value=True,
+        help="When off, detection is skipped and the detect button is hidden for all images.",
+    )
+    enable_preview = st.toggle(
+        "Show mask preview option per image",
+        value=True,
+        help="When off, the mask preview checkbox is hidden for all images.",
+    )
+
 # ── File uploader ─────────────────────────────────────────────────────────────
 uploaded_files = st.file_uploader(
     "Upload image(s)", type=["png", "jpg", "jpeg"], accept_multiple_files=True
@@ -432,17 +444,23 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
         # ── Step 1: detect ────────────────────────────────────────────────────
         file_id = uploaded_file.name + str(uploaded_file.size)
         cache_key = f"boxes_{file_id}"
-        if st.button("🔍 Detect objects", key=f"detect_{file_id}"):
-            with st.spinner("Detecting objects…"):
-                if use_local_detect:
-                    st.session_state[cache_key] = detect_objects_local(image)
-                else:
-                    st.session_state[cache_key] = detect_objects(image)
+        if enable_detect:
+            if st.button("🔍 Detect objects", key=f"detect_{file_id}"):
+                with st.spinner("Detecting objects…"):
+                    if use_local_detect:
+                        st.session_state[cache_key] = detect_objects_local(image)
+                    else:
+                        st.session_state[cache_key] = detect_objects(image)
+        else:
+            st.session_state.pop(cache_key, None)
 
         boxes = st.session_state.get(cache_key)
 
         if boxes is None:
-            st.info("Click **Detect objects** above.")
+            if enable_detect:
+                st.info("Click **Detect objects** above.")
+            else:
+                st.info("Enable **Show detect button** in Settings to detect objects.")
             continue
 
         if not boxes:
@@ -476,7 +494,7 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
         active_boxes = [boxes[i] for i in sorted(active_indices)]
 
         # ── Step 3: preview ───────────────────────────────────────────────────
-        if st.checkbox("🔎 Preview mask for selected objects", key=f"prev_{file_id}"):
+        if enable_preview and st.checkbox("🔎 Preview mask for selected objects", key=f"prev_{file_id}"):
             preview_mask = build_mask(image, active_boxes)
             col1, col2 = st.columns(2)
             with col1:
