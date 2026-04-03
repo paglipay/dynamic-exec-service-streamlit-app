@@ -1,7 +1,97 @@
+import importlib.util
+import json
+import os
+import sys
+from email.message import EmailMessage
+
 import streamlit as st
 from _auth_guard import require_authentication
 
 require_authentication("Contact & Support")
+
+# ── Reuse Gmail from checklist_pdf ─────────────────────────────────────────
+# checklist_pdf.py already has a fully-featured get_gmail_service() that
+# handles OAuth and Service Account auth via the same env variables.
+# We import it dynamically so contact_support.py stays independent.
+
+def _load_checklist_module():
+    pages_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(pages_dir, "checklist_pdf.py")
+    if not os.path.exists(path):
+        return None
+    if "checklist_pdf" in sys.modules:
+        return sys.modules["checklist_pdf"]
+    spec = importlib.util.spec_from_file_location("checklist_pdf", path)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+        sys.modules["checklist_pdf"] = mod
+        return mod
+    except Exception:
+        return None
+
+_checklist = _load_checklist_module()
+_get_gmail_service = getattr(_checklist, "get_gmail_service", None)
+
+# ── Notification helpers ───────────────────────────────────────────────────
+
+def _get_env(name: str) -> str:
+    """Read from env then Streamlit secrets, return '' if absent."""
+    val = os.getenv(name, "")
+    if val:
+        return val.strip()
+    try:
+        return str(st.secrets.get(name, "")).strip()
+    except Exception:
+        return ""
+
+
+def _send_email(to: str, subject: str, body: str) -> str | None:
+    """Send via Gmail API (reusing checklist_pdf credentials). Returns error string or None."""
+    if not to:
+        return None  # no recipient configured — skip silently
+
+    if _get_gmail_service is None:
+        return "Gmail module unavailable."
+
+    try:
+        gmail_service, sender, _ = _get_gmail_service()
+        import base64
+        msg = EmailMessage()
+        msg["To"] = to
+        if sender:
+            msg["From"] = sender
+        msg["Subject"] = subject
+        msg.set_content(body)
+        encoded = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        gmail_service.users().messages().send(userId="me", body={"raw": encoded}).execute()
+        return None
+    except Exception as exc:
+        return str(exc)
+
+
+def _send_slack(webhook_env: str, text: str) -> str | None:
+    """POST a message via Slack Incoming Webhook. Returns error or None."""
+    import urllib.request
+
+    url = _get_env(webhook_env)
+    if not url:
+        return None  # not configured
+
+    payload = json.dumps({"text": text}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status != 200:
+                return f"Slack returned HTTP {resp.status}"
+        return None
+    except Exception as exc:
+        return str(exc)
 
 # ── Sidebar section navigation ─────────────────────────────────────────────
 st.sidebar.divider()
@@ -146,10 +236,37 @@ if section == "🎫 Submit a Ticket":
                 for e in errors:
                     st.error(e)
             else:
+                support_email = _get_env("CTK_SUPPORT_EMAIL")
+                email_body = (
+                    f"New Support Ticket\n"
+                    f"{'─'*40}\n"
+                    f"From:        {name} <{email}>\n"
+                    f"Category:    {subject}\n"
+                    f"Priority:    {priority}\n"
+                    f"{'─'*40}\n\n"
+                    f"{description}\n"
+                )
+                slack_text = (
+                    f"🎫 *New Support Ticket* [{priority}]\n"
+                    f"*From:* {name} ({email})\n"
+                    f"*Category:* {subject}\n"
+                    f"*Details:* {description[:400]}"
+                )
+
+                notify_errors = []
+                err = _send_email(support_email, f"[{priority}] Support Ticket – {subject}", email_body)
+                if err:
+                    notify_errors.append(f"Email: {err}")
+                err = _send_slack("CTK_SLACK_SUPPORT_WEBHOOK", slack_text)
+                if err:
+                    notify_errors.append(f"Slack: {err}")
+
                 st.success(
                     f"✅ Ticket submitted! We'll get back to **{name}** at **{email}** shortly.",
                     icon="✅",
                 )
+                if notify_errors:
+                    st.warning("Ticket recorded, but some notifications failed: " + " | ".join(notify_errors))
                 st.balloons()
 
     with col_info:
@@ -232,10 +349,41 @@ elif section == "💼 Contact Sales":
                 for e in errors:
                     st.error(e)
             else:
+                sales_email = _get_env("CTK_SALES_EMAIL")
+                interests_str = ", ".join(interest) if interest else "Not specified"
+                email_body = (
+                    f"New Sales Enquiry\n"
+                    f"{'─'*40}\n"
+                    f"Name:        {name}\n"
+                    f"Company:     {company}\n"
+                    f"Email:       {email}\n"
+                    f"Phone:       {phone or 'Not provided'}\n"
+                    f"Interests:   {interests_str}\n"
+                    f"{'─'*40}\n\n"
+                    f"{message}\n"
+                )
+                slack_text = (
+                    f"💼 *New Sales Enquiry*\n"
+                    f"*Name:* {name} — {company}\n"
+                    f"*Email:* {email}\n"
+                    f"*Interests:* {interests_str}\n"
+                    f"*Message:* {message[:400]}"
+                )
+
+                notify_errors = []
+                err = _send_email(sales_email, f"Sales Enquiry – {name} ({company})", email_body)
+                if err:
+                    notify_errors.append(f"Email: {err}")
+                err = _send_slack("CTK_SLACK_SALES_WEBHOOK", slack_text)
+                if err:
+                    notify_errors.append(f"Slack: {err}")
+
                 st.success(
                     f"Thanks **{name}**! A member of our sales team will reach out to **{email}** within one business day.",
                     icon="💼",
                 )
+                if notify_errors:
+                    st.warning("Message recorded, but some notifications failed: " + " | ".join(notify_errors))
 
     with col_info:
         st.markdown(

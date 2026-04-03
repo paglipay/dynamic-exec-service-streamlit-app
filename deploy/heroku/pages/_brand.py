@@ -167,41 +167,32 @@ def render_footer() -> None:
     st.markdown(
         """
         <style>
-        .ctk-footer {
-            margin-top: 48px;
-            padding: 18px 0 8px;
-            border-top: 1px solid #E0E0DA;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
         .ctk-footer-copy {
             font-size: 0.75rem;
             color: #AAA;
+            margin-top: 40px;
+            padding-top: 16px;
+            border-top: 1px solid #E0E0DA;
+            margin-bottom: 8px;
         }
-        .ctk-footer-links {
-            display: flex;
-            gap: 20px;
-        }
-        .ctk-footer-links a {
-            font-size: 0.78rem;
-            font-weight: 600;
-            color: #E87722;
-            text-decoration: none;
-            letter-spacing: 0.2px;
-        }
-        .ctk-footer-links a:hover { text-decoration: underline; }
         </style>
-        <div class="ctk-footer">
-            <span class="ctk-footer-copy">© 2026 Contractor Tool Kit · Built for the trades</span>
-            <div class="ctk-footer-links">
-                <a href="?contact=ticket">🎫 Support</a>
-                <a href="?contact=sales">💼 Contact Sales</a>
-                <a href="?contact=help">📚 Help Center</a>
-            </div>
-        </div>
+        <div class="ctk-footer-copy">© 2026 Contractor Tool Kit · Built for the trades</div>
         """,
         unsafe_allow_html=True,
     )
+    col_a, col_b, col_c, col_spacer = st.columns([1, 1, 1, 5])
+    with col_a:
+        if st.button("🎫 Support", key="_footer_support", use_container_width=True):
+            st.session_state["selected_app"] = "contact_support.py"
+            st.session_state["_contact_nav"] = "🎫 Submit a Ticket"
+            st.rerun()
+    with col_b:
+        if st.button("💼 Contact Sales", key="_footer_sales", use_container_width=True):
+            st.session_state["selected_app"] = "contact_support.py"
+            st.session_state["_contact_nav"] = "💼 Contact Sales"
+            st.rerun()
+    with col_c:
+        if st.button("📚 Help Center", key="_footer_help", use_container_width=True):
+            st.session_state["selected_app"] = "contact_support.py"
+            st.session_state["_contact_nav"] = "📚 Help Center"
+            st.rerun()
