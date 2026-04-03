@@ -42,9 +42,13 @@ def detect_objects(image: Image.Image) -> list[dict]:
     b64_thumb = base64.b64encode(buf.getvalue()).decode()
 
     prompt = (
-        "Identify all cars, buildings, and people visible in this image. "
+        "Identify all objects in this image that fall into these categories: "
+        "person, car, van, truck, motorcycle, bicycle, "
+        "house, apartment building, shop/storefront, office building, industrial building, "
+        "wall/fence, garage, shed. "
         "Return a JSON array. Each element must have: "
-        "label (string), x, y, w, h (integer bounding box, top-left origin). "
+        "label (string, use the specific category name above), "
+        "x, y, w, h (integer bounding box, top-left origin). "
         "For people ALSO include an 'outline' key: an array of [x,y] integer pairs "
         "forming a tight polygon around the person's body silhouette (10-20 points). "
         f"The image is {tw}×{th} pixels. "
@@ -70,6 +74,9 @@ def detect_objects(image: Image.Image) -> list[dict]:
         return []
 
     boxes = []
+    # Scale coordinates from thumbnail back to original image size
+    iw, ih = image.size
+    sx, sy = iw / tw, ih / th
     for b in boxes_thumb:
         try:
             entry = {
@@ -89,7 +96,22 @@ def detect_objects(image: Image.Image) -> list[dict]:
             continue
     return boxes
 
-# ── Debug overlay ────────────────────────────────────────────────────────────
+_CATEGORY_GROUPS = {
+    "People":              ["person"],
+    "Vehicles":            ["car", "van", "truck", "motorcycle", "bicycle"],
+    "Private buildings":   ["house", "apartment building", "garage", "shed"],
+    "Commercial buildings":["shop/storefront", "office building", "industrial building"],
+    "Walls & fences":      ["wall/fence"],
+}
+
+def _label_matches(label: str, selected_groups: list[str]) -> bool:
+    label_l = label.lower()
+    for group in selected_groups:
+        for cat in _CATEGORY_GROUPS.get(group, []):
+            if cat in label_l or label_l in cat:
+                return True
+    return False
+
 
 def draw_debug_overlay(image: Image.Image, boxes: list[dict]) -> Image.Image:
     """Draw labelled bounding boxes (and polygons for people) on a copy of *image*."""
@@ -110,7 +132,7 @@ def draw_debug_overlay(image: Image.Image, boxes: list[dict]) -> Image.Image:
 
 # ── Mask ──────────────────────────────────────────────────────────────────────
 
-def build_mask(image: Image.Image, boxes: list[dict]) -> Image.Image:
+def build_mask(image: Image.Image, boxes: list[dict], selected_groups: list[str] | None = None) -> Image.Image:
     """
     Build an RGBA mask where detected regions are fully transparent
     (= inpaint here) and everything else is fully opaque (= keep).
@@ -121,6 +143,8 @@ def build_mask(image: Image.Image, boxes: list[dict]) -> Image.Image:
     mask = Image.new("RGBA", image.size, (0, 0, 0, 255))
     draw = ImageDraw.Draw(mask)
     for box in boxes:
+        if selected_groups is not None and not _label_matches(box["label"], selected_groups):
+            continue
         x, y, w, h = box["x"], box["y"], box["w"], box["h"]
         if "outline" in box and len(box["outline"]) >= 3:
             pts = [tuple(p) for p in box["outline"]]
@@ -216,6 +240,69 @@ if uploaded_file:
     st.subheader("Original")
     st.image(image, use_container_width=True)
 
+    # ── Step 1: detect ────────────────────────────────────────────────────────
+    file_id = uploaded_file.name + str(uploaded_file.size)
+    if st.session_state.get("detect_file") != file_id:
+        st.session_state.detected_boxes = None
+        st.session_state.detect_file = file_id
+
+    if st.button("🔍 Detect objects"):
+        with st.spinner("Detecting objects…"):
+            st.session_state.detected_boxes = detect_objects(image)
+
+    boxes = st.session_state.get("detected_boxes")
+
+    if boxes is None:
+        st.info("Click **Detect objects** to find people, vehicles, and buildings.")
+        st.stop()
+
+    if not boxes:
+        st.warning("No objects detected in this image.")
+        st.stop()
+
+    # ── Step 2: per-object include/exclude ────────────────────────────────────
+    st.subheader("Detected objects — select which to remove")
+    st.caption("Uncheck any object you want to keep unchanged.")
+
+    from collections import defaultdict
+    label_groups: dict[str, list[int]] = defaultdict(list)
+    for i, box in enumerate(boxes):
+        label_groups[box["label"]].append(i)
+
+    active_indices: set[int] = set()
+    for label, indices in sorted(label_groups.items()):
+        default_on = _label_matches(label, ["People", "Vehicles"])
+        with st.expander(f"{label} ({len(indices)} detected)", expanded=True):
+            cols = st.columns(min(len(indices), 4))
+            for col, idx in zip(cols * len(indices), indices):
+                box = boxes[idx]
+                checked = col.checkbox(
+                    f"#{idx + 1}  ({box['x']}, {box['y']})",
+                    value=default_on,
+                    key=f"obj_{file_id}_{idx}",
+                )
+                if checked:
+                    active_indices.add(idx)
+
+    active_boxes = [boxes[i] for i in sorted(active_indices)]
+
+    # ── Step 3: preview ───────────────────────────────────────────────────────
+    if st.checkbox("🔎 Preview mask for selected objects"):
+        preview_mask = build_mask(image, active_boxes)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.caption("All detections")
+            st.image(draw_debug_overlay(image, boxes), use_container_width=True)
+        with col2:
+            st.caption("Mask (red = will be inpainted)")
+            checker = Image.new("RGB", preview_mask.size, (180, 180, 180))
+            checker.paste(
+                Image.new("RGB", preview_mask.size, (220, 50, 50)),
+                mask=preview_mask.split()[3].point(lambda p: 255 - p),
+            )
+            st.image(checker, use_container_width=True)
+
+    # ── Step 4: process ───────────────────────────────────────────────────────
     quality = st.select_slider(
         "Output quality",
         options=["low", "medium", "high"],
@@ -223,30 +310,11 @@ if uploaded_file:
         help="low ≈ cheapest  |  medium = good balance  |  high = best quality",
     )
 
-    debug = st.checkbox("🔎 Preview detections & mask before editing")
-
-    if debug:
-        with st.spinner("Running detection…"):
-            dbg_boxes = detect_objects(image)
-            dbg_mask  = build_mask(image, dbg_boxes)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.caption("Detected regions")
-            st.image(draw_debug_overlay(image, dbg_boxes), use_container_width=True)
-        with col2:
-            st.caption("Mask (red = will be inpainted)")
-            checkerboard = Image.new("RGB", dbg_mask.size, (180, 180, 180))
-            checkerboard.paste(Image.new("RGB", dbg_mask.size, (220, 50, 50)), mask=dbg_mask.split()[3].point(lambda p: 255 - p))
-            st.image(checkerboard, use_container_width=True)
-
-    if st.button("🔍 Process image"):
-
-        with st.spinner("Detecting objects…"):
-            boxes = detect_objects(image)
-
+    if not active_boxes:
+        st.warning("No objects selected — nothing to remove.")
+    elif st.button("✨ Process image"):
         with st.spinner("Building mask…"):
-            mask = build_mask(image, boxes)
+            mask = build_mask(image, active_boxes)
 
         with st.spinner("Editing with AI…"):
             try:
