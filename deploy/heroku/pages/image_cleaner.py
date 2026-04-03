@@ -57,7 +57,13 @@ def edit_image(image: Image.Image, mask: Image.Image) -> Image.Image:
     # OpenAI edit requires the source image to be RGBA
     source_rgba = image.convert("RGBA")
 
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    api_key = st.secrets.get("OPENAI_API_KEY") or st.secrets.get("AI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OpenAI API key is not configured. Set OPENAI_API_KEY (or AI_API_KEY) "
+            "in your Heroku config vars or .streamlit/secrets.toml."
+        )
+    client = OpenAI(api_key=api_key)
     try:
         result = client.images.edit(
             model="gpt-image-1",
