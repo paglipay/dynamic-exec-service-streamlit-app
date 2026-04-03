@@ -59,18 +59,28 @@ def detect_objects(image: Image.Image) -> list[dict]:
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            max_tokens=512,
+            max_tokens=2048,
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_thumb}", "detail": "low"}},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_thumb}", "detail": "auto"}},
                     {"type": "text", "text": prompt},
                 ],
             }],
         )
         raw = response.choices[0].message.content.strip()
+        # Strip markdown code fences if the model wraps the JSON
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
         boxes_thumb = json.loads(raw)
-    except Exception:
+    except json.JSONDecodeError as exc:
+        st.warning(f"Detection failed: model returned invalid JSON — {exc}. Raw response: `{raw[:300]}`")
+        return []
+    except Exception as exc:
+        st.warning(f"Detection failed: {exc}")
         return []
 
     boxes = []
