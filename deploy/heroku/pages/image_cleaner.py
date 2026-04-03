@@ -2,12 +2,31 @@ import io
 import base64
 import os
 import json
+import tempfile
+import urllib.request
 
 import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw
 from openai import OpenAI
+
+# ── YOLOv8n-ONNX model (downloaded on first use, cached in /tmp) ─────────────
+
+_YOLO_MODEL_URL  = (
+    "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.onnx"
+)
+_YOLO_MODEL_PATH = os.path.join(tempfile.gettempdir(), "yolov8n.onnx")
+
+# COCO class indices we care about → our label names
+_YOLO_CLASSES = {
+    0:  "person",
+    1:  "bicycle",
+    2:  "car",
+    3:  "motorcycle",
+    5:  "bus",       # mapped to van
+    7:  "truck",
+}
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -22,7 +41,82 @@ def _get_secret(name: str) -> str:
     except Exception:
         return os.environ.get(name, "")
 
-# ── Detection ─────────────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner="Loading local detection model…")
+def _get_yolo_session():
+    """Download YOLOv8n ONNX once, return a cached onnxruntime.InferenceSession."""
+    import onnxruntime as ort
+    if not os.path.exists(_YOLO_MODEL_PATH):
+        urllib.request.urlretrieve(_YOLO_MODEL_URL, _YOLO_MODEL_PATH)
+    return ort.InferenceSession(_YOLO_MODEL_PATH, providers=["CPUExecutionProvider"])
+
+
+def detect_objects_local(image: Image.Image, conf_thresh: float = 0.4) -> list[dict]:
+    """
+    Detect people and vehicles locally with YOLOv8n ONNX.
+    No API call. Does NOT detect buildings (not in COCO).
+    Returns a list of dicts: {label, x, y, w, h}.
+    """
+    try:
+        session = _get_yolo_session()
+    except Exception as exc:
+        st.warning(f"Local model load failed: {exc}")
+        return []
+
+    iw, ih = image.size
+
+    # YOLOv8 expects 640×640 RGB float32 NCHW, values 0–1
+    resized = image.convert("RGB").resize((640, 640), Image.LANCZOS)
+    inp = np.array(resized, dtype=np.float32) / 255.0
+    inp = np.transpose(inp, (2, 0, 1))[np.newaxis]  # HWC → NCHW
+
+    input_name = session.get_inputs()[0].name
+    raw = session.run(None, {input_name: inp})[0]  # shape (1, 84, 8400)
+
+    # raw[0] rows: [cx, cy, w, h, class0_conf, class1_conf, …]
+    preds = raw[0].T  # (8400, 84)
+    boxes = []
+    sx, sy = iw / 640, ih / 640
+
+    for row in preds:
+        class_scores = row[4:]
+        cls_id = int(np.argmax(class_scores))
+        conf = float(class_scores[cls_id])
+        if conf < conf_thresh:
+            continue
+        label = _YOLO_CLASSES.get(cls_id)
+        if label is None:
+            continue
+        cx, cy, bw, bh = row[:4]
+        # YOLO coords are in 640-space; scale to original image
+        x = max(0, int((cx - bw / 2) * sx))
+        y = max(0, int((cy - bh / 2) * sy))
+        w = min(iw - x, int(bw * sx))
+        h = min(ih - y, int(bh * sy))
+        if w > 0 and h > 0:
+            boxes.append({"label": label, "x": x, "y": y, "w": w, "h": h})
+
+    # Simple NMS: drop boxes with IoU > 0.5 against a higher-confidence box
+    boxes.sort(key=lambda b: -(b["w"] * b["h"]))  # largest first as proxy
+    kept, used = [], set()
+    for i, b in enumerate(boxes):
+        if i in used:
+            continue
+        kept.append(b)
+        for j, other in enumerate(boxes[i + 1:], i + 1):
+            if j in used:
+                continue
+            ix = max(b["x"], other["x"])
+            iy = max(b["y"], other["y"])
+            ix2 = min(b["x"] + b["w"], other["x"] + other["w"])
+            iy2 = min(b["y"] + b["h"], other["y"] + other["h"])
+            inter = max(0, ix2 - ix) * max(0, iy2 - iy)
+            union = b["w"] * b["h"] + other["w"] * other["h"] - inter
+            if union > 0 and inter / union > 0.5:
+                used.add(j)
+    return kept
+
+
+# ── Detection (API) ───────────────────────────────────────────────────────────
 
 def detect_objects(image: Image.Image) -> list[dict]:
     """
@@ -280,9 +374,28 @@ if uploaded_file:
         st.session_state.detected_boxes = None
         st.session_state.detect_file = file_id
 
+    detect_method = st.radio(
+        "Detection method",
+        options=[
+            "Local — YOLOv8n ONNX (free, people & vehicles only)",
+            "API — GPT-4o-mini (costs tokens, detects buildings too)",
+        ],
+        help=(
+            "**Local**: no API key needed. ~12 MB ONNX model downloaded once to /tmp. "
+            "Detects people, cars, trucks, motorcycles, bicycles.  \n"
+            "**API**: detects buildings, shops, walls etc. in addition to people/vehicles."
+        ),
+    )
+    use_local_detect = detect_method.startswith("Local")
+    if use_local_detect:
+        st.caption("ℹ️ Building categories are not available with local detection.")
+
     if st.button("🔍 Detect objects"):
         with st.spinner("Detecting objects…"):
-            st.session_state.detected_boxes = detect_objects(image)
+            if use_local_detect:
+                st.session_state.detected_boxes = detect_objects_local(image)
+            else:
+                st.session_state.detected_boxes = detect_objects(image)
 
     boxes = st.session_state.get("detected_boxes")
 

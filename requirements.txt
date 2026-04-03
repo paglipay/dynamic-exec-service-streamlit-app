@@ -4,6 +4,7 @@ pandas
 seaborn
 numpy
 opencv-python-headless
+onnxruntime
 pyserial
 requests
 openpyxl
