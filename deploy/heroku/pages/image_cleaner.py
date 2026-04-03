@@ -513,12 +513,13 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
 
         jump_key = f"jump_result_{file_id}"
         if result_key in st.session_state:
-            _default = 1 if st.session_state.pop(jump_key, False) else 0
-            _tab_orig, _tab_result = st.tabs(["Original", "✅ Result"], default_index=_default)
-            with _tab_orig:
-                st.image(image, use_container_width=True)
+            _tab_result, _tab_orig = st.tabs(["✅ Result", "Original"])
             with _tab_result:
                 st.image(st.session_state[result_key], use_container_width=True)
+            with _tab_orig:
+                st.image(image, use_container_width=True)
+            # Clear the jump flag (no longer needed since Result is the first/default tab)
+            st.session_state.pop(jump_key, None)
         else:
             st.subheader("Original")
             st.image(image, use_container_width=True)
