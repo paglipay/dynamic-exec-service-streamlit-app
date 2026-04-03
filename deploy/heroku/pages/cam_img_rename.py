@@ -11,7 +11,7 @@ st.set_page_config(page_title="Camera Media Renamer")
 require_authentication("Camera Media Renamer")
 st.title("Camera Media Renamer")
 st.caption(
-    "Upload video and image files. They are sorted by date taken and renamed using the scheme: "
+    "Upload video and image files. They are renamed using the scheme: "
     "`01.mp4`, `01_INSTALL.jpg`, `01A.jpg`, `01B.jpg`, `02.mp4`, … "
     "Download the result as a ZIP."
 )
@@ -99,7 +99,7 @@ def _taken_time(data: bytes, ext: str, upload_index: int) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _build_plan(uploaded_files):
+def _build_plan(uploaded_files, use_upload_order: bool = False):
     """
     Returns list of (original_name, new_name, bytes) for every file that gets
     a new name.  Files that are unchanged are still included so the ZIP is complete.
@@ -110,8 +110,8 @@ def _build_plan(uploaded_files):
         if ext not in IMAGE_EXTS and ext not in VIDEO_EXTS:
             continue
         data = uf.getvalue()
-        taken = _taken_time(data, ext, i)
-        entries.append((uf.name, ext, data, taken))
+        sort_key = float(i) if use_upload_order else _taken_time(data, ext, i)
+        entries.append((uf.name, ext, data, sort_key))
 
     entries.sort(key=lambda x: x[3])
 
@@ -163,9 +163,16 @@ uploaded_files = st.file_uploader(
     help="Select all video and image files from your camera roll.",
 )
 
+sort_order = st.radio(
+    "Sort order",
+    options=["Date taken (EXIF / metadata)", "File uploader order"],
+    horizontal=True,
+)
+use_upload_order = sort_order == "File uploader order"
+
 if uploaded_files:
     with st.spinner(f"Processing {len(uploaded_files)} file(s)…"):
-        plan = _build_plan(uploaded_files)
+        plan = _build_plan(uploaded_files, use_upload_order=use_upload_order)
 
     skipped = len(uploaded_files) - len(plan)
 
