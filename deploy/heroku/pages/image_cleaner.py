@@ -221,7 +221,7 @@ _EFFECTS = ["No effect", "Remove (inpaint)", "Gaussian blur", "Pixelate"]
 
 _GROUP_DEFAULT_EFFECTS: dict[str, str] = {
     "People":         "Remove (inpaint)",
-    "Vehicles":       "Remove (inpaint)",
+    "Vehicles":       "Pixelate",
     "Walls & fences": "No effect",
     "Buildings": "Gaussian blur",
 }
@@ -410,7 +410,7 @@ st.title("🛡️ AI Privacy Image Cleaner")
 st.caption("Upload images → auto-detect people & vehicles → inpaint locally or with AI.")
 
 # ── Global settings (above file uploader so they apply to all files) ──────────
-with st.expander("⚙️ Settings", expanded=True):
+with st.expander("⚙️ Settings", expanded=False):
     detect_method = st.radio(
         "Detection method",
         options=[
@@ -563,7 +563,7 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
 
             with st.expander(
                 f"{label} ({len(indices)} detected) — default: **{grp_default}**",
-                expanded=True,
+                expanded=False,
             ):
                 cols = st.columns(min(len(indices), 3))
                 for i, idx in enumerate(indices):
