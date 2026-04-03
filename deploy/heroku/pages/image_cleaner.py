@@ -491,6 +491,11 @@ with st.expander("⚙️ Settings", expanded=False):
         value=False,
         help="When on, inpainting runs automatically once objects are detected (using the active inpainting settings). A ZIP download button appears below all tabs when every image has been processed.",
     )
+    clear_on_download = st.toggle(
+        "Clear processed image from memory after download",
+        value=True,
+        help="Removes the processed result from session state once you download it, freeing memory. Re-process the image if you need it again. Recommended to keep enabled for app stability.",
+    )
 
 # ── File uploader ─────────────────────────────────────────────────────────────
 uploaded_files = st.file_uploader(
@@ -655,12 +660,23 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
 
             if result_key in st.session_state:
                 result_img = st.session_state[result_key]
+
+                def _clear_single_result(rk, jk):
+                    st.session_state.pop(rk, None)
+                    st.session_state.pop(jk, None)
+
+                _single_dl_kwargs = {}
+                if clear_on_download:
+                    _single_dl_kwargs["on_click"] = _clear_single_result
+                    _single_dl_kwargs["args"] = (result_key, jump_key)
+
                 st.download_button(
                     label="⬇️ Download cleaned image",
                     data=_to_png_bytes(result_img),
                     file_name=f"cleaned_{uploaded_file.name}",
                     mime="image/png",
                     key=f"dl_{file_id}",
+                    **_single_dl_kwargs,
                 )
             elif auto_process:
                 pass  # spinner already shown above; result will appear on next rerun
@@ -707,9 +723,24 @@ if uploaded_files:
                 st.rerun()
         else:
             st.divider()
+
+            def _clear_all_results(fids):
+                for fid in fids:
+                    st.session_state.pop(f"result_{fid}", None)
+                    st.session_state.pop(f"jump_result_{fid}", None)
+                st.session_state.pop("_zip_data", None)
+                st.session_state.pop("_zip_files_set", None)
+
+            _zip_dl_kwargs = {}
+            if clear_on_download:
+                _all_fids = [uf.name + str(uf.size) for uf in uploaded_files]
+                _zip_dl_kwargs["on_click"] = _clear_all_results
+                _zip_dl_kwargs["args"] = (_all_fids,)
+
             st.download_button(
                 label=zip_label,
                 data=st.session_state["_zip_data"],
                 file_name="cleaned_images.zip",
                 mime="application/zip",
+                **_zip_dl_kwargs,
             )
