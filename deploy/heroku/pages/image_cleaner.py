@@ -3,6 +3,8 @@ import base64
 import os
 import json
 
+import cv2
+import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw
 from openai import OpenAI
@@ -200,13 +202,6 @@ def edit_image(image: Image.Image, mask: Image.Image, quality: str = "medium") -
     source_rgba, crop_box = _letterbox(image.convert("RGBA"), api_w, api_h)
     mask_lb, _ = _letterbox(mask.convert("RGBA"), api_w, api_h)
 
-    def _get_secret(name: str) -> str:
-        """Read from st.secrets if available, fall back to os.environ."""
-        try:
-            return str(st.secrets.get(name) or "")
-        except Exception:
-            return os.environ.get(name, "")
-
     api_key = _get_secret("OPENAI_API_KEY") or _get_secret("AI_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -236,6 +231,26 @@ def edit_image(image: Image.Image, mask: Image.Image, quality: str = "medium") -
     result_full = Image.open(io.BytesIO(base64.b64decode(b64)))
     result_cropped = result_full.crop(crop_box)
     return result_cropped.resize(orig_size, Image.LANCZOS)
+
+
+def local_inpaint(image: Image.Image, mask: Image.Image, radius: int = 15) -> Image.Image:
+    """
+    CPU-only inpainting using the OpenCV Telea algorithm.
+    Transparent pixels in *mask* are filled by propagating surrounding pixel values.
+    Pixel-exact mask adherence with no API cost.
+    Best for thin/small objects; large removed areas will look blurry/smeared.
+    """
+    img_rgb = np.array(image.convert("RGB"))
+    # Alpha channel: 0 = transparent = inpaint here, 255 = keep
+    alpha = np.array(mask.convert("RGBA"))[:, :, 3]
+    cv_mask = np.where(alpha == 0, 255, 0).astype(np.uint8)
+    result = cv2.inpaint(
+        cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR),
+        cv_mask,
+        radius,
+        cv2.INPAINT_TELEA,
+    )
+    return Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 
@@ -313,12 +328,30 @@ if uploaded_file:
             st.image(checker, use_container_width=True)
 
     # ── Step 4: process ───────────────────────────────────────────────────────
-    quality = st.select_slider(
-        "Output quality",
-        options=["low", "medium", "high"],
-        value="medium",
-        help="low ≈ cheapest  |  medium = good balance  |  high = best quality",
+    method = st.radio(
+        "Inpainting method",
+        options=["OpenAI API (gpt-image-1)", "Local — OpenCV Telea (free, no API)"],
+        help=(
+            "**OpenAI API**: high-quality generative fill, costs tokens, ≈soft mask edges.\n\n"
+            "**Local OpenCV**: pixel-precise mask, free, instant — "
+            "best for thin objects; large areas may look smeared."
+        ),
     )
+    use_local = method.startswith("Local")
+
+    if not use_local:
+        quality = st.select_slider(
+            "Output quality",
+            options=["low", "medium", "high"],
+            value="medium",
+            help="low ≈ cheapest  |  medium = good balance  |  high = best quality",
+        )
+    else:
+        radius = st.slider(
+            "Inpaint radius (px)",
+            min_value=3, max_value=40, value=15,
+            help="Larger radius = smoother fill but slower and more bleed.",
+        )
 
     if not active_boxes:
         st.warning("No objects selected — nothing to remove.")
@@ -326,12 +359,16 @@ if uploaded_file:
         with st.spinner("Building mask…"):
             mask = build_mask(image, active_boxes)
 
-        with st.spinner("Editing with AI…"):
-            try:
-                result_img = edit_image(image, mask, quality=quality)
-            except RuntimeError as err:
-                st.error(str(err))
-                st.stop()
+        if use_local:
+            with st.spinner("Running local inpainting…"):
+                result_img = local_inpaint(image, mask, radius=radius)
+        else:
+            with st.spinner("Editing with AI…"):
+                try:
+                    result_img = edit_image(image, mask, quality=quality)
+                except RuntimeError as err:
+                    st.error(str(err))
+                    st.stop()
 
         st.subheader("✅ Result")
         st.image(result_img, use_container_width=True)
