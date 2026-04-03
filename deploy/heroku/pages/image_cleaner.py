@@ -8,7 +8,6 @@ from openai import OpenAI
 # ── Config ────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="AI Privacy Image Cleaner", page_icon="🛡️")
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # ── Detection ─────────────────────────────────────────────────────────────────
 
@@ -58,6 +57,7 @@ def edit_image(image: Image.Image, mask: Image.Image) -> Image.Image:
     # OpenAI edit requires the source image to be RGBA
     source_rgba = image.convert("RGBA")
 
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     try:
         result = client.images.edit(
             model="gpt-image-1",
