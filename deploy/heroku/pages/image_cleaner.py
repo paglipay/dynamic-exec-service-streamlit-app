@@ -498,8 +498,13 @@ with st.expander("⚙️ Settings", expanded=False):
     )
 
 # ── File uploader ─────────────────────────────────────────────────────────────
+# Key rotation forces Streamlit to recreate the widget (clearing uploaded files)
+if "_uploader_key" not in st.session_state:
+    st.session_state["_uploader_key"] = 0
+
 uploaded_files = st.file_uploader(
-    "Upload image(s)", type=["png", "jpg", "jpeg"], accept_multiple_files=True
+    "Upload image(s)", type=["png", "jpg", "jpeg"], accept_multiple_files=True,
+    key=f"uploader_{st.session_state['_uploader_key']}",
 )
 
 if not uploaded_files:
@@ -730,6 +735,8 @@ if uploaded_files:
                     st.session_state.pop(f"jump_result_{fid}", None)
                 st.session_state.pop("_zip_data", None)
                 st.session_state.pop("_zip_files_set", None)
+                # Rotate uploader key to evict all files from the uploader widget
+                st.session_state["_uploader_key"] = st.session_state.get("_uploader_key", 0) + 1
 
             _zip_dl_kwargs = {}
             if clear_on_download:
