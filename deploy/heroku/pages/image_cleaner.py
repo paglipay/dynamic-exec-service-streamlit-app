@@ -493,9 +493,9 @@ with st.expander("⚙️ Settings", expanded=False):
         help="When on, inpainting runs automatically once objects are detected (using the active inpainting settings). A ZIP download button appears below all tabs when every image has been processed.",
     )
     clear_on_download = st.toggle(
-        "Clear processed image from memory after download",
-        value=True,
-        help="Removes the processed result from session state once you download it, freeing memory. Re-process the image if you need it again. Recommended to keep enabled for app stability.",
+        "Clear results & reset uploader after ZIP download",
+        value=False,
+        help="When enabled, downloading the ZIP clears all processed results from memory and resets the file uploader. Useful to free memory after a batch download. Does not affect individual image downloads.",
     )
     st.divider()
     max_dim = st.slider(
@@ -683,15 +683,6 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
                         st.error(str(err))
 
             if result_key in st.session_state:
-                def _clear_single_result(rk, jk):
-                    st.session_state.pop(rk, None)
-                    st.session_state.pop(jk, None)
-
-                _single_dl_kwargs = {}
-                if clear_on_download:
-                    _single_dl_kwargs["on_click"] = _clear_single_result
-                    _single_dl_kwargs["args"] = (result_key, jump_key)
-
                 _dl_stem = os.path.splitext(uploaded_file.name)[0]
                 st.download_button(
                     label="⬇️ Download cleaned image",
@@ -699,7 +690,6 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
                     file_name=f"cleaned_{_dl_stem}.jpg",
                     mime="image/jpeg",
                     key=f"dl_{file_id}",
-                    **_single_dl_kwargs,
                 )
             elif auto_process:
                 pass  # spinner already shown above; result will appear on next rerun
