@@ -99,7 +99,38 @@ def _taken_time(data: bytes, ext: str, upload_index: int) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _build_plan(uploaded_files, use_upload_order: bool = False):
+# ---------------------------------------------------------------------------
+# Image resize helper
+# ---------------------------------------------------------------------------
+
+
+def _resize_image_bytes(data: bytes, max_px: int = 1920) -> bytes:
+    """Resize an image so its longest side is at most *max_px* pixels.
+    Returns the original bytes unchanged if already within the limit or on error.
+    """
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as img:
+            w, h = img.size
+            if max(w, h) <= max_px:
+                return data
+            scale = max_px / max(w, h)
+            new_size = (int(w * scale), int(h * scale))
+            # Preserve EXIF so date extraction still works after resize
+            exif = img.info.get("exif", b"")
+            resized = img.resize(new_size, Image.LANCZOS)
+            buf = io.BytesIO()
+            fmt = img.format or "JPEG"
+            save_kwargs = {"format": fmt}
+            if exif:
+                save_kwargs["exif"] = exif
+            resized.save(buf, **save_kwargs)
+            return buf.getvalue()
+    except Exception:
+        return data
+
+
+def _build_plan(uploaded_files, use_upload_order: bool = False, reduce_images: bool = True):
     """
     Returns list of (original_name, new_name, bytes) for every file that gets
     a new name.  Files that are unchanged are still included so the ZIP is complete.
@@ -110,6 +141,8 @@ def _build_plan(uploaded_files, use_upload_order: bool = False):
         if ext not in IMAGE_EXTS and ext not in VIDEO_EXTS:
             continue
         data = uf.getvalue()
+        if reduce_images and ext in IMAGE_EXTS:
+            data = _resize_image_bytes(data)
         sort_key = float(i) if use_upload_order else _taken_time(data, ext, i)
         entries.append((uf.name, ext, data, sort_key))
 
@@ -170,9 +203,16 @@ sort_order = st.radio(
 )
 use_upload_order = sort_order == "File uploader order"
 
+reduce_images = st.checkbox(
+    "Reduce image size for performance (resize to ≤ 1920 px on longest side)",
+    value=True,
+    help="Recommended when uploading many files. Resized images are smaller in the ZIP but "
+         "quality is preserved for typical viewing. Disable only if you need original resolution.",
+)
+
 if uploaded_files:
     with st.spinner(f"Processing {len(uploaded_files)} file(s)…"):
-        plan = _build_plan(uploaded_files, use_upload_order=use_upload_order)
+        plan = _build_plan(uploaded_files, use_upload_order=use_upload_order, reduce_images=reduce_images)
 
     skipped = len(uploaded_files) - len(plan)
 
