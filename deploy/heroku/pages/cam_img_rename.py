@@ -1,3 +1,4 @@
+import hashlib
 import io
 import tempfile
 import zipfile
@@ -50,9 +51,12 @@ def _image_date_from_bytes(data: bytes) -> float | None:
 
 
 def _video_date_from_bytes(data: bytes, suffix: str) -> float | None:
+    import os
+    tmp_path = None
     try:
         from hachoir.parser import createParser
         from hachoir.metadata import extractMetadata
+        # Use SpooledTemporaryFile so videos < 10 MB stay in RAM; larger spill to disk
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
@@ -75,11 +79,11 @@ def _video_date_from_bytes(data: bytes, suffix: str) -> float | None:
     except Exception:
         pass
     finally:
-        import os
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
     return None
 
 
@@ -92,11 +96,6 @@ def _taken_time(data: bytes, ext: str, upload_index: int) -> float:
     else:
         t = None
     return t if t is not None else float(upload_index)
-
-
-# ---------------------------------------------------------------------------
-# Rename-plan builder (works entirely in memory)
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -130,10 +129,10 @@ def _resize_image_bytes(data: bytes, max_px: int = 1920) -> bytes:
         return data
 
 
-def _build_plan(uploaded_files, use_upload_order: bool = False, reduce_images: bool = True):
+def _build_plan(uploaded_files, use_upload_order: bool = False):
     """
     Returns list of (original_name, new_name, bytes) for every file that gets
-    a new name.  Files that are unchanged are still included so the ZIP is complete.
+    a new name.  Images are always resized to ≤ 1920 px to reduce memory usage.
     """
     entries = []
     for i, uf in enumerate(uploaded_files):
@@ -141,7 +140,7 @@ def _build_plan(uploaded_files, use_upload_order: bool = False, reduce_images: b
         if ext not in IMAGE_EXTS and ext not in VIDEO_EXTS:
             continue
         data = uf.getvalue()
-        if reduce_images and ext in IMAGE_EXTS:
+        if ext in IMAGE_EXTS:
             data = _resize_image_bytes(data)
         sort_key = float(i) if use_upload_order else _taken_time(data, ext, i)
         entries.append((uf.name, ext, data, sort_key))
@@ -178,11 +177,14 @@ def _build_plan(uploaded_files, use_upload_order: bool = False, reduce_images: b
 
 
 def _build_zip(plan) -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    # SpooledTemporaryFile spills to disk when compressed output exceeds 50 MB,
+    # preventing the ZIP buffer from doubling peak RAM on large batches.
+    spool = tempfile.SpooledTemporaryFile(max_size=50 * 1024 * 1024)
+    with zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for _, new_name, data in plan:
             zf.writestr(new_name, data)
-    return buf.getvalue()
+    spool.seek(0)
+    return spool.read()
 
 
 # ---------------------------------------------------------------------------
@@ -203,16 +205,25 @@ sort_order = st.radio(
 )
 use_upload_order = sort_order == "File uploader order"
 
-reduce_images = st.checkbox(
-    "Reduce image size for performance (resize to ≤ 1920 px on longest side)",
-    value=True,
-    help="Recommended when uploading many files. Resized images are smaller in the ZIP but "
-         "quality is preserved for typical viewing. Disable only if you need original resolution.",
-)
-
 if uploaded_files:
-    with st.spinner(f"Processing {len(uploaded_files)} file(s)…"):
-        plan = _build_plan(uploaded_files, use_upload_order=use_upload_order, reduce_images=reduce_images)
+    total_mb = sum(uf.size for uf in uploaded_files) / (1024 * 1024)
+    if total_mb > 150:
+        st.warning(
+            f"Total upload is {total_mb:.0f} MB. Consider uploading in smaller batches "
+            f"(≤ 150 MB) to avoid running out of memory."
+        )
+
+    # Cache the plan so EXIF/hachoir parsing only runs when the file set changes,
+    # not on every widget interaction (sort order toggle, etc.).
+    _fp = hashlib.md5(
+        b"|".join(f"{uf.name}:{uf.size}".encode() for uf in uploaded_files)
+        + f"|{use_upload_order}".encode()
+    ).hexdigest()
+    if st.session_state.get("_plan_fp") != _fp:
+        with st.spinner(f"Processing {len(uploaded_files)} file(s)…"):
+            st.session_state["_plan"] = _build_plan(uploaded_files, use_upload_order=use_upload_order)
+        st.session_state["_plan_fp"] = _fp
+    plan = st.session_state["_plan"]
 
     skipped = len(uploaded_files) - len(plan)
 
