@@ -12,9 +12,9 @@ st.set_page_config(page_title="Camera Media Renamer")
 require_authentication("Camera Media Renamer")
 st.title("Camera Media Renamer")
 st.caption(
-    "Upload video and image files. They are renamed using the scheme: "
-    "`01.mp4`, `01_INSTALL.jpg`, `01A.jpg`, `01B.jpg`, `02.mp4`, … "
-    "Download the result as a ZIP."
+    "Upload video and image files. Videos act as markers to group and number images — "
+    "only images are included in the ZIP. Naming scheme: "
+    "`01_INSTALL.jpg`, `01A.jpg`, `01B.jpg`, `02_INSTALL.jpg`, …"
 )
 
 # ---------------------------------------------------------------------------
@@ -159,8 +159,8 @@ def _build_plan(uploaded_files, use_upload_order: bool = False):
         if is_video:
             video_count += 1
             current_prefix = f"{video_count:02d}"
-            new_name = f"{current_prefix}{ext}"
             image_count = 0
+            # Video is used only as a naming marker — not added to the ZIP
         elif is_image and current_prefix:
             image_count += 1
             if image_count == 1:
@@ -168,12 +168,10 @@ def _build_plan(uploaded_files, use_upload_order: bool = False):
             else:
                 letter = chr(ord('A') + image_count - 2)
                 new_name = f"{current_prefix}{letter}{ext}"
-        else:
-            continue  # skip images before first video
+            plan.append((original_name, new_name, data))
+        # else: images before first video are skipped
 
-        plan.append((original_name, new_name, data))
-
-    return plan
+    return plan, video_count
 
 
 def _build_zip(plan) -> bytes:
@@ -221,16 +219,19 @@ if uploaded_files:
     ).hexdigest()
     if st.session_state.get("_plan_fp") != _fp:
         with st.spinner(f"Processing {len(uploaded_files)} file(s)…"):
-            st.session_state["_plan"] = _build_plan(uploaded_files, use_upload_order=use_upload_order)
+            st.session_state["_plan"], st.session_state["_video_count"] = _build_plan(uploaded_files, use_upload_order=use_upload_order)
         st.session_state["_plan_fp"] = _fp
     plan = st.session_state["_plan"]
+    video_marker_count = st.session_state.get("_video_count", 0)
 
-    skipped = len(uploaded_files) - len(plan)
+    skipped = len(uploaded_files) - len(plan) - video_marker_count
 
     if not plan:
-        st.warning("No renameable files found. Make sure you upload at least one video.")
+        st.warning("No renameable files found. Make sure you upload at least one video (as a marker) alongside your images.")
     else:
-        st.subheader(f"{len(plan)} file(s) will be renamed")
+        st.subheader(f"{len(plan)} image(s) will be renamed and zipped")
+        if video_marker_count:
+            st.caption(f"{video_marker_count} video(s) used as naming markers — excluded from ZIP to save space.")
         if skipped:
             st.caption(f"{skipped} file(s) skipped (images uploaded before any video, or unsupported type).")
 
