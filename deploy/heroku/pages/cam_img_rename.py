@@ -1,9 +1,14 @@
+import hashlib
 import io
+import os
+import re
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 from datetime import datetime
 
+import requests
 import streamlit as st
 from _auth_guard import require_authentication
 
@@ -11,9 +16,9 @@ st.set_page_config(page_title="Camera Media Renamer")
 require_authentication("Camera Media Renamer")
 st.title("Camera Media Renamer")
 st.caption(
-    "Upload video and image files. They are renamed using the scheme: "
-    "`01.mp4`, `01_INSTALL.jpg`, `01A.jpg`, `01B.jpg`, `02.mp4`, … "
-    "Download the result as a ZIP."
+    "Upload video and image files. Videos act as markers to group and number images — "
+    "only images are included in the ZIP. Naming scheme: "
+    "`01_INSTALL.jpg`, `01A.jpg`, `01B.jpg`, `02_INSTALL.jpg`, …"
 )
 
 # ---------------------------------------------------------------------------
@@ -27,6 +32,16 @@ ACCEPTED_TYPES = [
     "video/quicktime", "video/mp4", "video/x-msvideo", "video/x-matroska",
     "video/x-ms-wmv", "video/x-flv", "video/mpeg",
 ]
+
+# ---------------------------------------------------------------------------
+# External server config (optional — set API_BASE_URL to enable remote mode)
+# ---------------------------------------------------------------------------
+_API_BASE_URL: str = os.getenv("API_BASE_URL", "").rstrip("/")
+_FILE_UPLOAD_API_KEY: str = os.getenv("FILE_UPLOAD_API_KEY", "")
+
+
+def _api_headers() -> dict:
+    return {"X-API-Key": _FILE_UPLOAD_API_KEY} if _FILE_UPLOAD_API_KEY else {}
 
 # ---------------------------------------------------------------------------
 # Date-extraction helpers
@@ -50,9 +65,12 @@ def _image_date_from_bytes(data: bytes) -> float | None:
 
 
 def _video_date_from_bytes(data: bytes, suffix: str) -> float | None:
+    import os
+    tmp_path = None
     try:
         from hachoir.parser import createParser
         from hachoir.metadata import extractMetadata
+        # Use SpooledTemporaryFile so videos < 10 MB stay in RAM; larger spill to disk
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
@@ -75,11 +93,11 @@ def _video_date_from_bytes(data: bytes, suffix: str) -> float | None:
     except Exception:
         pass
     finally:
-        import os
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
     return None
 
 
@@ -95,14 +113,40 @@ def _taken_time(data: bytes, ext: str, upload_index: int) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Rename-plan builder (works entirely in memory)
+# Image resize helper
 # ---------------------------------------------------------------------------
+
+
+def _resize_image_bytes(data: bytes, max_px: int = 1920) -> bytes:
+    """Resize an image so its longest side is at most *max_px* pixels.
+    Returns the original bytes unchanged if already within the limit or on error.
+    """
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as img:
+            w, h = img.size
+            if max(w, h) <= max_px:
+                return data
+            scale = max_px / max(w, h)
+            new_size = (int(w * scale), int(h * scale))
+            # Preserve EXIF so date extraction still works after resize
+            exif = img.info.get("exif", b"")
+            resized = img.resize(new_size, Image.LANCZOS)
+            buf = io.BytesIO()
+            fmt = img.format or "JPEG"
+            save_kwargs = {"format": fmt}
+            if exif:
+                save_kwargs["exif"] = exif
+            resized.save(buf, **save_kwargs)
+            return buf.getvalue()
+    except Exception:
+        return data
 
 
 def _build_plan(uploaded_files, use_upload_order: bool = False):
     """
     Returns list of (original_name, new_name, bytes) for every file that gets
-    a new name.  Files that are unchanged are still included so the ZIP is complete.
+    a new name.  Images are always resized to ≤ 1920 px to reduce memory usage.
     """
     entries = []
     for i, uf in enumerate(uploaded_files):
@@ -110,6 +154,8 @@ def _build_plan(uploaded_files, use_upload_order: bool = False):
         if ext not in IMAGE_EXTS and ext not in VIDEO_EXTS:
             continue
         data = uf.getvalue()
+        if ext in IMAGE_EXTS:
+            data = _resize_image_bytes(data)
         sort_key = float(i) if use_upload_order else _taken_time(data, ext, i)
         entries.append((uf.name, ext, data, sort_key))
 
@@ -127,8 +173,8 @@ def _build_plan(uploaded_files, use_upload_order: bool = False):
         if is_video:
             video_count += 1
             current_prefix = f"{video_count:02d}"
-            new_name = f"{current_prefix}{ext}"
             image_count = 0
+            # Video is used only as a naming marker — not added to the ZIP
         elif is_image and current_prefix:
             image_count += 1
             if image_count == 1:
@@ -136,32 +182,26 @@ def _build_plan(uploaded_files, use_upload_order: bool = False):
             else:
                 letter = chr(ord('A') + image_count - 2)
                 new_name = f"{current_prefix}{letter}{ext}"
-        else:
-            continue  # skip images before first video
+            plan.append((original_name, new_name, data))
+        # else: images before first video are skipped
 
-        plan.append((original_name, new_name, data))
-
-    return plan
+    return plan, video_count
 
 
 def _build_zip(plan) -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    # SpooledTemporaryFile spills to disk when compressed output exceeds 50 MB,
+    # preventing the ZIP buffer from doubling peak RAM on large batches.
+    spool = tempfile.SpooledTemporaryFile(max_size=50 * 1024 * 1024)
+    with zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for _, new_name, data in plan:
             zf.writestr(new_name, data)
-    return buf.getvalue()
+    spool.seek(0)
+    return spool.read()
 
 
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-
-uploaded_files = st.file_uploader(
-    "Upload media files",
-    type=list(IMAGE_EXTS | {e.lstrip('.') for e in VIDEO_EXTS}),
-    accept_multiple_files=True,
-    help="Select all video and image files from your camera roll.",
-)
 
 sort_order = st.radio(
     "Sort order",
@@ -170,32 +210,228 @@ sort_order = st.radio(
 )
 use_upload_order = sort_order == "File uploader order"
 
-if uploaded_files:
-    with st.spinner(f"Processing {len(uploaded_files)} file(s)…"):
-        plan = _build_plan(uploaded_files, use_upload_order=use_upload_order)
-
-    skipped = len(uploaded_files) - len(plan)
-
-    if not plan:
-        st.warning("No renameable files found. Make sure you upload at least one video.")
-    else:
-        st.subheader(f"{len(plan)} file(s) will be renamed")
-        if skipped:
-            st.caption(f"{skipped} file(s) skipped (images uploaded before any video, or unsupported type).")
-
-        rows = [
-            {"Original name": orig, "New name": new}
-            for orig, new, _ in plan
-        ]
-        st.dataframe(rows, use_container_width=True)
-
-        zip_bytes = _build_zip(plan)
-        st.download_button(
-            label="Download renamed files (.zip)",
-            data=zip_bytes,
-            file_name="renamed_media.zip",
-            mime="application/zip",
-            type="primary",
-        )
+# Show remote mode toggle only when API_BASE_URL is configured
+_remote_available = bool(_API_BASE_URL)
+if _remote_available:
+    _mode = st.radio(
+        "Processing mode",
+        options=["Remote (Flask server — saves dyno RAM)", "Local (in-dyno)"],
+        horizontal=True,
+        help=(
+            "Remote mode stages files one at a time on the Flask server. "
+            "No batching on the Heroku dyno — switch to Local if the server is unavailable."
+        ),
+    )
+    use_remote = _mode.startswith("Remote")
 else:
-    st.info("Upload video and image files above to get started.")
+    use_remote = False
+
+if use_remote:
+    # ----------------------------------------------------------------
+    # Remote mode: one file at a time → stage on Flask → build ZIP
+    # ----------------------------------------------------------------
+    _MAX_FILE_MB = 50
+    if "_stage_session_id" not in st.session_state:
+        st.session_state["_stage_session_id"] = str(uuid.uuid4())
+    _sid = st.session_state["_stage_session_id"]
+
+    st.caption(
+        f"Upload files **one at a time** (max {_MAX_FILE_MB} MB each). "
+        "Each file is immediately staged on the Flask server — "
+        "only a single file occupies dyno memory at any moment."
+    )
+
+    single_file = st.file_uploader(
+        "Add a file",
+        type=list(IMAGE_EXTS | {e.lstrip('.') for e in VIDEO_EXTS}),
+        accept_multiple_files=False,
+        help=f"Select files one at a time. Max {_MAX_FILE_MB} MB per file.",
+        key="_remote_uploader",
+    )
+
+    # Auto-stage a file as soon as it appears (dedup by name:size key)
+    if single_file is not None:
+        _fkey = f"{single_file.name}:{single_file.size}"
+        if _fkey not in st.session_state.get("_staged_keys", set()):
+            _fmb = single_file.size / (1024 * 1024)
+            if _fmb > _MAX_FILE_MB:
+                st.error(
+                    f"**{single_file.name}** is {_fmb:.1f} MB — exceeds the "
+                    f"{_MAX_FILE_MB} MB per-file limit. Choose a smaller file."
+                )
+            else:
+                with st.spinner(f"Staging {single_file.name} ({_fmb:.1f} MB)…"):
+                    try:
+                        _sr = requests.post(
+                            f"{_API_BASE_URL}/files/stage/{_sid}",
+                            headers=_api_headers(),
+                            files={"file": (
+                                single_file.name,
+                                single_file.getvalue(),
+                                single_file.type or "application/octet-stream",
+                            )},
+                            timeout=120,
+                        )
+                        if _sr.ok:
+                            if "_staged_keys" not in st.session_state:
+                                st.session_state["_staged_keys"] = set()
+                            st.session_state["_staged_keys"].add(_fkey)
+                            st.success(f"Staged: {single_file.name}")
+                        else:
+                            try:
+                                _err = _sr.json().get("error", _sr.text)
+                            except Exception:
+                                _err = _sr.text
+                            st.error(f"Staging failed ({_sr.status_code}): {_err}")
+                    except requests.RequestException as _exc:
+                        st.error(
+                            f"Could not reach server: {_exc}\n\n"
+                            "Switch to **Local** mode to process on the Heroku dyno instead."
+                        )
+
+    # Fetch staged file list from server on every render
+    _staged_files: list = []
+    try:
+        _lr = requests.get(
+            f"{_API_BASE_URL}/files/stage/{_sid}",
+            headers=_api_headers(),
+            timeout=15,
+        )
+        if _lr.ok:
+            _staged_files = _lr.json().get("files", [])
+    except Exception:
+        pass
+
+    if _staged_files:
+        st.subheader(f"{len(_staged_files)} file(s) staged")
+        for _item in _staged_files:
+            _ext = Path(_item["name"]).suffix.lower()
+            _icon = "📹" if _ext in VIDEO_EXTS else "🖼️"
+            _c1, _c2 = st.columns([5, 1])
+            _c1.write(f"{_icon} {_item['name']} ({_item['size_bytes'] / 1024:.0f} KB)")
+            if _c2.button("✕", key=f"_rm_{_item['name']}", help="Remove this file"):
+                try:
+                    requests.delete(
+                        f"{_API_BASE_URL}/files/stage/{_sid}/{_item['name']}",
+                        headers=_api_headers(),
+                        timeout=15,
+                    )
+                    _fkey_rm = next(
+                        (k for k in st.session_state.get("_staged_keys", set())
+                         if k.startswith(_item["name"] + ":")),
+                        None,
+                    )
+                    if _fkey_rm:
+                        st.session_state["_staged_keys"].discard(_fkey_rm)
+                except Exception:
+                    pass
+                st.rerun()
+
+        _cb, _cc = st.columns(2)
+        if _cb.button("Build ZIP on server", type="primary"):
+            with st.spinner("Building ZIP…"):
+                try:
+                    _br = requests.post(
+                        f"{_API_BASE_URL}/files/rename-zip",
+                        headers=_api_headers(),
+                        json={
+                            "session_id": _sid,
+                            "sort_order": "upload_order" if use_upload_order else "date_taken",
+                        },
+                        timeout=300,
+                    )
+                    if _br.ok:
+                        _r = _br.json()
+                        st.success(
+                            f"ZIP ready: **{_r['filename']}** "
+                            f"({_r['size_bytes']:,} bytes) — "
+                            f"{_r['images_renamed']} image(s), "
+                            f"{_r['video_markers']} marker(s)"
+                        )
+                        st.code(f"{_API_BASE_URL}{_r['download_url']}")
+                    else:
+                        try:
+                            _err = _br.json().get("error", _br.text)
+                        except Exception:
+                            _err = _br.text
+                        st.warning(f"Build failed ({_br.status_code}): {_err}")
+                except requests.RequestException as _exc:
+                    st.warning(f"Could not reach server: {_exc}")
+
+        if _cc.button("Clear all staged files"):
+            try:
+                requests.delete(
+                    f"{_API_BASE_URL}/files/stage/{_sid}",
+                    headers=_api_headers(),
+                    timeout=15,
+                )
+                st.session_state["_staged_keys"] = set()
+                st.session_state["_stage_session_id"] = str(uuid.uuid4())
+            except Exception:
+                pass
+            st.rerun()
+    else:
+        st.info(
+            "No files staged yet. "
+            "Select files above one at a time — include at least one video as a naming marker."
+        )
+
+else:
+    # ----------------------------------------------------------------
+    # Local mode: original multi-file uploader (unchanged)
+    # ----------------------------------------------------------------
+    uploaded_files = st.file_uploader(
+        "Upload media files",
+        type=list(IMAGE_EXTS | {e.lstrip('.') for e in VIDEO_EXTS}),
+        accept_multiple_files=True,
+        help="Select all video and image files from your camera roll.",
+    )
+
+    if uploaded_files:
+        total_mb = sum(uf.size for uf in uploaded_files) / (1024 * 1024)
+        if total_mb > 150:
+            st.warning(
+                f"Total upload is {total_mb:.0f} MB. Consider uploading in smaller batches "
+                f"(≤ 150 MB) to avoid running out of memory."
+            )
+
+        _fp = hashlib.md5(
+            b"|".join(f"{uf.name}:{uf.size}".encode() for uf in uploaded_files)
+            + f"|{use_upload_order}".encode()
+        ).hexdigest()
+        if st.session_state.get("_plan_fp") != _fp:
+            with st.spinner(f"Processing {len(uploaded_files)} file(s)…"):
+                st.session_state["_plan"], st.session_state["_video_count"] = _build_plan(
+                    uploaded_files, use_upload_order=use_upload_order
+                )
+            st.session_state["_plan_fp"] = _fp
+        plan = st.session_state["_plan"]
+        video_marker_count = st.session_state.get("_video_count", 0)
+
+        skipped = len(uploaded_files) - len(plan) - video_marker_count
+
+        if not plan:
+            st.warning("No renameable files found. Make sure you upload at least one video (as a marker) alongside your images.")
+        else:
+            st.subheader(f"{len(plan)} image(s) will be renamed and zipped")
+            if video_marker_count:
+                st.caption(f"{video_marker_count} video(s) used as naming markers — excluded from ZIP to save space.")
+            if skipped:
+                st.caption(f"{skipped} file(s) skipped (images uploaded before any video, or unsupported type).")
+
+            rows = [
+                {"Original name": orig, "New name": new}
+                for orig, new, _ in plan
+            ]
+            st.dataframe(rows, use_container_width=True)
+
+            zip_bytes = _build_zip(plan)
+            st.download_button(
+                label="Download renamed files (.zip)",
+                data=zip_bytes,
+                file_name="renamed_media.zip",
+                mime="application/zip",
+                type="primary",
+            )
+    else:
+        st.info("Upload video and image files above to get started.")
