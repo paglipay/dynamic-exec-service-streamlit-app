@@ -1,10 +1,13 @@
 import hashlib
 import io
+import os
+import re
 import tempfile
 import zipfile
 from pathlib import Path
 from datetime import datetime
 
+import requests
 import streamlit as st
 from _auth_guard import require_authentication
 
@@ -28,6 +31,16 @@ ACCEPTED_TYPES = [
     "video/quicktime", "video/mp4", "video/x-msvideo", "video/x-matroska",
     "video/x-ms-wmv", "video/x-flv", "video/mpeg",
 ]
+
+# ---------------------------------------------------------------------------
+# External server config (optional — set API_BASE_URL to enable remote mode)
+# ---------------------------------------------------------------------------
+_API_BASE_URL: str = os.getenv("API_BASE_URL", "").rstrip("/")
+_FILE_UPLOAD_API_KEY: str = os.getenv("FILE_UPLOAD_API_KEY", "")
+
+
+def _api_headers() -> dict:
+    return {"X-API-Key": _FILE_UPLOAD_API_KEY} if _FILE_UPLOAD_API_KEY else {}
 
 # ---------------------------------------------------------------------------
 # Date-extraction helpers
@@ -203,51 +216,117 @@ sort_order = st.radio(
 )
 use_upload_order = sort_order == "File uploader order"
 
+# Show remote mode toggle only when API_BASE_URL is configured
+_remote_available = bool(_API_BASE_URL)
+if _remote_available:
+    _mode = st.radio(
+        "Processing mode",
+        options=["Remote (Flask server — saves dyno RAM)", "Local (in-dyno)"],
+        horizontal=True,
+        help=(
+            "Remote mode streams files to the configured Flask server for rename and ZIP, "
+            "keeping Heroku dyno memory free. Switch to Local if the server is unavailable."
+        ),
+    )
+    use_remote = _mode.startswith("Remote")
+else:
+    use_remote = False
+
 if uploaded_files:
     total_mb = sum(uf.size for uf in uploaded_files) / (1024 * 1024)
-    if total_mb > 150:
+    if not use_remote and total_mb > 150:
         st.warning(
             f"Total upload is {total_mb:.0f} MB. Consider uploading in smaller batches "
             f"(≤ 150 MB) to avoid running out of memory."
         )
 
-    # Cache the plan so EXIF/hachoir parsing only runs when the file set changes,
-    # not on every widget interaction (sort order toggle, etc.).
-    _fp = hashlib.md5(
-        b"|".join(f"{uf.name}:{uf.size}".encode() for uf in uploaded_files)
-        + f"|{use_upload_order}".encode()
-    ).hexdigest()
-    if st.session_state.get("_plan_fp") != _fp:
-        with st.spinner(f"Processing {len(uploaded_files)} file(s)…"):
-            st.session_state["_plan"], st.session_state["_video_count"] = _build_plan(uploaded_files, use_upload_order=use_upload_order)
-        st.session_state["_plan_fp"] = _fp
-    plan = st.session_state["_plan"]
-    video_marker_count = st.session_state.get("_video_count", 0)
-
-    skipped = len(uploaded_files) - len(plan) - video_marker_count
-
-    if not plan:
-        st.warning("No renameable files found. Make sure you upload at least one video (as a marker) alongside your images.")
-    else:
-        st.subheader(f"{len(plan)} image(s) will be renamed and zipped")
-        if video_marker_count:
-            st.caption(f"{video_marker_count} video(s) used as naming markers — excluded from ZIP to save space.")
-        if skipped:
-            st.caption(f"{skipped} file(s) skipped (images uploaded before any video, or unsupported type).")
-
-        rows = [
-            {"Original name": orig, "New name": new}
-            for orig, new, _ in plan
-        ]
-        st.dataframe(rows, use_container_width=True)
-
-        zip_bytes = _build_zip(plan)
-        st.download_button(
-            label="Download renamed files (.zip)",
-            data=zip_bytes,
-            file_name="renamed_media.zip",
-            mime="application/zip",
-            type="primary",
+    if use_remote:
+        # ----------------------------------------------------------------
+        # Remote mode: stream raw files to Flask — rename/zip happen there
+        # ----------------------------------------------------------------
+        n_images = sum(1 for f in uploaded_files if Path(f.name).suffix.lower() in IMAGE_EXTS)
+        n_videos = sum(1 for f in uploaded_files if Path(f.name).suffix.lower() in VIDEO_EXTS)
+        st.info(
+            f"**{n_images}** image(s) and **{n_videos}** video marker(s) detected "
+            f"({total_mb:.1f} MB total). "
+            "The rename plan, image resizing, and ZIP will be built on the Flask server."
         )
+        if st.button("Upload & process on server", type="primary"):
+            with st.spinner(f"Uploading {len(uploaded_files)} file(s) to server…"):
+                try:
+                    multipart = [
+                        ("files", (uf.name, uf.getvalue(), uf.type or "application/octet-stream"))
+                        for uf in uploaded_files
+                    ]
+                    resp = requests.post(
+                        f"{_API_BASE_URL}/files/rename-zip",
+                        headers=_api_headers(),
+                        files=multipart,
+                        data={"sort_order": "upload_order" if use_upload_order else "date_taken"},
+                        timeout=300,
+                    )
+                    if resp.ok:
+                        result = resp.json()
+                        st.success(
+                            f"ZIP ready: **{result['filename']}** "
+                            f"({result['size_bytes']:,} bytes)"
+                        )
+                        st.code(f"{_API_BASE_URL}{result['download_url']}")
+                    else:
+                        try:
+                            err_msg = resp.json().get("error", resp.text)
+                        except Exception:
+                            err_msg = resp.text
+                        st.warning(
+                            f"Server processing failed ({resp.status_code}): {err_msg}\n\n"
+                            "Switch to **Local** mode to process on the Heroku dyno instead."
+                        )
+                except requests.RequestException as exc:
+                    st.warning(
+                        f"Could not reach server: {exc}\n\n"
+                        "Switch to **Local** mode to process on the Heroku dyno instead."
+                    )
+    else:
+        # ----------------------------------------------------------------
+        # Local mode: existing in-dyno processing (unchanged)
+        # ----------------------------------------------------------------
+        # Cache the plan so EXIF/hachoir parsing only runs when the file set changes,
+        # not on every widget interaction (sort order toggle, etc.).
+        _fp = hashlib.md5(
+            b"|".join(f"{uf.name}:{uf.size}".encode() for uf in uploaded_files)
+            + f"|{use_upload_order}".encode()
+        ).hexdigest()
+        if st.session_state.get("_plan_fp") != _fp:
+            with st.spinner(f"Processing {len(uploaded_files)} file(s)…"):
+                st.session_state["_plan"], st.session_state["_video_count"] = _build_plan(uploaded_files, use_upload_order=use_upload_order)
+            st.session_state["_plan_fp"] = _fp
+        plan = st.session_state["_plan"]
+        video_marker_count = st.session_state.get("_video_count", 0)
+
+        skipped = len(uploaded_files) - len(plan) - video_marker_count
+
+        if not plan:
+            st.warning("No renameable files found. Make sure you upload at least one video (as a marker) alongside your images.")
+        else:
+            st.subheader(f"{len(plan)} image(s) will be renamed and zipped")
+            if video_marker_count:
+                st.caption(f"{video_marker_count} video(s) used as naming markers — excluded from ZIP to save space.")
+            if skipped:
+                st.caption(f"{skipped} file(s) skipped (images uploaded before any video, or unsupported type).")
+
+            rows = [
+                {"Original name": orig, "New name": new}
+                for orig, new, _ in plan
+            ]
+            st.dataframe(rows, use_container_width=True)
+
+            zip_bytes = _build_zip(plan)
+            st.download_button(
+                label="Download renamed files (.zip)",
+                data=zip_bytes,
+                file_name="renamed_media.zip",
+                mime="application/zip",
+                type="primary",
+            )
 else:
     st.info("Upload video and image files above to get started.")
