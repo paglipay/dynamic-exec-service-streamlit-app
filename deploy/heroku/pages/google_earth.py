@@ -5,8 +5,12 @@ import folium
 from io import BytesIO
 import base64
 
+
 import json
 import xml.etree.ElementTree as ET
+import requests
+from PIL import Image
+import os
 
 st.title('Google Earth-like KML Viewer')
 
@@ -23,12 +27,40 @@ if uploaded_file:
     geojson_features = []
     placemarks = root.findall('.//kml:Placemark', ns)
     debug_lines = []
+
+    def fetch_slack_image_as_base64(url, token, thumb_size=(150, 150)):
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            img = Image.open(BytesIO(response.content))
+            img.thumbnail(thumb_size)
+            buffered = BytesIO()
+            img.save(buffered, format="JPEG")
+            img_b64 = base64.b64encode(buffered.getvalue()).decode()
+            return f'<img src="data:image/jpeg;base64,{img_b64}" width="{thumb_size[0]}">' 
+        except Exception as e:
+            return "<i>Image preview unavailable</i>"
+
+    import re
+    def replace_slack_images_in_html(html, token):
+        # Find all <img src="..."> tags
+        def repl(match):
+            url = match.group(1)
+            if 'slack.com' in url:
+                return fetch_slack_image_as_base64(url, token)
+            return match.group(0)
+        return re.sub(r'<img[^>]*src=["\']([^"\']+)["\'][^>]*>', repl, html or '')
+    slack_token = os.environ.get('SLACK_BOT_TOKEN')
     for pm in placemarks:
         name = pm.find('kml:name', ns)
         desc = pm.find('kml:description', ns)
         point = pm.find('.//kml:Point', ns)
         coords = point.find('kml:coordinates', ns) if point is not None else None
         debug_lines.append(f"Placemark: {name.text if name is not None else ''}")
+        description_html = desc.text if desc is not None else None
+        if slack_token and description_html:
+            description_html = replace_slack_images_in_html(description_html, slack_token)
         if coords is not None:
             lon, lat, *_ = coords.text.strip().split(',')
             geojson_features.append({
@@ -39,7 +71,7 @@ if uploaded_file:
                 },
                 "properties": {
                     "name": name.text if name is not None else None,
-                    "description": desc.text if desc is not None else None
+                    "description": description_html
                 }
             })
     with st.expander("Show parsed KML structure (debug)"):
