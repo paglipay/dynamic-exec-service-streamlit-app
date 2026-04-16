@@ -1,6 +1,9 @@
 import os
 import re
 import base64
+import tempfile
+import shutil
+import zipfile
 import xml.etree.ElementTree as ET
 from io import BytesIO
 
@@ -58,6 +61,22 @@ def get_all_image_coords(folder_path):
                 if lat is not None:
                     coords.append((img_path, lat, lon))
     return coords
+
+
+def extract_zip_to_tempdir(zip_bytes):
+    """
+    Extract a zip file (as bytes) to a fresh temp directory.
+    Returns the temp dir path — caller is responsible for cleanup.
+    """
+    tmp = tempfile.mkdtemp(prefix="img_gps_")
+    with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
+        # Safety: skip any members with absolute or traversal paths
+        for member in zf.infolist():
+            member_path = os.path.realpath(os.path.join(tmp, member.filename))
+            if not member_path.startswith(os.path.realpath(tmp)):
+                continue
+            zf.extract(member, tmp)
+    return tmp
 
 
 def image_thumbnail_html(filepath, width=120):
@@ -185,12 +204,46 @@ st.title("📍 Image GPS / KML Viewer")
 
 tab1, tab2 = st.tabs(["🖼️ Image Folder (EXIF GPS)", "🗺️ KML Upload"])
 
-# ── Tab 1: image folder ───────────────────────────────────────────────────────
+# ── Tab 1: image folder / zip upload ─────────────────────────────────────────
 with tab1:
-    folder = st.text_input("Enter image folder path:", "images")
-    if st.button("Show Map with Pins", key="img_btn"):
-        with st.spinner("Scanning images for GPS data…"):
-            st.session_state["img_coords"] = get_all_image_coords(folder)
+    st.markdown("Upload a **ZIP file** containing images, or enter a local folder path.")
+
+    uploaded_zip = st.file_uploader(
+        "Upload ZIP of images", type=["zip"], key="zip_uploader",
+        help="ZIP may contain subfolders. Only JPG/JPEG/PNG/TIF/TIFF images are scanned."
+    )
+
+    st.markdown("<div style='text-align:center;color:grey;margin:4px 0'>— or —</div>", unsafe_allow_html=True)
+
+    folder = st.text_input("Local folder path (server-side):", "images", key="folder_input")
+
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        scan_btn = st.button("📍 Scan & Show Map", key="img_btn")
+
+    if scan_btn:
+        tmp_dir = None
+        try:
+            if uploaded_zip is not None:
+                with st.spinner("Extracting ZIP…"):
+                    tmp_dir = extract_zip_to_tempdir(uploaded_zip.read())
+                scan_path = tmp_dir
+                st.info(f"Extracted ZIP to temp folder. Scanning…")
+            else:
+                scan_path = folder
+
+            with st.spinner("Scanning images for GPS data…"):
+                st.session_state["img_coords"] = get_all_image_coords(scan_path)
+                # Store thumbnails from temp dir as base64 before cleanup
+                # (filepaths remain valid until end of request when tmp_dir is cleaned)
+        finally:
+            # Don't delete yet — filepaths are still needed for map rendering below
+            # Store tmp_dir in session so we can clean it up on next run
+            if tmp_dir:
+                prev_tmp = st.session_state.get("img_tmp_dir")
+                if prev_tmp and os.path.exists(prev_tmp):
+                    shutil.rmtree(prev_tmp, ignore_errors=True)
+                st.session_state["img_tmp_dir"] = tmp_dir
 
     if "img_coords" in st.session_state:
         coords = st.session_state["img_coords"]
@@ -199,7 +252,7 @@ with tab1:
             m = build_map_from_image_coords(coords)
             st_folium(m, use_container_width=True, height=800, returned_objects=[])
         else:
-            st.warning("No images with GPS data found in that folder.")
+            st.warning("No images with GPS data found.")
 
 # ── Tab 2: KML upload ─────────────────────────────────────────────────────────
 with tab2:
