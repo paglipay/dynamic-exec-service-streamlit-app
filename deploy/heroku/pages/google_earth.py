@@ -157,7 +157,7 @@ SATELLITE_ATTR  = "Esri"
 
 
 def _add_tile_layers(m):
-    """Add satellite tile layer with deep zoom support."""
+    """Add satellite + street tile layers with a switcher control."""
     folium.TileLayer(
         tiles=SATELLITE_TILES,
         attr=SATELLITE_ATTR,
@@ -167,6 +167,15 @@ def _add_tile_layers(m):
         max_zoom=21,
         max_native_zoom=19,
     ).add_to(m)
+    folium.TileLayer(
+        tiles="OpenStreetMap",
+        name="Street Map",
+        overlay=False,
+        control=True,
+        max_zoom=21,
+        max_native_zoom=19,
+    ).add_to(m)
+    folium.LayerControl(position="topright", collapsed=False).add_to(m)
 
 
 def build_map_from_image_coords(coords, default_location=(34.052235, -118.243683)):
