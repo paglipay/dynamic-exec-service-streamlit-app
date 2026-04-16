@@ -156,26 +156,81 @@ SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Im
 SATELLITE_ATTR  = "Esri"
 
 
-def _add_tile_layers(m):
-    """Add satellite + street tile layers with a switcher control."""
-    folium.TileLayer(
-        tiles=SATELLITE_TILES,
-        attr=SATELLITE_ATTR,
-        name="Satellite",
-        overlay=False,
-        control=True,
-        max_zoom=21,
-        max_native_zoom=19,
-    ).add_to(m)
-    folium.TileLayer(
-        tiles="OpenStreetMap",
-        name="Street Map",
-        overlay=False,
-        control=True,
-        max_zoom=21,
-        max_native_zoom=19,
-    ).add_to(m)
-    folium.LayerControl(position="topright", collapsed=False).add_to(m)
+ICON_SWITCHER_JS = """
+{% macro script(this, kwargs) %}
+(function() {
+    // Tile layer objects keyed by name
+    var layers = {
+        "satellite": L.tileLayer(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            {attribution: "Esri", maxZoom: 21, maxNativeZoom: 19}
+        ),
+        "street": L.tileLayer(
+            "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+            {attribution: "&copy; OpenStreetMap contributors", maxZoom: 21, maxNativeZoom: 19}
+        )
+    };
+
+    var current = "satellite";
+    layers[current].addTo({{ this._parent.get_name() }});
+
+    // Build the control div
+    var ctrl = L.control({position: "topright"});
+    ctrl.onAdd = function() {
+        var div = L.DomUtil.create("div", "");
+        div.style.cssText = "display:flex;gap:4px;padding:4px;background:white;border-radius:6px;box-shadow:0 1px 5px rgba(0,0,0,.4);";
+
+        function makeBtn(id, emoji, label) {
+            var btn = L.DomUtil.create("button", "", div);
+            btn.id = id;
+            btn.title = label;
+            btn.innerHTML = emoji + " " + label;
+            btn.style.cssText = "border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600;transition:all .15s;";
+            return btn;
+        }
+
+        var satBtn = makeBtn("sat-btn", "🛰️", "Satellite");
+        var strBtn = makeBtn("str-btn", "🗺️", "Street");
+
+        function setActive(active) {
+            satBtn.style.background = active === "satellite" ? "#0078d4" : "#f0f0f0";
+            satBtn.style.color      = active === "satellite" ? "white"   : "#333";
+            strBtn.style.background = active === "street"    ? "#0078d4" : "#f0f0f0";
+            strBtn.style.color      = active === "street"    ? "white"   : "#333";
+        }
+        setActive(current);
+
+        L.DomEvent.on(satBtn, "click", function() {
+            if (current !== "satellite") {
+                {{ this._parent.get_name() }}.removeLayer(layers[current]);
+                layers["satellite"].addTo({{ this._parent.get_name() }});
+                current = "satellite";
+                setActive(current);
+            }
+        });
+        L.DomEvent.on(strBtn, "click", function() {
+            if (current !== "street") {
+                {{ this._parent.get_name() }}.removeLayer(layers[current]);
+                layers["street"].addTo({{ this._parent.get_name() }});
+                current = "street";
+                setActive(current);
+            }
+        });
+
+        return div;
+    };
+    ctrl.addTo({{ this._parent.get_name() }});
+})();
+{% endmacro %}
+"""
+
+def _add_tile_switcher(m):
+    """Inject a 2-button satellite/street switcher into the map."""
+    from folium.elements import MacroElement
+    from jinja2 import Template
+    el = MacroElement()
+    el._template = Template(ICON_SWITCHER_JS)
+    m.get_root().add_child(el)
 
 
 def build_map_from_image_coords(coords, default_location=(34.052235, -118.243683)):
@@ -183,9 +238,9 @@ def build_map_from_image_coords(coords, default_location=(34.052235, -118.243683
     if coords:
         avg_lat = sum(r[1] for r in coords) / len(coords)
         avg_lon = sum(r[2] for r in coords) / len(coords)
-        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=15, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR, max_zoom=21)
+        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=15, tiles=None, max_zoom=21)
     else:
-        m = folium.Map(location=default_location, zoom_start=13, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR, max_zoom=21)
+        m = folium.Map(location=default_location, zoom_start=13, tiles=None, max_zoom=21)
 
     for filepath, lat, lon in coords:
         file_url  = f"file://{filepath.replace(chr(92), '/')}"
@@ -200,7 +255,7 @@ def build_map_from_image_coords(coords, default_location=(34.052235, -118.243683
             icon=folium.Icon(color="red", icon="camera", prefix="fa"),
         ).add_to(m)
 
-    _add_tile_layers(m)
+    _add_tile_switcher(m)
     return m
 
 
@@ -209,9 +264,9 @@ def build_map_from_kml_features(features):
     if features:
         avg_lat = sum(f["lat"] for f in features) / len(features)
         avg_lon = sum(f["lon"] for f in features) / len(features)
-        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=13, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR, max_zoom=21)
+        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=13, tiles=None, max_zoom=21)
     else:
-        m = folium.Map(location=[20, 0], zoom_start=2, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR, max_zoom=21)
+        m = folium.Map(location=[20, 0], zoom_start=2, tiles=None, max_zoom=21)
 
     for feat in features:
         iframe = folium.IFrame(feat["description"] or feat["name"], width=300, height=200)
@@ -222,7 +277,7 @@ def build_map_from_kml_features(features):
             icon=folium.Icon(color="red", icon="camera", prefix="fa"),
         ).add_to(m)
 
-    _add_tile_layers(m)
+    _add_tile_switcher(m)
     return m
 
 
