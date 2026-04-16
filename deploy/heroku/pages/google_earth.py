@@ -80,10 +80,18 @@ if uploaded_file:
     if geojson_features:
         geojson = {"type": "FeatureCollection", "features": geojson_features}
         popup = folium.GeoJsonPopup(fields=["description"], labels=False, parse_html=True, max_width=400)
+        # Use a camera icon for each marker
+        camera_icon = folium.Icon(icon="camera", prefix="fa", color="blue")
+        def style_function(feature):
+            return {}
+        def marker_function(feature, latlon):
+            return folium.Marker(location=latlon, icon=folium.Icon(icon="camera", prefix="fa", color="blue"))
         folium.GeoJson(
             geojson,
             name="KML Data",
-            popup=popup
+            popup=popup,
+            marker=marker_function,
+            style_function=style_function
         ).add_to(m)
         st.success('KML file loaded and displayed as GeoJSON')
     else:
