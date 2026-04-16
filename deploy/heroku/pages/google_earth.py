@@ -47,6 +47,10 @@ if uploaded_file:
         # Find all <img src="..."> tags
         def repl(match):
             url = match.group(1)
+            if 'geojson_features' not in st.session_state:
+                st.session_state['geojson_features'] = None
+                st.session_state['debug_lines'] = []
+                st.session_state['kml_data'] = None
             if 'slack.com' in url:
                 return fetch_slack_image_as_base64(url, token)
             return match.group(0)
@@ -83,6 +87,30 @@ if uploaded_file:
             name = feature["properties"].get("name", "")
             description = feature["properties"].get("description", "")
             iframe = folium.IFrame(description, width=300, height=200)
+            if st.session_state['geojson_features']:
+                with st.expander("Show parsed KML structure (debug)"):
+                    st.text("\n".join(st.session_state['debug_lines']))
+                for feature in st.session_state['geojson_features']:
+                    lon, lat = feature["geometry"]["coordinates"]
+                    name = feature["properties"].get("name", "")
+                    description = feature["properties"].get("description", "")
+                    iframe = folium.IFrame(description, width=300, height=200)
+                    popup = folium.Popup(iframe, max_width=400)
+                    tooltip = name
+                    folium.Marker(
+                        [lat, lon],
+                        popup=popup,
+                        tooltip=tooltip,
+                        icon=folium.Icon(color="red", icon="camera", prefix="fa")
+                    ).add_to(m)
+                st.success('KML file loaded and displayed as camera markers')
+                # Provide download link for the uploaded file
+                if st.session_state['kml_data']:
+                    b64 = base64.b64encode(st.session_state['kml_data'].encode()).decode()
+                    href = f'<a href="data:file/kml;base64,{b64}" download="downloaded.kml">Download KML file</a>'
+                    st.markdown(href, unsafe_allow_html=True)
+            elif uploaded_file:
+                st.info('Upload a KML file and click "Process KML File" to display markers.')
             popup = folium.Popup(iframe, max_width=400)
             tooltip = name
             folium.Marker(
