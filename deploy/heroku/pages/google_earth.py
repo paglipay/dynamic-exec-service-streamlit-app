@@ -18,7 +18,7 @@ if uploaded_file:
     k = kml.KML()
     k.from_string(kml_data.encode('utf-8'))
     # Extract features from KML
-    features = list(k.features())
+    features = list(k.features)
     geojson_features = []
     for feature in features:
         for subfeature in feature.features():
