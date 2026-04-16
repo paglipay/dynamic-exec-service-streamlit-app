@@ -127,4 +127,5 @@ if uploaded_file:
     href = f'<a href="data:file/kml;base64,{b64}" download="downloaded.kml">Download KML file</a>'
     st.markdown(href, unsafe_allow_html=True)
 
-st_folium(m, width=700, height=500)
+if st.session_state['geojson_features']:
+    st_folium(m, width=700, height=500)
