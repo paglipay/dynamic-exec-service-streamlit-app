@@ -78,22 +78,19 @@ if uploaded_file:
         st.text("\n".join(debug_lines))
 
     if geojson_features:
-        geojson = {"type": "FeatureCollection", "features": geojson_features}
-        popup = folium.GeoJsonPopup(fields=["description"], labels=False, parse_html=True, max_width=400)
-        # Use a camera icon for each marker
-        camera_icon = folium.Icon(icon="camera", prefix="fa", color="blue")
-        def style_function(feature):
-            return {}
-        def marker_function(feature, latlon):
-            return folium.Marker(location=latlon, icon=folium.Icon(icon="camera", prefix="fa", color="blue"))
-        folium.GeoJson(
-            geojson,
-            name="KML Data",
-            popup=popup,
-            marker=marker_function,
-            style_function=style_function
-        ).add_to(m)
-        st.success('KML file loaded and displayed as GeoJSON')
+        for feature in geojson_features:
+            lon, lat = feature["geometry"]["coordinates"]
+            name = feature["properties"].get("name", "")
+            description = feature["properties"].get("description", "")
+            popup = folium.Popup(description, max_width=400, parse_html=True)
+            tooltip = name
+            folium.Marker(
+                [lat, lon],
+                popup=popup,
+                tooltip=tooltip,
+                icon=folium.Icon(color="red", icon="camera", prefix="fa")
+            ).add_to(m)
+        st.success('KML file loaded and displayed as camera markers')
     else:
         st.error('No valid features found in KML file.')
 
