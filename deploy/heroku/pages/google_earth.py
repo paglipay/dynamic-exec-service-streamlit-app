@@ -35,9 +35,25 @@ if uploaded_file:
                 "properties": props
             })
 
+
+    # Debug: Show the structure of the parsed KML
+    def kml_structure(obj, level=0):
+        info = []
+        indent = '  ' * level
+        info.append(f"{indent}- {type(obj).__name__}: name={getattr(obj, 'name', None)}")
+        if hasattr(obj, 'features') and obj.features:
+            for f in obj.features:
+                info.extend(kml_structure(f, level+1))
+        return info
+
     geojson_features = []
+    structure_lines = []
     for feature in k.features:
+        structure_lines.extend(kml_structure(feature))
         extract_features(feature, geojson_features)
+
+    with st.expander("Show parsed KML structure (debug)"):
+        st.text("\n".join(structure_lines))
 
     if geojson_features:
         geojson = {"type": "FeatureCollection", "features": geojson_features}
