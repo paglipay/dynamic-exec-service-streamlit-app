@@ -47,7 +47,12 @@ if uploaded_file:
 
     if geojson_features:
         geojson = {"type": "FeatureCollection", "features": geojson_features}
-        folium.GeoJson(geojson, name="KML Data").add_to(m)
+        popup = folium.GeoJsonPopup(fields=["description"], labels=False, parse_html=True, max_width=400)
+        folium.GeoJson(
+            geojson,
+            name="KML Data",
+            popup=popup
+        ).add_to(m)
         st.success('KML file loaded and displayed as GeoJSON')
     else:
         st.error('No valid features found in KML file.')
