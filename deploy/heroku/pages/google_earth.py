@@ -82,7 +82,8 @@ if uploaded_file:
             lon, lat = feature["geometry"]["coordinates"]
             name = feature["properties"].get("name", "")
             description = feature["properties"].get("description", "")
-            popup = folium.Popup(description, max_width=400, parse_html=True)
+            iframe = folium.IFrame(description, width=300, height=200)
+            popup = folium.Popup(iframe, max_width=400)
             tooltip = name
             folium.Marker(
                 [lat, lon],
