@@ -109,8 +109,7 @@ if uploaded_file:
                     b64 = base64.b64encode(st.session_state['kml_data'].encode()).decode()
                     href = f'<a href="data:file/kml;base64,{b64}" download="downloaded.kml">Download KML file</a>'
                     st.markdown(href, unsafe_allow_html=True)
-            elif uploaded_file:
-                st.info('Upload a KML file and click "Process KML File" to display markers.')
+                # Removed the info message prompting to upload and process a KML file.
             popup = folium.Popup(iframe, max_width=400)
             tooltip = name
             folium.Marker(
