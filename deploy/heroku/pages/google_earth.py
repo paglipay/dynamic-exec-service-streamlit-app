@@ -157,21 +157,16 @@ SATELLITE_ATTR  = "Esri"
 
 
 def _add_tile_layers(m):
-    """Add satellite + street tile layers with a switcher control."""
+    """Add satellite tile layer with deep zoom support."""
     folium.TileLayer(
         tiles=SATELLITE_TILES,
         attr=SATELLITE_ATTR,
         name="Satellite",
         overlay=False,
         control=True,
+        max_zoom=21,
+        max_native_zoom=19,
     ).add_to(m)
-    folium.TileLayer(
-        tiles="OpenStreetMap",
-        name="Street Map",
-        overlay=False,
-        control=True,
-    ).add_to(m)
-    folium.LayerControl(position="topright", collapsed=False).add_to(m)
 
 
 def build_map_from_image_coords(coords, default_location=(34.052235, -118.243683)):
@@ -179,9 +174,9 @@ def build_map_from_image_coords(coords, default_location=(34.052235, -118.243683
     if coords:
         avg_lat = sum(r[1] for r in coords) / len(coords)
         avg_lon = sum(r[2] for r in coords) / len(coords)
-        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=15, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR)
+        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=15, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR, max_zoom=21)
     else:
-        m = folium.Map(location=default_location, zoom_start=13, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR)
+        m = folium.Map(location=default_location, zoom_start=13, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR, max_zoom=21)
 
     for filepath, lat, lon in coords:
         file_url  = f"file://{filepath.replace(chr(92), '/')}"
@@ -205,9 +200,9 @@ def build_map_from_kml_features(features):
     if features:
         avg_lat = sum(f["lat"] for f in features) / len(features)
         avg_lon = sum(f["lon"] for f in features) / len(features)
-        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=13, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR)
+        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=13, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR, max_zoom=21)
     else:
-        m = folium.Map(location=[20, 0], zoom_start=2, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR)
+        m = folium.Map(location=[20, 0], zoom_start=2, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR, max_zoom=21)
 
     for feat in features:
         iframe = folium.IFrame(feat["description"] or feat["name"], width=300, height=200)
