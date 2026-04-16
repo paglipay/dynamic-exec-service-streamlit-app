@@ -25,4 +25,3 @@ google-auth-oauthlib
 openai
 streamlit-folium
 fastkml
-simplekml
