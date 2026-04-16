@@ -24,3 +24,4 @@ google-api-python-client
 google-auth-oauthlib
 openai
 streamlit-folium
+fastkml
