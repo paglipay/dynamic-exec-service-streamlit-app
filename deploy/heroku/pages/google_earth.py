@@ -17,17 +17,22 @@ if uploaded_file:
     kml_data = uploaded_file.read().decode('utf-8')
     k = kml.KML()
     k.from_string(kml_data.encode('utf-8'))
-    # Extract features from KML
-    features = list(k.features)
+    # Recursively extract all features with geometry from KML
+    def extract_features(obj, geojson_features):
+        if hasattr(obj, 'features'):
+            for f in obj.features:
+                extract_features(f, geojson_features)
+        if hasattr(obj, 'geometry') and obj.geometry:
+            geojson_features.append({
+                "type": "Feature",
+                "geometry": json.loads(obj.geometry.json),
+                "properties": {"name": getattr(obj, 'name', None)}
+            })
+
     geojson_features = []
-    for feature in features:
-        for subfeature in feature.features():
-            if hasattr(subfeature, 'geometry') and subfeature.geometry:
-                geojson_features.append({
-                    "type": "Feature",
-                    "geometry": json.loads(subfeature.geometry.json),
-                    "properties": {"name": getattr(subfeature, 'name', None)}
-                })
+    for feature in k.features:
+        extract_features(feature, geojson_features)
+
     if geojson_features:
         geojson = {"type": "FeatureCollection", "features": geojson_features}
         folium.GeoJson(geojson, name="KML Data").add_to(m)
