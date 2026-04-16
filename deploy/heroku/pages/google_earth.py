@@ -19,14 +19,20 @@ if uploaded_file:
     k.from_string(kml_data.encode('utf-8'))
     # Recursively extract all features with geometry from KML
     def extract_features(obj, geojson_features):
-        if hasattr(obj, 'features'):
+        # Recursively extract all Placemarks with geometry
+        if hasattr(obj, 'features') and obj.features:
             for f in obj.features:
                 extract_features(f, geojson_features)
+        # Only add if it's a Placemark with geometry
         if hasattr(obj, 'geometry') and obj.geometry:
+            props = {"name": getattr(obj, 'name', None)}
+            # Add description if available
+            if hasattr(obj, 'description') and obj.description:
+                props["description"] = obj.description
             geojson_features.append({
                 "type": "Feature",
                 "geometry": json.loads(obj.geometry.json),
-                "properties": {"name": getattr(obj, 'name', None)}
+                "properties": props
             })
 
     geojson_features = []
