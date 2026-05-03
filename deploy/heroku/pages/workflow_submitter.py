@@ -1,9 +1,4 @@
-"""Workflow Submitter — pick a JSON template and POST it to /workflow or /execute.
-
-Lists available templates by calling /execute with JsonCatalogPlugin.list_templates,
-loads the chosen one with JsonCatalogPlugin.read_template, lets the user edit the
-JSON, then POSTs to either /workflow or /execute on the dynamic-exec-service.
-"""
+"""Workflow Submitter — pick a JSON template and POST it to /workflow or /execute."""
 
 from __future__ import annotations
 
@@ -29,20 +24,12 @@ st.caption(
 
 CATALOG_MODULE = "plugins.system_tools.json_catalog_plugin"
 CATALOG_CLASS = "JsonCatalogPlugin"
-
 DEFAULT_API_BASE = (os.getenv("API_BASE_URL", "") or "").rstrip("/")
-
-ENDPOINT_TO_CATEGORY = {
-    "/workflow": "workflows",
-    "/execute": "execute",
-}
+ENDPOINT_TO_CATEGORY = {"/workflow": "workflows", "/execute": "execute"}
 
 
-def _post_execute(api_base: str, method: str, args: list, ctor: dict | None = None) -> dict:
-    """Call /execute on the service to invoke a JsonCatalogPlugin method.
-
-    Raises RuntimeError with a useful diagnostic when the response shape is wrong.
-    """
+def _post_execute(api_base, method, args, ctor=None):
+    """Call /execute on the service to invoke a JsonCatalogPlugin method."""
     payload = {
         "module": CATALOG_MODULE,
         "class": CATALOG_CLASS,
@@ -81,38 +68,32 @@ def _post_execute(api_base: str, method: str, args: list, ctor: dict | None = No
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def _list_templates(api_base: str, category: str, recursive: bool) -> list:
-    result = _post_execute(api_base, "list_templates", [{"category": category, "recursive": recursive}])
+def _list_templates(api_base, category, recursive):
+    result = _post_execute(api_base, "list_templates",
+                           [{"category": category, "recursive": recursive}])
     return result.get("templates", []) or []
 
 
-def _read_template(api_base: str, category: str, name: str) -> dict:
-    result = _post_execute(api_base, "read_template", [{"category": category, "name": name}])
+def _read_template(api_base, category, name):
+    result = _post_execute(api_base, "read_template",
+                           [{"category": category, "name": name}])
     return result.get("content", {}) or {}
 
 
-def _render_workflow_results(body: dict) -> None:
+def _render_workflow_results(body):
     st.subheader("Step results")
     results = body.get("results") or []
     if not results:
         st.info("No per-step results in response.")
         return
-
-    rows = []
-    for r in results:
-        rows.append({
-            "id": r.get("id", ""),
-            "status": r.get("status", ""),
-            "message": r.get("message", "") or "",
-        })
+    rows = [{"id": r.get("id", ""), "status": r.get("status", ""),
+             "message": r.get("message", "") or ""} for r in results]
     st.dataframe(rows, use_container_width=True, hide_index=True)
-
     with st.expander("Raw step results", expanded=False):
         st.json(results)
 
 
 # ----- Connection -----
-
 st.subheader("Connection")
 col1, col2 = st.columns([3, 2])
 with col1:
@@ -139,7 +120,6 @@ category = ENDPOINT_TO_CATEGORY[endpoint]
 recursive = endpoint == "/execute"
 
 # ----- Template selection -----
-
 st.subheader("Template")
 left, right = st.columns([3, 1])
 with right:
@@ -182,15 +162,12 @@ else:
     subdir, leaf = "", chosen_rel
 
 # ----- Load template content -----
-
 content_key = f"workflow_submitter_content::{endpoint}::{chosen_rel}"
 load_key = f"workflow_submitter_loaded::{endpoint}::{chosen_rel}"
 
 if not st.session_state.get(load_key):
     try:
         if subdir:
-            # /execute templates in subdirs — point the catalog at the subdir
-            # via a per-call category override.
             result = _post_execute(
                 api_base,
                 "read_template",
@@ -207,7 +184,6 @@ if not st.session_state.get(load_key):
         st.stop()
 
 # ----- Edit & submit -----
-
 st.subheader("Edit & submit")
 edited_text = st.text_area(
     "JSON payload",
