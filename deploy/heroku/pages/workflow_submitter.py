@@ -27,16 +27,11 @@ st.caption(
 )
 
 
-# ---------------------------------------------------------------------------
-# Constants and helpers
-# ---------------------------------------------------------------------------
-
 CATALOG_MODULE = "plugins.system_tools.json_catalog_plugin"
 CATALOG_CLASS = "JsonCatalogPlugin"
 
 DEFAULT_API_BASE = (os.getenv("API_BASE_URL", "") or "").rstrip("/")
 
-# Map endpoint -> catalog category for the catalog plugin.
 ENDPOINT_TO_CATEGORY = {
     "/workflow": "workflows",
     "/execute": "execute",
@@ -58,7 +53,6 @@ def _post_execute(api_base: str, method: str, args: list, ctor: dict | None = No
     url = f"{api_base.rstrip('/')}/execute"
     resp = requests.post(url, json=payload, timeout=15)
 
-    # Try to parse JSON; if it fails, surface the raw text and status.
     try:
         body = resp.json()
     except ValueError:
@@ -67,14 +61,12 @@ def _post_execute(api_base: str, method: str, args: list, ctor: dict | None = No
             f"HTTP {resp.status_code} from {url} did not return JSON. Body starts with: {snippet!r}"
         )
 
-    # Some misconfigured proxies / error pages return a top-level string or list.
     if not isinstance(body, dict):
         snippet = repr(body)[:300]
         raise RuntimeError(
             f"HTTP {resp.status_code} from {url} returned non-object JSON: {snippet}"
         )
 
-    # Now safe to call .get on body.
     if resp.status_code >= 400:
         msg = body.get("message") or body.get("error") or f"HTTP {resp.status_code}"
         raise RuntimeError(f"Service error ({resp.status_code}): {msg}")
@@ -89,7 +81,7 @@ def _post_execute(api_base: str, method: str, args: list, ctor: dict | None = No
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def _list_templates(api_base: str, category: str, recursive: bool) -> list[dict]:
+def _list_templates(api_base: str, category: str, recursive: bool) -> list:
     result = _post_execute(api_base, "list_templates", [{"category": category, "recursive": recursive}])
     return result.get("templates", []) or []
 
@@ -108,22 +100,18 @@ def _render_workflow_results(body: dict) -> None:
 
     rows = []
     for r in results:
-        rows.append(
-            {
-                "id": r.get("id", ""),
-                "status": r.get("status", ""),
-                "message": r.get("message", "") or "",
-            }
-        )
+        rows.append({
+            "id": r.get("id", ""),
+            "status": r.get("status", ""),
+            "message": r.get("message", "") or "",
+        })
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
     with st.expander("Raw step results", expanded=False):
         st.json(results)
 
 
-# ---------------------------------------------------------------------------
-# Inputs
-# ---------------------------------------------------------------------------
+# ----- Connection -----
 
 st.subheader("Connection")
 col1, col2 = st.columns([3, 2])
@@ -148,11 +136,9 @@ if not api_base:
     st.stop()
 
 category = ENDPOINT_TO_CATEGORY[endpoint]
-recursive = endpoint == "/execute"  # /execute templates live in subdirs by plugin
+recursive = endpoint == "/execute"
 
-# ---------------------------------------------------------------------------
-# Template selection
-# ---------------------------------------------------------------------------
+# ----- Template selection -----
 
 st.subheader("Template")
 left, right = st.columns([3, 1])
@@ -162,9 +148,6 @@ with right:
 
 try:
     templates = _list_templates(api_base, category, recursive)
-except requests.HTTPError as exc:
-    st.error(f"Service returned HTTP {exc.response.status_code}: {exc.response.text[:300]}")
-    st.stop()
 except requests.RequestException as exc:
     st.error(f"Could not reach service: {exc}")
     st.stop()
@@ -176,7 +159,6 @@ if not templates:
     st.info(f"No templates found in category '{category}'.")
     st.stop()
 
-# Each template entry has: name, relative_path, size_bytes, modified_at
 options = [t.get("relative_path") or t.get("name") for t in templates]
 labels = {
     (t.get("relative_path") or t.get("name")):
@@ -194,20 +176,12 @@ with left:
 if not chosen_rel:
     st.stop()
 
-# Convert "subdir/name.json" -> name argument the plugin expects.
-# When recursive=False (workflows) this is just the bare name; when recursive=True
-# (execute) the relative path includes a subdir, but the catalog plugin's
-# read_template() only accepts a flat name. Work around by listing in the same
-# subdir and pulling its bare name — for recursive, we re-target the plugin to
-# the subdir via a per-call category override below.
 if recursive and "/" in chosen_rel:
     subdir, leaf = chosen_rel.rsplit("/", 1)
 else:
     subdir, leaf = "", chosen_rel
 
-# ---------------------------------------------------------------------------
-# Load template content
-# ---------------------------------------------------------------------------
+# ----- Load template content -----
 
 content_key = f"workflow_submitter_content::{endpoint}::{chosen_rel}"
 load_key = f"workflow_submitter_loaded::{endpoint}::{chosen_rel}"
@@ -216,8 +190,7 @@ if not st.session_state.get(load_key):
     try:
         if subdir:
             # /execute templates in subdirs — point the catalog at the subdir
-            # via a per-call category override. The plugin's `name` field
-            # disallows path separators, so we cannot pass "subdir/leaf".
+            # via a per-call category override.
             result = _post_execute(
                 api_base,
                 "read_template",
@@ -232,6 +205,8 @@ if not st.session_state.get(load_key):
     except Exception as exc:
         st.error(f"Failed to load template '{chosen_rel}': {exc}")
         st.stop()
+
+# ----- Edit & submit -----
 
 st.subheader("Edit & submit")
 edited_text = st.text_area(
@@ -281,24 +256,6 @@ if submit_clicked:
     if top_status == "success":
         st.success(f"status: {top_status}")
     else:
-        st.error(f"status: {top_status} — {body.get('message', '')}")
-
-    if endpoint == "/workflow":
-        _render_workflow_results(body)
-        with st.expander("Full /workflow response", expanded=False):
-            st.json(body)
-    else:
-        with st.expander("Full /execute response", expanded=True):
-            st.json(body)
-    except ValueError:
-        st.error("Service did not return JSON.")
-        st.code(resp.text[:2000] or "(empty)")
-        st.stop()
-
-    top_status = body.get("status", "unknown")
-    if top_status == "success":
-        st.success(f"status: {top_status}")
-    else:
         st.error(f"status: {top_status} - {body.get('message', '')}")
 
     if endpoint == "/workflow":
@@ -308,4 +265,3 @@ if submit_clicked:
     else:
         with st.expander("Full /execute response", expanded=True):
             st.json(body)
-)
