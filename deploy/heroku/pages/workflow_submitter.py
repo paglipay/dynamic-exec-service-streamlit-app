@@ -127,9 +127,8 @@ def _run_async_with_live_log(api_base, payload):
     st.info(f"Job started: `{job_id}` — polling every {POLL_INTERVAL_SECONDS:.0f}s")
 
     status_placeholder = st.empty()
-    log_placeholder = st.empty()
-
-    MAX_DISPLAY_LINES = 50
+    log_container = st.container(height=350)
+    log_placeholder = log_container.empty()
 
     started = time.monotonic()
     last_log_lines = -1
@@ -148,10 +147,7 @@ def _run_async_with_live_log(api_base, payload):
         status = job.get("status", "unknown")
 
         if len(log_lines) != last_log_lines:
-            display_lines = log_lines[-MAX_DISPLAY_LINES:] if log_lines else []
-            truncated = len(log_lines) > MAX_DISPLAY_LINES
-            prefix = f"... ({len(log_lines) - MAX_DISPLAY_LINES} earlier lines hidden)\n" if truncated else ""
-            log_text = prefix + ("\n".join(display_lines) if display_lines else "(no log lines yet)")
+            log_text = "\n".join(log_lines) if log_lines else "(no log lines yet)"
             log_placeholder.code(log_text, language="text")
             last_log_lines = len(log_lines)
 
