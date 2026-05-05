@@ -19,7 +19,7 @@ from jinja2 import Template
 
 
 class _RenumberButton(MacroElement):
-    """Auto-renumbers visible numbered pins when a layer is toggled."""
+    """Auto-renumbers visible numbered pins when a layer is toggled. Also adds Check/Uncheck All."""
     _template = Template("""
         {% macro script(this, kwargs) %}
         (function(){
@@ -41,6 +41,53 @@ class _RenumberButton(MacroElement):
           {{this._map_var}}.on('overlayadd overlayremove', function(){
             setTimeout(renumber, 50);
           });
+
+          // Collect overlay FeatureGroups (not tile layers)
+          function getOverlays(){
+            var overlays=[];
+            {{this._map_var}}.eachLayer(function(layer){
+              if(typeof layer.eachLayer==='function' && !(layer instanceof L.TileLayer)){
+                overlays.push(layer);
+              }
+            });
+            return overlays;
+          }
+          function setAll(show){
+            getOverlays().forEach(function(layer){
+              if(show){
+                if(!{{this._map_var}}.hasLayer(layer)){
+                  {{this._map_var}}.addLayer(layer);
+                  {{this._map_var}}.fire('overlayadd',{layer:layer});
+                }
+              } else {
+                if({{this._map_var}}.hasLayer(layer)){
+                  {{this._map_var}}.removeLayer(layer);
+                  {{this._map_var}}.fire('overlayremove',{layer:layer});
+                }
+              }
+            });
+            setTimeout(renumber,80);
+          }
+
+          var btnStyle='padding:4px 8px;cursor:pointer;background:white;font-size:12px;'
+            +'font-weight:bold;border:1px solid rgba(0,0,0,0.3);white-space:nowrap;';
+          var CheckAllCtrl=L.Control.extend({
+            options:{position:'bottomright'},
+            onAdd:function(){
+              var div=L.DomUtil.create('div','leaflet-bar');
+              div.style.cssText='display:flex;flex-direction:row;box-shadow:0 1px 5px rgba(0,0,0,.4);';
+              var btnOn=L.DomUtil.create('button','',div);
+              btnOn.innerHTML='&#9745; Check All';
+              btnOn.style.cssText=btnStyle+'border-radius:4px 0 0 4px;border-right:none;';
+              var btnOff=L.DomUtil.create('button','',div);
+              btnOff.innerHTML='&#9744; Uncheck All';
+              btnOff.style.cssText=btnStyle+'border-radius:0 4px 4px 0;';
+              L.DomEvent.on(btnOn,'click',function(e){L.DomEvent.stopPropagation(e);setAll(true);});
+              L.DomEvent.on(btnOff,'click',function(e){L.DomEvent.stopPropagation(e);setAll(false);});
+              return div;
+            }
+          });
+          new CheckAllCtrl().addTo({{this._map_var}});
         })();
         {% endmacro %}
     """)
@@ -224,7 +271,7 @@ def _add_tile_layers(m):
         max_zoom=21,
         max_native_zoom=19,
     ).add_to(m)
-    folium.LayerControl(position="topright", collapsed=False).add_to(m)
+    folium.LayerControl(position="topright", collapsed=True).add_to(m)
     map_var = m.get_name()
     m.get_root().header.add_child(folium.Element(
         "<style>"
