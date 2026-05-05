@@ -127,6 +127,20 @@ def image_thumbnail_html(filepath, width=120):
         return "<i>Image preview unavailable</i>"
 
 
+def image_fullsize_html(filepath, max_px=800):
+    """Return an <img> tag with a base64 full-size image (capped at max_px), or an error string."""
+    try:
+        img = Image.open(filepath)
+        img.thumbnail((max_px, max_px))
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        w, h = img.size
+        return f'<img src="data:image/jpeg;base64,{b64}" style="max-width:100%;height:auto" width="{w}" height="{h}">'
+    except Exception:
+        return "<i>Image preview unavailable</i>"
+
+
 def fetch_slack_image_as_base64(url, token, thumb_size=(150, 150)):
     try:
         resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
@@ -236,8 +250,14 @@ def build_map_from_image_coords(coords, default_location=(34.052235, -118.243683
         file_url  = f"file://{filepath.replace(chr(92), '/')}"
         link_html = f'<a href="{file_url}" target="_blank">{os.path.basename(filepath)}</a>'
         thumb     = image_thumbnail_html(filepath)
-        popup_html = f"<html><body>{link_html}<br>{thumb}</body></html>"
-        iframe     = folium.IFrame(popup_html, width=200, height=200)
+        full_img  = image_fullsize_html(filepath)
+        popup_html = (
+            f'<div style="font-family:sans-serif;text-align:center;padding:4px">'
+            f'<b style="font-size:13px">{idx}. {os.path.basename(filepath)}</b><br>'
+            f'<div style="margin-top:6px">{full_img}</div>'
+            f'<div style="margin-top:4px">{link_html}</div>'
+            f'</div>'
+        )
         fg = folium.FeatureGroup(name=f"{idx}. {os.path.basename(filepath)}", show=True)
         hover_html = (
             f'<div style="font-family:sans-serif;font-size:12px;max-width:160px">'
@@ -246,7 +266,7 @@ def build_map_from_image_coords(coords, default_location=(34.052235, -118.243683
         )
         folium.Marker(
             [lat, lon],
-            popup=folium.Popup(iframe, max_width=220),
+            popup=folium.Popup(popup_html, max_width=860),
             tooltip=folium.Tooltip(hover_html, sticky=True),
             icon=folium.DivIcon(
                 html=f'<div data-pin-idx="{idx}" style="'
@@ -337,7 +357,10 @@ with tab1:
                 scan_path = folder
 
             with st.spinner("Scanning images for GPS data…"):
-                st.session_state["img_coords"] = get_all_image_coords(scan_path)
+                st.session_state["img_coords"] = sorted(
+                    get_all_image_coords(scan_path),
+                    key=lambda r: os.path.basename(r[0]).lower()
+                )
         finally:
             # Don't delete yet — filepaths are still needed for map rendering below
             # Store tmp_dir in session so we can clean it up on next run
