@@ -68,6 +68,51 @@ class _RenumberButton(MacroElement):
             setTimeout(renumber,80);
           }
 
+          // ── floating overlay for Get List ───────────────────────────
+          var overlay=document.createElement('div');
+          overlay.style.cssText='display:none;position:absolute;top:50%;left:50%;'
+            +'transform:translate(-50%,-50%);z-index:9999;background:white;'
+            +'border:2px solid #666;border-radius:6px;padding:12px 14px;'
+            +'box-shadow:0 4px 12px rgba(0,0,0,.4);min-width:220px;font-family:monospace;';
+          overlay.innerHTML="<div style='font-size:11px;color:#555;margin-bottom:6px;'>"
+            +"Visible pin numbers &mdash; Copy, then paste into the <b>Paste list</b> box above the table:</div>"
+            +"<input id='_pinListInput' readonly style='width:100%;font-size:14px;font-weight:bold;"
+            +"padding:4px;border:1px solid #aaa;border-radius:3px;box-sizing:border-box;'>"
+            +"<div style='text-align:right;margin-top:8px;gap:6px;display:flex;justify-content:flex-end;'>"
+            +"<button id='_pinListCopy' style='padding:3px 10px;cursor:pointer;background:#1a73e8;color:white;border:none;border-radius:3px;'>&#128203; Copy</button>"
+            +"<button id='_pinListClose' style='padding:3px 10px;cursor:pointer;'>Close</button></div>";
+          // Append to the map container so it's positioned relative to the map
+          {{this._map_var}}.getContainer().style.position='relative';
+          {{this._map_var}}.getContainer().appendChild(overlay);
+          document.getElementById('_pinListClose').addEventListener('click',function(){
+            overlay.style.display='none';
+          });
+          document.getElementById('_pinListCopy').addEventListener('click',function(){
+            var inp=document.getElementById('_pinListInput');
+            inp.select();
+            navigator.clipboard.writeText(inp.value).then(function(){
+              var btn=document.getElementById('_pinListCopy');
+              btn.textContent='Copied!';
+              setTimeout(function(){btn.innerHTML='&#128203; Copy';},1500);
+            });
+          });
+
+          function getVisibleOriginals(){
+            var nums=[];
+            {{this._map_var}}.eachLayer(function(layer){
+              if(typeof layer.eachLayer==='function'){
+                layer.eachLayer(function(marker){
+                  if(marker._icon){
+                    var d=marker._icon.querySelector('[data-pin-idx]');
+                    if(d) nums.push(parseInt(d.getAttribute('data-pin-idx')));
+                  }
+                });
+              }
+            });
+            nums.sort(function(a,b){return a-b;});
+            return nums;
+          }
+
           var btnStyle='padding:4px 8px;cursor:pointer;background:white;font-size:12px;'
             +'font-weight:bold;border:1px solid rgba(0,0,0,0.3);white-space:nowrap;';
           var CheckAllCtrl=L.Control.extend({
@@ -80,9 +125,20 @@ class _RenumberButton(MacroElement):
               btnOn.style.cssText=btnStyle+'border-radius:4px 0 0 4px;border-right:none;';
               var btnOff=L.DomUtil.create('button','',div);
               btnOff.innerHTML='&#9744; Uncheck All';
-              btnOff.style.cssText=btnStyle+'border-radius:0 4px 4px 0;';
+              btnOff.style.cssText=btnStyle+'border-radius:0 0 0 0;border-right:none;';
+              var btnList=L.DomUtil.create('button','',div);
+              btnList.innerHTML='&#128203; Get List';
+              btnList.style.cssText=btnStyle+'border-radius:0 4px 4px 0;';
               L.DomEvent.on(btnOn,'click',function(e){L.DomEvent.stopPropagation(e);setAll(true);});
               L.DomEvent.on(btnOff,'click',function(e){L.DomEvent.stopPropagation(e);setAll(false);});
+              L.DomEvent.on(btnList,'click',function(e){
+                L.DomEvent.stopPropagation(e);
+                var nums=getVisibleOriginals();
+                var inp=document.getElementById('_pinListInput');
+                inp.value=nums.join(',');
+                overlay.style.display='block';
+                setTimeout(function(){inp.select();},50);
+              });
               return div;
             }
           });
@@ -420,41 +476,138 @@ with tab1:
         coords = st.session_state["img_coords"]
         st.write(f"Found **{len(coords)}** image(s) with GPS data.")
         if coords:
-            pad = len(str(len(coords)))
-            renamed = [
-                f"{str(i + 1).zfill(pad)}{os.path.splitext(fp)[1].lower()}"
-                for i, (fp, _, __) in enumerate(coords)
-            ]
-            pin_df = pd.DataFrame([
-                {"#": i + 1, "File": os.path.basename(fp), "Renamed As": renamed[i], "Latitude": round(lat, 6), "Longitude": round(lon, 6)}
+            # ── Persist include-flags; reset when the file list changes ──────
+            coord_key = tuple(os.path.basename(fp) for fp, _, __ in coords)
+            if st.session_state.get("img_coord_key") != coord_key:
+                st.session_state["img_coord_key"] = coord_key
+                st.session_state["img_include"] = [False] * len(coords)
+                st.session_state.pop("pin_editor", None)
+                st.session_state["pin_list_input"] = ""
+
+            # ── Paste-list input: override checkboxes from map's Get List ─
+            paste_raw = st.text_input(
+                "Paste list (from map 📋 Get List):",
+                key="pin_list_input",
+                placeholder="e.g. 1,3,5,7  — then press Enter",
+            )
+            if paste_raw.strip():
+                try:
+                    chosen = {int(x.strip()) for x in paste_raw.split(",") if x.strip()}
+                    include_flags = [((i + 1) in chosen) for i in range(len(coords))]
+                    st.session_state["img_include"] = include_flags
+                    st.session_state.pop("pin_editor", None)
+                except ValueError:
+                    st.warning("List must be comma-separated numbers, e.g. 1,3,5")
+                    include_flags = list(st.session_state["img_include"])
+            else:
+                # Pre-apply any pending editor delta so Renamed As is up-to-date
+                include_flags = list(st.session_state["img_include"])
+                editor_delta = st.session_state.get("pin_editor") or {}
+                for row_str, changes in (editor_delta.get("edited_rows") or {}).items():
+                    row_idx = int(row_str)
+                    if "Include" in changes and row_idx < len(include_flags):
+                        include_flags[row_idx] = changes["Include"]
+                st.session_state["img_include"] = include_flags
+
+            # Compute Renamed As: sequential among checked rows, in order
+            checked_indices = [i for i, v in enumerate(include_flags) if v]
+            n_checked = len(checked_indices)
+            pad = max(2, len(str(n_checked))) if n_checked else 2
+            renamed_as = ["—"] * len(coords)
+            for rank, idx in enumerate(checked_indices, start=1):
+                fp = coords[idx][0]
+                renamed_as[idx] = f"{str(rank).zfill(pad)}{os.path.splitext(fp)[1].lower()}"
+
+            edit_df = pd.DataFrame([
+                {
+                    "Include": include_flags[i],
+                    "#": i + 1,
+                    "File": os.path.basename(fp),
+                    "Renamed As": renamed_as[i],
+                    "Latitude": round(lat, 6),
+                    "Longitude": round(lon, 6),
+                }
                 for i, (fp, lat, lon) in enumerate(coords)
             ])
 
-            tbl_col, btn_col = st.columns([5, 1])
-            with tbl_col:
-                st.dataframe(
-                    pin_df,
-                    column_config={
-                        "Latitude": st.column_config.NumberColumn(format="%.6f"),
-                        "Longitude": st.column_config.NumberColumn(format="%.6f"),
-                    },
-                    hide_index=True,
-                    use_container_width=True,
-                )
-                st.caption("Toggle individual pins using the layer control (top-right of the map).")
-            with btn_col:
-                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-                zip_buf = BytesIO()
-                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for (fp, _, __), new_name in zip(coords, renamed):
+            st.caption("Use the map layer control (top-right) to find pins. Click 📋 Get List on the map to copy visible pin numbers, paste above, then fine-tune with checkboxes below.")
+            edited = st.data_editor(
+                edit_df,
+                column_config={
+                    "Include": st.column_config.CheckboxColumn("Include", default=True),
+                    "Renamed As": st.column_config.TextColumn("Renamed As"),
+                    "Latitude": st.column_config.NumberColumn(format="%.6f"),
+                    "Longitude": st.column_config.NumberColumn(format="%.6f"),
+                    "#": st.column_config.NumberColumn("#"),
+                    "File": st.column_config.TextColumn("File"),
+                },
+                disabled=["#", "File", "Renamed As", "Latitude", "Longitude"],
+                hide_index=True,
+                use_container_width=True,
+                key="pin_editor",
+            )
+            # Persist for next rerun
+            st.session_state["img_include"] = edited["Include"].tolist()
+
+            # Build ZIP from checked rows with sequential renamed files
+            n_zip = int(edited["Include"].sum())
+            pad_zip = max(2, len(str(n_zip))) if n_zip else 2
+            zip_buf = BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                rank = 0
+                for i, (fp, _, __) in enumerate(coords):
+                    if edited["Include"].iloc[i]:
+                        rank += 1
+                        new_name = f"{str(rank).zfill(pad_zip)}{os.path.splitext(fp)[1].lower()}"
                         zf.write(fp, arcname=new_name)
-                zip_buf.seek(0)
+            zip_buf.seek(0)
+            st.download_button(
+                label=f"⬇️ Download ZIP ({n_zip} file{'s' if n_zip != 1 else ''})",
+                data=zip_buf,
+                file_name="renamed_pins.zip",
+                mime="application/zip",
+                key="download_zip_btn",
+            )
+
+            # Build KMZ from checked rows
+            if n_zip > 0:
+                kml_lines = [
+                    '<?xml version="1.0" encoding="UTF-8"?>',
+                    '<kml xmlns="http://www.opengis.net/kml/2.2">',
+                    '<Document>',
+                    '<name>Exported Pins</name>',
+                ]
+                kmz_buf = BytesIO()
+                with zipfile.ZipFile(kmz_buf, "w", zipfile.ZIP_DEFLATED) as kz:
+                    rank = 0
+                    for i, (fp, lat, lon) in enumerate(coords):
+                        if edited["Include"].iloc[i]:
+                            rank += 1
+                            new_name = f"{str(rank).zfill(pad_zip)}{os.path.splitext(fp)[1].lower()}"
+                            img_path_in_kmz = f"files/{new_name}"
+                            kz.write(fp, arcname=img_path_in_kmz)
+                            kml_lines += [
+                                "<Placemark>",
+                                f"  <name>{new_name}</name>",
+                                "  <description><![CDATA[",
+                                f'    <b>{new_name}</b><br>',
+                                f'    Original: {os.path.basename(fp)}<br>',
+                                f'    <img src="{img_path_in_kmz}" width="400">',
+                                "  ]]></description>",
+                                "  <Point>",
+                                f"    <coordinates>{lon},{lat},0</coordinates>",
+                                "  </Point>",
+                                "</Placemark>",
+                            ]
+                    kml_lines += ["</Document>", "</kml>"]
+                    kz.writestr("doc.kml", "\n".join(kml_lines))
+                kmz_buf.seek(0)
                 st.download_button(
-                    label="⬇️ Download ZIP",
-                    data=zip_buf,
-                    file_name="renamed_pins.zip",
-                    mime="application/zip",
-                    key="download_zip_btn",
+                    label=f"🗺️ Export KMZ ({n_zip} pin{'s' if n_zip != 1 else ''})",
+                    data=kmz_buf,
+                    file_name="exported_pins.kmz",
+                    mime="application/vnd.google-earth.kmz",
+                    key="download_kmz_btn",
                 )
 
             m = build_map_from_image_coords(coords)
