@@ -42,11 +42,10 @@ class _RenumberButton(MacroElement):
             setTimeout(renumber, 50);
           });
 
-          // Collect overlay FeatureGroups (not tile layers)
           function getOverlays(){
             var overlays=[];
             {{this._map_var}}.eachLayer(function(layer){
-              if(typeof layer.eachLayer==='function' && !(layer instanceof L.TileLayer)){
+              if(typeof layer.eachLayer==='function'){
                 overlays.push(layer);
               }
             });
@@ -421,20 +420,43 @@ with tab1:
         coords = st.session_state["img_coords"]
         st.write(f"Found **{len(coords)}** image(s) with GPS data.")
         if coords:
+            pad = len(str(len(coords)))
+            renamed = [
+                f"{str(i + 1).zfill(pad)}{os.path.splitext(fp)[1].lower()}"
+                for i, (fp, _, __) in enumerate(coords)
+            ]
             pin_df = pd.DataFrame([
-                {"#": i + 1, "File": os.path.basename(fp), "Latitude": round(lat, 6), "Longitude": round(lon, 6)}
+                {"#": i + 1, "File": os.path.basename(fp), "Renamed As": renamed[i], "Latitude": round(lat, 6), "Longitude": round(lon, 6)}
                 for i, (fp, lat, lon) in enumerate(coords)
             ])
-            st.dataframe(
-                pin_df,
-                column_config={
-                    "Latitude": st.column_config.NumberColumn(format="%.6f"),
-                    "Longitude": st.column_config.NumberColumn(format="%.6f"),
-                },
-                hide_index=True,
-                use_container_width=True,
-            )
-            st.caption("Toggle individual pins using the layer control (top-right of the map).")
+
+            tbl_col, btn_col = st.columns([5, 1])
+            with tbl_col:
+                st.dataframe(
+                    pin_df,
+                    column_config={
+                        "Latitude": st.column_config.NumberColumn(format="%.6f"),
+                        "Longitude": st.column_config.NumberColumn(format="%.6f"),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                )
+                st.caption("Toggle individual pins using the layer control (top-right of the map).")
+            with btn_col:
+                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                zip_buf = BytesIO()
+                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for (fp, _, __), new_name in zip(coords, renamed):
+                        zf.write(fp, arcname=new_name)
+                zip_buf.seek(0)
+                st.download_button(
+                    label="⬇️ Download ZIP",
+                    data=zip_buf,
+                    file_name="renamed_pins.zip",
+                    mime="application/zip",
+                    key="download_zip_btn",
+                )
+
             m = build_map_from_image_coords(coords)
             st_folium(m, use_container_width=True, height=800, returned_objects=[])
         else:
