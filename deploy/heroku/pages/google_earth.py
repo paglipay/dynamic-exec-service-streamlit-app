@@ -577,30 +577,35 @@ with tab1:
                     '<Document>',
                     '<name>Exported Pins</name>',
                 ]
+                rank = 0
+                for i, (fp, lat, lon) in enumerate(coords):
+                    if edited["Include"].iloc[i]:
+                        rank += 1
+                        new_name = f"{str(rank).zfill(pad_zip)}{os.path.splitext(fp)[1].lower()}"
+                        img_path_in_kmz = f"files/{new_name}"
+                        kml_lines += [
+                            "<Placemark>",
+                            f"  <name>{new_name}</name>",
+                            "  <description><![CDATA[",
+                            f"    <b>{new_name}</b><br>",
+                            f"    Original: {os.path.basename(fp)}<br>",
+                            f'    <img src="{img_path_in_kmz}" width="400">',
+                            "  ]]></description>",
+                            "  <Point>",
+                            f"    <coordinates>{lon},{lat},0</coordinates>",
+                            "  </Point>",
+                            "</Placemark>",
+                        ]
+                kml_lines += ["</Document>", "</kml>"]
                 kmz_buf = BytesIO()
                 with zipfile.ZipFile(kmz_buf, "w", zipfile.ZIP_DEFLATED) as kz:
+                    kz.writestr("doc.kml", "\n".join(kml_lines))
                     rank = 0
-                    for i, (fp, lat, lon) in enumerate(coords):
+                    for i, (fp, _, __) in enumerate(coords):
                         if edited["Include"].iloc[i]:
                             rank += 1
                             new_name = f"{str(rank).zfill(pad_zip)}{os.path.splitext(fp)[1].lower()}"
-                            img_path_in_kmz = f"files/{new_name}"
-                            kz.write(fp, arcname=img_path_in_kmz)
-                            kml_lines += [
-                                "<Placemark>",
-                                f"  <name>{new_name}</name>",
-                                "  <description><![CDATA[",
-                                f'    <b>{new_name}</b><br>',
-                                f'    Original: {os.path.basename(fp)}<br>',
-                                f'    <img src="{img_path_in_kmz}" width="400">',
-                                "  ]]></description>",
-                                "  <Point>",
-                                f"    <coordinates>{lon},{lat},0</coordinates>",
-                                "  </Point>",
-                                "</Placemark>",
-                            ]
-                    kml_lines += ["</Document>", "</kml>"]
-                    kz.writestr("doc.kml", "\n".join(kml_lines))
+                            kz.write(fp, arcname=f"files/{new_name}")
                 kmz_buf.seek(0)
                 st.download_button(
                     label=f"🗺️ Export KMZ ({n_zip} pin{'s' if n_zip != 1 else ''})",
