@@ -7,12 +7,71 @@ import zipfile
 import xml.etree.ElementTree as ET
 from io import BytesIO
 
+import pandas as pd
 import requests
 from PIL import Image
 import piexif
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
+from branca.element import MacroElement
+from jinja2 import Template
+
+
+class _RenumberButton(MacroElement):
+    """Auto-renumbers visible numbered pins and layer control labels when a layer is toggled."""
+    _template = Template("""
+        {% macro script(this, kwargs) %}
+        (function(){
+          function renumber(){
+            // Lazily tag any untagged label spans (safe to call repeatedly)
+            var allSpans=document.querySelectorAll('.leaflet-control-layers-overlays label span');
+            allSpans.forEach(function(span){
+              if(!span.getAttribute('data-label-orig')){
+                var m=span.textContent.match(/^\s*(\d+)\.\s*([\s\S]*)/);
+                if(m){
+                  span.setAttribute('data-label-orig',m[1]);
+                  span.setAttribute('data-label-base',m[2].trim());
+                }
+              }
+            });
+            // Renumber DivIcon circles
+            var pins=[];
+            {{this._map_var}}.eachLayer(function(layer){
+              if(typeof layer.eachLayer==='function'){
+                layer.eachLayer(function(marker){
+                  if(marker._icon){
+                    var d=marker._icon.querySelector('[data-pin-idx]');
+                    if(d) pins.push({orig:parseInt(d.getAttribute('data-pin-idx')),div:d});
+                  }
+                });
+              }
+            });
+            pins.sort(function(a,b){return a.orig-b.orig;});
+            pins.forEach(function(p,i){p.div.textContent=i+1;});
+            // Renumber layer control labels for checked (visible) layers only
+            var checked=[];
+            allSpans.forEach(function(span){
+              var orig=span.getAttribute('data-label-orig');
+              if(!orig) return;
+              var input=span.closest('label').querySelector('input[type="checkbox"]');
+              if(input && input.checked) checked.push({orig:parseInt(orig),span:span});
+            });
+            checked.sort(function(a,b){return a.orig-b.orig;});
+            checked.forEach(function(c,i){
+              c.span.textContent=' '+(i+1)+'. '+c.span.getAttribute('data-label-base');
+            });
+          }
+          {{this._map_var}}.on('overlayadd overlayremove',function(){
+            setTimeout(renumber,50);
+          });
+        })();
+        {% endmacro %}
+    """)
+
+    def __init__(self, map_var):
+        super().__init__()
+        self._map_var = map_var
 
 
 st.set_page_config(layout="wide")
@@ -176,6 +235,16 @@ def _add_tile_layers(m):
         max_native_zoom=19,
     ).add_to(m)
     folium.LayerControl(position="topright", collapsed=False).add_to(m)
+    map_var = m.get_name()
+    m.get_root().header.add_child(folium.Element(
+        "<style>"
+        ".leaflet-control-layers-list {"
+        "  max-height: 40vh;"
+        "  overflow-y: auto;"
+        "}"
+        "</style>"
+    ))
+    _RenumberButton(map_var).add_to(m)
 
 
 def build_map_from_image_coords(coords, default_location=(34.052235, -118.243683)):
@@ -187,18 +256,33 @@ def build_map_from_image_coords(coords, default_location=(34.052235, -118.243683
     else:
         m = folium.Map(location=default_location, zoom_start=13, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR, max_zoom=21)
 
-    for filepath, lat, lon in coords:
+    for idx, (filepath, lat, lon) in enumerate(coords, start=1):
         file_url  = f"file://{filepath.replace(chr(92), '/')}"
         link_html = f'<a href="{file_url}" target="_blank">{os.path.basename(filepath)}</a>'
         thumb     = image_thumbnail_html(filepath)
         popup_html = f"<html><body>{link_html}<br>{thumb}</body></html>"
         iframe     = folium.IFrame(popup_html, width=200, height=200)
+        fg = folium.FeatureGroup(name=f"{idx}. {os.path.basename(filepath)}", show=True)
+        hover_html = (
+            f'<div style="font-family:sans-serif;font-size:12px;max-width:160px">'
+            f'<b>{idx}. {os.path.basename(filepath)}</b><br>{thumb}'
+            f'</div>'
+        )
         folium.Marker(
             [lat, lon],
             popup=folium.Popup(iframe, max_width=220),
-            tooltip=os.path.basename(filepath),
-            icon=folium.Icon(color="red", icon="camera", prefix="fa"),
-        ).add_to(m)
+            tooltip=folium.Tooltip(hover_html, sticky=True),
+            icon=folium.DivIcon(
+                html=f'<div data-pin-idx="{idx}" style="'
+                     'background:crimson;color:white;font-weight:bold;font-size:12px;'
+                     'width:26px;height:26px;line-height:26px;text-align:center;'
+                     'border-radius:50%;border:2px solid white;'
+                     f'box-shadow:0 1px 3px rgba(0,0,0,.5)">{idx}</div>',
+                icon_size=(26, 26),
+                icon_anchor=(13, 13),
+            ),
+        ).add_to(fg)
+        fg.add_to(m)
 
     _add_tile_layers(m)
     return m
@@ -213,14 +297,30 @@ def build_map_from_kml_features(features):
     else:
         m = folium.Map(location=[20, 0], zoom_start=2, tiles=SATELLITE_TILES, attr=SATELLITE_ATTR, max_zoom=21)
 
-    for feat in features:
+    for idx, feat in enumerate(features, start=1):
         iframe = folium.IFrame(feat["description"] or feat["name"], width=300, height=200)
+        fg = folium.FeatureGroup(name=f"{idx}. {feat['name']}", show=True)
+        hover_html = (
+            f'<div style="font-family:sans-serif;font-size:12px;max-width:220px">'
+            f'<b>{idx}. {feat["name"]}</b>'
+            + (f'<hr style="margin:4px 0">{feat["description"]}' if feat["description"] else '')
+            + '</div>'
+        )
         folium.Marker(
             [feat["lat"], feat["lon"]],
             popup=folium.Popup(iframe, max_width=400),
-            tooltip=feat["name"],
-            icon=folium.Icon(color="red", icon="camera", prefix="fa"),
-        ).add_to(m)
+            tooltip=folium.Tooltip(hover_html, sticky=True),
+            icon=folium.DivIcon(
+                html=f'<div data-pin-idx="{idx}" style="'
+                     'background:crimson;color:white;font-weight:bold;font-size:12px;'
+                     'width:26px;height:26px;line-height:26px;text-align:center;'
+                     'border-radius:50%;border:2px solid white;'
+                     f'box-shadow:0 1px 3px rgba(0,0,0,.5)">{idx}</div>',
+                icon_size=(26, 26),
+                icon_anchor=(13, 13),
+            ),
+        ).add_to(fg)
+        fg.add_to(m)
 
     _add_tile_layers(m)
     return m
@@ -262,8 +362,6 @@ with tab1:
 
             with st.spinner("Scanning images for GPS data…"):
                 st.session_state["img_coords"] = get_all_image_coords(scan_path)
-                # Store thumbnails from temp dir as base64 before cleanup
-                # (filepaths remain valid until end of request when tmp_dir is cleaned)
         finally:
             # Don't delete yet — filepaths are still needed for map rendering below
             # Store tmp_dir in session so we can clean it up on next run
@@ -277,6 +375,20 @@ with tab1:
         coords = st.session_state["img_coords"]
         st.write(f"Found **{len(coords)}** image(s) with GPS data.")
         if coords:
+            pin_df = pd.DataFrame([
+                {"#": i + 1, "File": os.path.basename(fp), "Latitude": round(lat, 6), "Longitude": round(lon, 6)}
+                for i, (fp, lat, lon) in enumerate(coords)
+            ])
+            st.dataframe(
+                pin_df,
+                column_config={
+                    "Latitude": st.column_config.NumberColumn(format="%.6f"),
+                    "Longitude": st.column_config.NumberColumn(format="%.6f"),
+                },
+                hide_index=True,
+                use_container_width=True,
+            )
+            st.caption("Toggle individual pins using the layer control (top-right of the map).")
             m = build_map_from_image_coords(coords)
             st_folium(m, use_container_width=True, height=800, returned_objects=[])
         else:
@@ -299,6 +411,21 @@ with tab2:
 
         if features:
             st.success(f"Loaded **{len(features)}** placemark(s).")
+
+            pin_df = pd.DataFrame([
+                {"#": i + 1, "Name": f["name"], "Latitude": round(f["lat"], 6), "Longitude": round(f["lon"], 6)}
+                for i, f in enumerate(features)
+            ])
+            st.dataframe(
+                pin_df,
+                column_config={
+                    "Latitude": st.column_config.NumberColumn(format="%.6f"),
+                    "Longitude": st.column_config.NumberColumn(format="%.6f"),
+                },
+                hide_index=True,
+                use_container_width=True,
+            )
+            st.caption("Toggle individual pins using the layer control (top-right of the map).")
             m = build_map_from_kml_features(features)
             st_folium(m, use_container_width=True, height=800, returned_objects=[])
 
