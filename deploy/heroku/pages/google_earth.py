@@ -19,23 +19,11 @@ from jinja2 import Template
 
 
 class _RenumberButton(MacroElement):
-    """Auto-renumbers visible numbered pins and layer control labels when a layer is toggled."""
+    """Auto-renumbers visible numbered pins when a layer is toggled."""
     _template = Template("""
         {% macro script(this, kwargs) %}
         (function(){
           function renumber(){
-            // Lazily tag any untagged label spans (safe to call repeatedly)
-            var allSpans=document.querySelectorAll('.leaflet-control-layers-overlays label span');
-            allSpans.forEach(function(span){
-              if(!span.getAttribute('data-label-orig')){
-                var m=span.textContent.match(/^\s*(\d+)\.\s*([\s\S]*)/);
-                if(m){
-                  span.setAttribute('data-label-orig',m[1]);
-                  span.setAttribute('data-label-base',m[2].trim());
-                }
-              }
-            });
-            // Renumber DivIcon circles
             var pins=[];
             {{this._map_var}}.eachLayer(function(layer){
               if(typeof layer.eachLayer==='function'){
@@ -49,21 +37,9 @@ class _RenumberButton(MacroElement):
             });
             pins.sort(function(a,b){return a.orig-b.orig;});
             pins.forEach(function(p,i){p.div.textContent=i+1;});
-            // Renumber layer control labels for checked (visible) layers only
-            var checked=[];
-            allSpans.forEach(function(span){
-              var orig=span.getAttribute('data-label-orig');
-              if(!orig) return;
-              var input=span.closest('label').querySelector('input[type="checkbox"]');
-              if(input && input.checked) checked.push({orig:parseInt(orig),span:span});
-            });
-            checked.sort(function(a,b){return a.orig-b.orig;});
-            checked.forEach(function(c,i){
-              c.span.textContent=' '+(i+1)+'. '+c.span.getAttribute('data-label-base');
-            });
           }
-          {{this._map_var}}.on('overlayadd overlayremove',function(){
-            setTimeout(renumber,50);
+          {{this._map_var}}.on('overlayadd overlayremove', function(){
+            setTimeout(renumber, 50);
           });
         })();
         {% endmacro %}
