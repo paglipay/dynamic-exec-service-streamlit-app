@@ -6,6 +6,9 @@ import shutil
 import zipfile
 import xml.etree.ElementTree as ET
 from io import BytesIO
+import copy
+import math
+from datetime import datetime
 
 import pandas as pd
 import requests
@@ -301,6 +304,224 @@ def parse_kml(kml_text, slack_token=None):
     return features
 
 
+# ── Visio XML helpers (Camera Grid tab) ──────────────────────────────────────
+
+_VISIO_NS = "http://schemas.microsoft.com/office/visio/2012/main"
+_RELS_NS  = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+ET.register_namespace("",  _VISIO_NS)
+ET.register_namespace("r", _RELS_NS)
+
+
+def _vtag(name):
+    return f"{{{_VISIO_NS}}}{name}"
+
+
+def _strip_redundant_xmlns(xml_str):
+    xml_str = (
+        xml_str
+        .replace(f'xmlns:ns0="{_VISIO_NS}"', f'xmlns="{_VISIO_NS}"')
+        .replace(f'xmlns:ns1="{_RELS_NS}"',  f'xmlns:r="{_RELS_NS}"')
+    )
+    xml_str = re.sub(r'<(/?)ns0:', r'<\1', xml_str)
+    xml_str = xml_str.replace(" ns0:", " ").replace(" ns1:", " r:")
+    root_close = xml_str.index(">") + 1
+    return xml_str[:root_close] + re.sub(
+        r'\s+xmlns(?::\w+)?="[^"]*"', "", xml_str[root_close:]
+    )
+
+
+def _vget_cell(elem, name):
+    for cell in elem.iter(_vtag("Cell")):
+        if cell.get("N") == name:
+            v = cell.get("V")
+            if v is not None:
+                try:
+                    return float(v)
+                except ValueError:
+                    pass
+    return None
+
+
+def _vset_cell(elem, name, value):
+    for cell in elem:
+        if cell.tag == _vtag("Cell") and cell.get("N") == name:
+            cell.set("V", str(value))
+            cell.attrib.pop("F", None)
+            return
+    c = ET.SubElement(elem, _vtag("Cell"))
+    c.set("N", name)
+    c.set("V", str(value))
+
+
+def _vset_prop(elem, prop_name, value):
+    sec = None
+    for s in elem.findall(_vtag("Section")):
+        if s.get("N") == "Property":
+            sec = s
+            break
+    if sec is None:
+        sec = ET.SubElement(elem, _vtag("Section"))
+        sec.set("N", "Property")
+    row = None
+    for r in sec.findall(_vtag("Row")):
+        if r.get("N") == prop_name:
+            row = r
+            break
+    if row is None:
+        row = ET.SubElement(sec, _vtag("Row"))
+        row.set("N", prop_name)
+    for cell in row.findall(_vtag("Cell")):
+        if cell.get("N") == "Value":
+            cell.set("V", str(value))
+            cell.attrib.pop("F", None)
+            return
+    c = ET.SubElement(row, _vtag("Cell"))
+    c.set("N", "Value")
+    c.set("V", str(value))
+
+
+def _vset_label(group_elem, cam_id):
+    sub_container = group_elem.find(_vtag("Shapes"))
+    if sub_container is None:
+        return
+    for sub in list(sub_container):
+        sub_name = sub.get("NameU") or sub.get("Name") or ""
+        if sub_name != "label":
+            continue
+        for sec in list(sub.findall(_vtag("Section"))):
+            if sec.get("N") == "Field":
+                sub.remove(sec)
+        text_elem = sub.find(_vtag("Text"))
+        if text_elem is not None:
+            sub.remove(text_elem)
+        text_elem = ET.SubElement(sub, _vtag("Text"))
+        text_elem.text = str(cam_id)
+
+
+def _vis_is_camera(shape_elem):
+    if shape_elem.get("Type") != "Group":
+        return False
+    for sec in shape_elem.findall(_vtag("Section")):
+        if sec.get("N") != "Property":
+            continue
+        for row in sec.findall(_vtag("Row")):
+            if row.get("N") == "CamID":
+                return True
+    return False
+
+
+def _vmax_shape_id(tree):
+    max_id = 0
+    for shape in tree.iter(_vtag("Shape")):
+        try:
+            sid = int(shape.get("ID", 0))
+            if sid > max_id:
+                max_id = sid
+        except ValueError:
+            pass
+    return max_id
+
+
+def _vreassign_sub_ids(elem, next_id):
+    sub_container = elem.find(_vtag("Shapes"))
+    if sub_container is None:
+        return next_id
+    for sub in sub_container:
+        if sub.tag == _vtag("Shape"):
+            sub.set("ID", str(next_id))
+            next_id += 1
+            next_id = _vreassign_sub_ids(sub, next_id)
+    return next_id
+
+
+def _vbuild_grid(tree, n_cameras, source_shape_id=61, cols=4, x_spacing=1000.0, y_spacing=1000.0):
+    """Duplicate source_shape_id into a grid of exactly n_cameras shapes (ceil(n/cols) rows × cols cols)."""
+    shapes_container = tree.find(_vtag("Shapes"))
+    if shapes_container is None:
+        raise RuntimeError("No <Shapes> container found on this page.")
+    source_elem = None
+    for s in shapes_container:
+        if s.get("ID") == str(source_shape_id):
+            source_elem = s
+            break
+    if source_elem is None:
+        raise ValueError(
+            f"Shape ID {source_shape_id} not found in the template. "
+            "Check the Source Shape ID in Advanced Options."
+        )
+    origin_x = _vget_cell(source_elem, "PinX") or 0.0
+    origin_y = _vget_cell(source_elem, "PinY") or 0.0
+    width  = _vget_cell(source_elem, "Width")
+    height = _vget_cell(source_elem, "Height")
+    step_x = width  if (x_spacing == 0.0 and width)  else x_spacing
+    step_y = height if (y_spacing == 0.0 and height) else y_spacing
+    is_camera = _vis_is_camera(source_elem)
+    rows = math.ceil(n_cameras / cols)
+    cam_counter = 1
+    next_id = _vmax_shape_id(tree) + 1
+    placed = 0
+    for row in range(rows):
+        for col in range(cols):
+            if placed >= n_cameras:
+                break
+            new_elem = copy.deepcopy(source_elem)
+            new_elem.set("ID",    str(next_id))
+            new_elem.set("Name",  f"GridCopy.{next_id}")
+            new_elem.set("NameU", f"GridCopy.{next_id}")
+            next_id += 1
+            next_id = _vreassign_sub_ids(new_elem, next_id)
+            pin_x = origin_x + col * step_x
+            pin_y = origin_y - row * step_y
+            _vset_cell(new_elem, "PinX", pin_x)
+            _vset_cell(new_elem, "PinY", pin_y)
+            if is_camera:
+                _vset_prop(new_elem, "CamID", cam_counter)
+                _vset_label(new_elem, cam_counter)
+                cam_counter += 1
+            shapes_container.append(new_elem)
+            placed += 1
+
+
+def _vapply_replacements(tree, replacements):
+    """Replace tokens in every <Text> element on the Visio page."""
+    changed = 0
+    for text_elem in tree.iter(_vtag("Text")):
+        for node in text_elem.iter():
+            for attr in ("text", "tail"):
+                original = getattr(node, attr)
+                if not original:
+                    continue
+                updated = original
+                for old, new in replacements:
+                    updated = updated.replace(old, new)
+                if updated != original:
+                    setattr(node, attr, updated)
+                    changed += 1
+    return changed
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_r1_schools():
+    """Load all records from the r1_data MongoDB collection."""
+    mongo_uri = os.environ.get("MONGODB_URI", "")
+    if not mongo_uri:
+        return []
+    try:
+        from pymongo import MongoClient
+        from urllib.parse import urlparse, unquote
+        parsed  = urlparse(mongo_uri)
+        db_name = unquote((parsed.path or "").lstrip("/")).split("?")[0].strip() or "app_data"
+        client  = MongoClient(mongo_uri, serverSelectionTimeoutMS=4000)
+        cursor  = client[db_name]["r1_data"].find(
+            {},
+            {"_id": 0, "School Name": 1, "Site": 1, "Loc Code": 1,
+             "Address": 1, "City": 1, "Contractor": 1},
+        ).sort("School Name", 1)
+        return [dict(doc) for doc in cursor]
+    except Exception:
+        return []
+
+
 # ── map builders ─────────────────────────────────────────────────────────────
 
 SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
@@ -428,7 +649,7 @@ def build_map_from_kml_features(features):
 
 st.title("📍 Image GPS / KML Viewer")
 
-tab1, tab2 = st.tabs(["🖼️ Image Folder (EXIF GPS)", "🗺️ KML Upload"])
+tab1, tab2, tab3 = st.tabs(["🖼️ Image Folder (EXIF GPS)", "🗺️ KML Upload", "📐 Visio Camera Grid"])
 
 # ── Tab 1: image folder / zip upload ─────────────────────────────────────────
 with tab1:
@@ -667,3 +888,166 @@ with tab2:
                     st.write(f"**{f['name']}** — lat {f['lat']:.5f}, lon {f['lon']:.5f}")
         else:
             st.error("No Point placemarks found in the KML file.")
+
+# ── Tab 3: Visio Camera Grid ──────────────────────────────────────────────────
+with tab3:
+    st.markdown("Generate a **Visio Camera Grid** `.vsdx` for the cameras selected in the Image Folder tab.")
+
+    # Camera count from pin selection
+    include_flags = st.session_state.get("img_include", [])
+    n_selected = sum(1 for v in include_flags if v)
+
+    if not include_flags:
+        st.info("Scan images in the **Image Folder** tab and select pins to pre-fill the camera count.")
+
+    camera_count_input = st.number_input(
+        "Camera count",
+        value=max(1, n_selected),
+        min_value=1,
+        step=1,
+        key="visio_cam_count",
+        help="Defaults to the number of pins selected in Tab 1. Edit to override.",
+    )
+    if n_selected > 0:
+        st.caption(
+            f"\u2139\ufe0f {n_selected} pin(s) selected in Tab 1. "
+            f"Grid: {math.ceil(int(camera_count_input) / 4)} row(s) \u00d7 4 col(s)"
+        )
+
+    # School selector
+    st.divider()
+    schools = _load_r1_schools()
+    if not schools:
+        st.warning("No schools loaded. Ensure `MONGODB_URI` is set and the `r1_data` collection is accessible.")
+
+    school_options = [
+        f"{s.get('School Name') or s.get('Site') or 'Unknown'} ({s.get('Loc Code', '')})"
+        for s in schools
+    ]
+    selected_label = st.selectbox(
+        "School",
+        ["— select —"] + school_options,
+        key="visio_school_select",
+    )
+    selected_school = None
+    if selected_label != "— select —" and schools:
+        idx = school_options.index(selected_label)
+        selected_school = schools[idx]
+
+    if selected_school:
+        with st.expander("School details"):
+            st.json({k: str(v) for k, v in selected_school.items()})
+
+    # Template upload
+    st.divider()
+    template_file = st.file_uploader(
+        "Upload template .vsdx",
+        type=["vsdx"],
+        key="visio_template_upload",
+        help="The camera group shape will be duplicated to fill the grid.",
+    )
+
+    # Advanced options
+    with st.expander("Advanced options"):
+        source_shape_id = st.number_input(
+            "Source shape ID (camera group to duplicate)",
+            value=61,
+            min_value=1,
+            step=1,
+            key="visio_source_id",
+            help="Shape ID of the camera group in the template. Default is 61 for Template - Camera Layout - v1.3.vsdx.",
+        )
+        x_spacing = st.number_input("X spacing (Visio units)", value=1000.0, step=100.0, key="visio_xspacing")
+        y_spacing = st.number_input("Y spacing (Visio units)", value=1000.0, step=100.0, key="visio_yspacing")
+
+    # Generate
+    st.divider()
+    can_generate = (
+        int(camera_count_input) > 0
+        and selected_school is not None
+        and template_file is not None
+    )
+    if st.button("📐 Generate Visio", disabled=not can_generate, key="visio_generate_btn"):
+        _gen_error = None
+        _gen_bytes = None
+        _gen_name  = None
+        try:
+            with st.spinner("Building Visio file\u2026"):
+                vsdx_bytes = template_file.read()
+
+                _contents = {}
+                _info_list = []
+                with zipfile.ZipFile(BytesIO(vsdx_bytes), "r") as _zf:
+                    _contents  = {n: _zf.read(n) for n in _zf.namelist()}
+                    _info_list = _zf.infolist()
+
+                _PAGE_KEY = "visio/pages/page1.xml"
+                if _PAGE_KEY not in _contents:
+                    _avail = [k for k in _contents if k.startswith("visio/pages/page")]
+                    raise FileNotFoundError(f"Page 1 not found in VSDX. Available: {_avail}")
+
+                _tree = ET.fromstring(_contents[_PAGE_KEY])
+
+                _vbuild_grid(
+                    _tree,
+                    n_cameras=int(camera_count_input),
+                    source_shape_id=int(source_shape_id),
+                    cols=4,
+                    x_spacing=float(x_spacing),
+                    y_spacing=float(y_spacing),
+                )
+
+                _school_name = str(selected_school.get("School Name") or selected_school.get("Site") or "")
+                _loc_raw     = selected_school.get("Loc Code", "")
+                _loc_code    = (
+                    str(int(_loc_raw))
+                    if isinstance(_loc_raw, float) and _loc_raw == int(_loc_raw)
+                    else str(_loc_raw).strip()
+                )
+                _address    = str(selected_school.get("Address") or "").strip()
+                _contractor = str(selected_school.get("Contractor") or "").strip()
+                _today      = datetime.now().strftime("%m/%d/%y")
+                _replacements = [
+                    ("<SCHOOL_NAME>",   _school_name),
+                    ("<LOCATION_CODE>", _loc_code),
+                    ("<ADDRESS>",       _address),
+                    ("<VENDOR>",        _contractor),
+                    ("<DATE>",          _today),
+                ]
+                _vapply_replacements(_tree, _replacements)
+
+                _xml_body = ET.tostring(_tree, encoding="unicode")
+                _xml_body = _strip_redundant_xmlns(_xml_body)
+                _contents[_PAGE_KEY] = (
+                    "<?xml version='1.0' encoding='utf-8' ?>\r\n" + _xml_body
+                ).encode("utf-8")
+
+                _out_buf = BytesIO()
+                _info_by_name = {i.filename: i for i in _info_list}
+                with zipfile.ZipFile(_out_buf, "w", zipfile.ZIP_DEFLATED) as _zout:
+                    for _fname, _fdata in _contents.items():
+                        _zinfo = _info_by_name.get(_fname)
+                        _zout.writestr(_zinfo if _zinfo else _fname, _fdata)
+
+                _safe     = re.sub(r'[<>:"/\\|?*]', "_", _school_name).strip() or "output"
+                _gen_name  = f"{_safe} - Camera Layout.vsdx"
+                _gen_bytes = _out_buf.getvalue()
+
+        except Exception as _exc:
+            _gen_error = str(_exc)
+
+        if _gen_error:
+            st.error(f"Error generating Visio file: {_gen_error}")
+        else:
+            st.session_state["visio_output"]   = _gen_bytes
+            st.session_state["visio_filename"] = _gen_name
+            st.success(f"Generated **{_gen_name}** with {int(camera_count_input)} camera(s).")
+
+    if st.session_state.get("visio_output"):
+        st.download_button(
+            label="\u2b07\ufe0f Download .vsdx",
+            data=st.session_state["visio_output"],
+            file_name=st.session_state.get("visio_filename", "output.vsdx"),
+            mime="application/vnd.ms-visio.drawing",
+            key="visio_download_btn",
+        )
