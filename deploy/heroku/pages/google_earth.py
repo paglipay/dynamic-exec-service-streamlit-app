@@ -522,6 +522,172 @@ def _load_r1_schools():
         return []
 
 
+# ── Satellite tile capture (for Visio background) ─────────────────────────────
+
+_ARCGIS_TILE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+_MAX_TILES   = 144   # 12×12 safety cap
+_GPS_ZOOM    = 19    # zoom level used for both tile capture and GPS→Visio mapping
+
+
+def _latlon_to_tile(lat, lon, zoom):
+    """Return tile (x, y) for a lat/lon at the given zoom level."""
+    lat_rad = math.radians(lat)
+    n = 2 ** zoom
+    x = int((lon + 180.0) / 360.0 * n)
+    y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+    return x, y
+
+
+def _latlon_to_tile_f(lat, lon, zoom):
+    """Float-precision tile coordinates (Mercator) — used for sub-tile position mapping."""
+    lat_rad = math.radians(lat)
+    n = 2 ** zoom
+    x = (lon + 180.0) / 360.0 * n
+    y = (1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n
+    return x, y
+
+
+def _fetch_satellite_image(coords, zoom=19, padding_tiles=2):
+    """
+    Stitch ArcGIS World Imagery tiles covering the bounding box of coords.
+    coords: list of (filepath, lat, lon)
+    Returns a PNG bytes object, or None if coords is empty or tile count exceeds _MAX_TILES.
+    """
+    lats = [c[1] for c in coords]
+    lons = [c[2] for c in coords]
+    if not lats:
+        return None
+
+    # Tile range for the bounding box (NW → SE)
+    x_min, y_min = _latlon_to_tile(max(lats), min(lons), zoom)
+    x_max, y_max = _latlon_to_tile(min(lats), max(lons), zoom)
+
+    # Add padding
+    x_min = max(0, x_min - padding_tiles)
+    y_min = max(0, y_min - padding_tiles)
+    x_max = x_max + padding_tiles
+    y_max = y_max + padding_tiles
+
+    tile_w = x_max - x_min + 1
+    tile_h = y_max - y_min + 1
+    if tile_w * tile_h > _MAX_TILES:
+        return None  # too many tiles — skip silently
+
+    canvas = Image.new("RGB", (tile_w * 256, tile_h * 256))
+    for tx in range(x_min, x_max + 1):
+        for ty in range(y_min, y_max + 1):
+            url = _ARCGIS_TILE.format(z=zoom, y=ty, x=tx)
+            try:
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    tile_img = Image.open(BytesIO(resp.content)).convert("RGB")
+                    canvas.paste(tile_img, ((tx - x_min) * 256, (ty - y_min) * 256))
+            except Exception:
+                pass  # leave that tile black, continue
+
+    buf = BytesIO()
+    canvas.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _get_page_dimensions(tree):
+    """Read PageWidth and PageHeight (inches) from the Visio page XML."""
+    page_sheet = tree.find(_vtag("PageSheet"))
+    w = h = None
+    if page_sheet is not None:
+        for cell in page_sheet.iter(_vtag("Cell")):
+            n = cell.get("N")
+            try:
+                if n == "PageWidth":
+                    w = float(cell.get("V", 0))
+                elif n == "PageHeight":
+                    h = float(cell.get("V", 0))
+            except (TypeError, ValueError):
+                pass
+    return w or 11.0, h or 8.5
+
+
+def _vplace_cameras_by_gps(tree, coords, source_shape_id=61, margin_frac=0.08):
+    """
+    Place one camera shape per (filepath, lat, lon) entry in coords, positioned
+    on the Visio page using Mercator-correct GPS-to-page mapping.
+
+    The bounding box of the coords (plus padding) determines the mapping so the
+    layout matches the satellite image captured by _fetch_satellite_image.
+
+    margin_frac: fraction of page dimension used as margin on each side (default 8%).
+    """
+    shapes_container = tree.find(_vtag("Shapes"))
+    if shapes_container is None:
+        raise RuntimeError("No <Shapes> container found on this page.")
+
+    source_elem = None
+    for s in shapes_container:
+        if s.get("ID") == str(source_shape_id):
+            source_elem = s
+            break
+    if source_elem is None:
+        raise ValueError(
+            f"Shape ID {source_shape_id} not found in the template. "
+            "Check the Source Shape ID in Advanced Options."
+        )
+
+    page_w, page_h = _get_page_dimensions(tree)
+    margin_x = page_w * margin_frac
+    margin_y = page_h * margin_frac
+    usable_w = page_w - 2 * margin_x
+    usable_h = page_h - 2 * margin_y
+
+    # Compute Mercator tile coordinates for every pin (float precision)
+    tile_coords = [_latlon_to_tile_f(lat, lon, _GPS_ZOOM) for _, lat, lon in coords]
+    tx_all = [tc[0] for tc in tile_coords]
+    ty_all = [tc[1] for tc in tile_coords]
+
+    tx_min, tx_max = min(tx_all), max(tx_all)
+    ty_min, ty_max = min(ty_all), max(ty_all)
+
+    # Add the same 2-tile padding used when capturing the satellite image
+    padding = 2.0
+    tx_min -= padding
+    tx_max += padding
+    ty_min -= padding
+    ty_max += padding
+
+    span_x = tx_max - tx_min or 1.0
+    span_y = ty_max - ty_min or 1.0
+
+    is_camera = _vis_is_camera(source_elem)
+    next_id     = _vmax_shape_id(tree) + 1
+    cam_counter = 1
+
+    for idx, (tc, (_, lat, lon)) in enumerate(zip(tile_coords, coords)):
+        new_elem = copy.deepcopy(source_elem)
+        new_elem.set("ID",    str(next_id))
+        new_elem.set("Name",  f"GpsCam.{next_id}")
+        new_elem.set("NameU", f"GpsCam.{next_id}")
+        next_id += 1
+        next_id = _vreassign_sub_ids(new_elem, next_id)
+
+        # frac_x: 0=west edge, 1=east edge
+        # frac_y: 0=north edge, 1=south edge (tile Y increases southward)
+        frac_x = (tc[0] - tx_min) / span_x
+        frac_y = (tc[1] - ty_min) / span_y
+
+        # Visio origin is bottom-left; north = top = higher Y
+        pin_x = margin_x + frac_x * usable_w
+        pin_y = margin_y + (1.0 - frac_y) * usable_h
+
+        _vset_cell(new_elem, "PinX", pin_x)
+        _vset_cell(new_elem, "PinY", pin_y)
+
+        if is_camera:
+            _vset_prop(new_elem, "CamID", cam_counter)
+            _vset_label(new_elem, cam_counter)
+            cam_counter += 1
+
+        shapes_container.append(new_elem)
+
+
 # ── map builders ─────────────────────────────────────────────────────────────
 
 SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
@@ -988,14 +1154,32 @@ with tab3:
 
                 _tree = ET.fromstring(_contents[_PAGE_KEY])
 
-                _vbuild_grid(
-                    _tree,
-                    n_cameras=int(camera_count_input),
-                    source_shape_id=int(source_shape_id),
-                    cols=4,
-                    x_spacing=float(x_spacing),
-                    y_spacing=float(y_spacing),
+                # ── Resolve selected coords early — used for both placement and satellite image
+                _all_coords  = st.session_state.get("img_coords", [])
+                _inc_flags   = st.session_state.get("img_include", [])
+                _sel_coords  = (
+                    [c for c, inc in zip(_all_coords, _inc_flags) if inc]
+                    if _all_coords and _inc_flags
+                    else _all_coords
                 )
+
+                if _sel_coords:
+                    # GPS-based placement — one camera per selected pin
+                    _vplace_cameras_by_gps(
+                        _tree,
+                        coords=_sel_coords,
+                        source_shape_id=int(source_shape_id),
+                    )
+                else:
+                    # No GPS data — fall back to uniform grid
+                    _vbuild_grid(
+                        _tree,
+                        n_cameras=int(camera_count_input),
+                        source_shape_id=int(source_shape_id),
+                        cols=4,
+                        x_spacing=float(x_spacing),
+                        y_spacing=float(y_spacing),
+                    )
 
                 _school_name = str(selected_school.get("School Name") or selected_school.get("Site") or "")
                 _loc_raw     = selected_school.get("Loc Code", "")
@@ -1015,6 +1199,13 @@ with tab3:
                     ("<DATE>",          _today),
                 ]
                 _vapply_replacements(_tree, _replacements)
+
+                # ── Satellite background image ────────────────────────────────
+                if _sel_coords:
+                    _sat_png = _fetch_satellite_image(_sel_coords, zoom=19, padding_tiles=2)
+                    if _sat_png and "visio/media/image3.png" in _contents:
+                        _contents["visio/media/image3.png"] = _sat_png
+                # ─────────────────────────────────────────────────────────────
 
                 _xml_body = ET.tostring(_tree, encoding="unicode")
                 _xml_body = _strip_redundant_xmlns(_xml_body)
