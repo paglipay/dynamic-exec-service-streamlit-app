@@ -978,7 +978,7 @@ with tab1:
                     st.session_state["img_include"]   = [True] * len(trimmed)
                     st.session_state["img_coord_key"] = tuple(os.path.basename(fp) for fp, _, __ in trimmed)
                     st.session_state.pop("pin_editor", None)
-                    st.session_state["pin_list_input"] = ""
+                    st.session_state.pop("pin_list_input", None)
                     st.rerun()
             # ─────────────────────────────────────────────────────────────────
 
