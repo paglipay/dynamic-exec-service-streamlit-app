@@ -345,14 +345,23 @@ def _vget_cell(elem, name):
 
 
 def _vset_cell(elem, name, value):
-    for cell in elem:
-        if cell.tag == _vtag("Cell") and cell.get("N") == name:
-            cell.set("V", str(value))
-            cell.attrib.pop("F", None)
-            return
-    c = ET.SubElement(elem, _vtag("Cell"))
-    c.set("N", name)
-    c.set("V", str(value))
+    # Search the element's subtree for an existing Cell, but never recurse into
+    # nested Shape/Shapes elements so we don't accidentally modify sub-shape geometry.
+    def _find_set(node):
+        for child in node:
+            if child.tag == _vtag("Cell") and child.get("N") == name:
+                child.set("V", str(value))
+                child.attrib.pop("F", None)
+                return True
+            if child.tag not in (_vtag("Shape"), _vtag("Shapes")):
+                if _find_set(child):
+                    return True
+        return False
+
+    if not _find_set(elem):
+        c = ET.SubElement(elem, _vtag("Cell"))
+        c.set("N", name)
+        c.set("V", str(value))
 
 
 def _vset_prop(elem, prop_name, value):
@@ -658,10 +667,21 @@ def _vplace_cameras_by_gps(tree, coords, source_shape_id=61, margin_frac=0.08):
         )
 
     page_w, page_h = _get_page_dimensions(tree)
-    margin_x = page_w * margin_frac
-    margin_y = page_h * margin_frac
-    usable_w = page_w - 2 * margin_x
-    usable_h = page_h - 2 * margin_y
+
+    # Calibrate: if the source shape's PinX is far outside normal inch-based page bounds,
+    # the template likely uses a scaled coordinate system — derive the scale factor so
+    # GPS positions map into the same unit space.
+    src_pin_x = _vget_cell(source_elem, "PinX") or 0.0
+    src_pin_y = _vget_cell(source_elem, "PinY") or 0.0
+    scale = 1.0
+    if page_w > 0 and src_pin_x > page_w * 2:
+        # Source shape is well outside inch-based page → compute scale from its position
+        scale = src_pin_x / (page_w / 2.0)  # assume source is near page center
+
+    margin_x = page_w * margin_frac * scale
+    margin_y = page_h * margin_frac * scale
+    usable_w = page_w * scale - 2 * margin_x
+    usable_h = page_h * scale - 2 * margin_y
 
     # Compute Mercator tile coordinates for every pin (float precision)
     tile_coords = [_latlon_to_tile_f(lat, lon, _GPS_ZOOM) for _, lat, lon in coords]
@@ -1111,6 +1131,10 @@ with tab3:
     if not include_flags:
         st.info("Scan images in the **Image Folder** tab and select pins to pre-fill the camera count.")
 
+    # Keep the widget in sync with the current selection so stale values don't silently override
+    if n_selected > 0:
+        st.session_state["visio_cam_count"] = n_selected
+
     camera_count_input = st.number_input(
         "Camera count",
         value=max(1, n_selected),
@@ -1122,7 +1146,7 @@ with tab3:
     if n_selected > 0:
         st.caption(
             f"\u2139\ufe0f {n_selected} pin(s) selected in Tab 1. "
-            f"Grid: {math.ceil(int(camera_count_input) / 4)} row(s) \u00d7 4 col(s)"
+            f"GPS placement will be used \u2014 grid settings are ignored."
         )
 
     # School selector
@@ -1205,11 +1229,12 @@ with tab3:
                 _inc_flags   = st.session_state.get("img_include", [])
                 _sel_coords  = (
                     [c for c, inc in zip(_all_coords, _inc_flags) if inc]
-                    if _all_coords and _inc_flags
+                    if _all_coords and any(_inc_flags)
                     else _all_coords
                 )
 
                 if _sel_coords:
+                    st.write(f"📍 Placing **{len(_sel_coords)}** camera(s) from GPS coordinates.")
                     # GPS-based placement — one camera per selected pin
                     _vplace_cameras_by_gps(
                         _tree,
@@ -1217,6 +1242,7 @@ with tab3:
                         source_shape_id=int(source_shape_id),
                     )
                 else:
+                    st.write(f"📐 No GPS pins selected — using uniform grid of **{int(camera_count_input)}** camera(s).")
                     # No GPS data — fall back to uniform grid
                     _vbuild_grid(
                         _tree,
