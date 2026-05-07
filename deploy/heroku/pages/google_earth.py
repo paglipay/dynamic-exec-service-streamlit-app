@@ -1131,6 +1131,10 @@ with tab3:
     if not include_flags:
         st.info("Scan images in the **Image Folder** tab and select pins to pre-fill the camera count.")
 
+    # Keep the widget in sync with the current selection so stale values don't silently override
+    if n_selected > 0:
+        st.session_state["visio_cam_count"] = n_selected
+
     camera_count_input = st.number_input(
         "Camera count",
         value=max(1, n_selected),
@@ -1142,7 +1146,7 @@ with tab3:
     if n_selected > 0:
         st.caption(
             f"\u2139\ufe0f {n_selected} pin(s) selected in Tab 1. "
-            f"Grid: {math.ceil(int(camera_count_input) / 4)} row(s) \u00d7 4 col(s)"
+            f"GPS placement will be used \u2014 grid settings are ignored."
         )
 
     # School selector
@@ -1225,11 +1229,12 @@ with tab3:
                 _inc_flags   = st.session_state.get("img_include", [])
                 _sel_coords  = (
                     [c for c, inc in zip(_all_coords, _inc_flags) if inc]
-                    if _all_coords and _inc_flags
+                    if _all_coords and any(_inc_flags)
                     else _all_coords
                 )
 
                 if _sel_coords:
+                    st.write(f"📍 Placing **{len(_sel_coords)}** camera(s) from GPS coordinates.")
                     # GPS-based placement — one camera per selected pin
                     _vplace_cameras_by_gps(
                         _tree,
@@ -1237,6 +1242,7 @@ with tab3:
                         source_shape_id=int(source_shape_id),
                     )
                 else:
+                    st.write(f"📐 No GPS pins selected — using uniform grid of **{int(camera_count_input)}** camera(s).")
                     # No GPS data — fall back to uniform grid
                     _vbuild_grid(
                         _tree,
