@@ -906,6 +906,9 @@ with tab1:
                 st.session_state["pin_list_input"] = ""
 
             # ── Paste-list input: override checkboxes from map's Get List ─
+            # Clear the input before the widget renders (flag set on previous rerun)
+            if st.session_state.pop("_clear_paste", False):
+                st.session_state["pin_list_input"] = ""
             paste_raw = st.text_input(
                 "Paste list (from map 📋 Get List):",
                 key="pin_list_input",
@@ -920,7 +923,7 @@ with tab1:
                         st.session_state["img_include"]   = [True] * len(trimmed)
                         st.session_state["img_coord_key"] = tuple(os.path.basename(fp) for fp, _, __ in trimmed)
                         st.session_state.pop("pin_editor", None)
-                        st.session_state["pin_list_input"] = ""
+                        st.session_state["_clear_paste"]  = True
                         st.rerun()
                 except ValueError:
                     st.warning("List must be comma-separated numbers, e.g. 1,3,5")
