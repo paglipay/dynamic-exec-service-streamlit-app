@@ -226,21 +226,23 @@ def image_thumbnail_html(filepath, width=120):
         img.thumbnail((150, 150))
         buf = BytesIO()
         img.save(buf, format="JPEG")
+        img.close()
         b64 = base64.b64encode(buf.getvalue()).decode()
         return f'<img src="data:image/jpeg;base64,{b64}" width="{width}">'
     except Exception:
         return "<i>Image preview unavailable</i>"
 
 
-def image_fullsize_html(filepath, max_px=800):
+def image_fullsize_html(filepath, max_px=400):
     """Return an <img> tag with a base64 full-size image (capped at max_px), or an error string."""
     try:
         img = Image.open(filepath)
         img.thumbnail((max_px, max_px))
         buf = BytesIO()
-        img.save(buf, format="JPEG", quality=90)
-        b64 = base64.b64encode(buf.getvalue()).decode()
+        img.save(buf, format="JPEG", quality=85)
         w, h = img.size
+        img.close()
+        b64 = base64.b64encode(buf.getvalue()).decode()
         return f'<img src="data:image/jpeg;base64,{b64}" style="max-width:100%;height:auto" width="{w}" height="{h}">'
     except Exception:
         return "<i>Image preview unavailable</i>"
@@ -603,11 +605,13 @@ def _fetch_satellite_image(coords, zoom=19, padding_tiles=2):
                 if resp.status_code == 200:
                     tile_img = Image.open(BytesIO(resp.content)).convert("RGB")
                     canvas.paste(tile_img, ((tx - x_min) * 256, (ty - y_min) * 256))
+                    tile_img.close()
             except Exception:
                 pass  # leave that tile black, continue
 
     buf = BytesIO()
     canvas.save(buf, format="PNG")
+    canvas.close()
     return buf.getvalue()
 
 
@@ -1158,6 +1162,7 @@ with tab3:
         _gen_error = None
         _gen_bytes = None
         _gen_name  = None
+        st.session_state.pop("visio_output", None)
         try:
             with st.spinner("Building Visio file\u2026"):
                 vsdx_bytes = template_file.read()
@@ -1253,6 +1258,7 @@ with tab3:
                     for _fname, _fdata in _contents.items():
                         _zinfo = _info_by_name.get(_fname)
                         _zout.writestr(_zinfo if _zinfo else _fname, _fdata)
+                del _contents  # free template bytes before storing output
 
                 _safe     = re.sub(r'[<>:"/\\|?*]', "_", _school_name).strip() or "output"
                 _gen_name  = f"{_safe} - Camera Layout.vsdx"
