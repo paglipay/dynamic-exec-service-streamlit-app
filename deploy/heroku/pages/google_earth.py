@@ -847,7 +847,7 @@ with tab1:
     st.markdown("Upload a **ZIP file** containing images, or enter a local folder path.")
 
     uploaded_zip = st.file_uploader(
-        "Upload ZIP of images", type=["zip"], key="zip_uploader",
+        "Upload ZIP of images", type=["zip"], key=f"zip_uploader_{st.session_state.get('zip_upload_gen', 0)}",
         help="ZIP may contain subfolders. Only JPG/JPEG/PNG/TIF/TIFF images are scanned."
     )
 
@@ -875,6 +875,9 @@ with tab1:
                     get_all_image_coords(scan_path),
                     key=lambda r: os.path.basename(r[0]).lower()
                 )
+            # ZIP bytes no longer needed — reset uploader widget to free memory
+            if uploaded_zip is not None:
+                st.session_state["zip_upload_gen"] = st.session_state.get("zip_upload_gen", 0) + 1
         finally:
             # Don't delete yet — filepaths are still needed for map rendering below
             # Store tmp_dir in session so we can clean it up on next run
@@ -961,8 +964,25 @@ with tab1:
             # Persist for next rerun
             st.session_state["img_include"] = edited["Include"].tolist()
 
-            # Build ZIP from checked rows with sequential renamed files
+            # ── Trim unselected pins from memory ─────────────────────────────
             n_zip = int(edited["Include"].sum())
+            n_unchecked = len(coords) - n_zip
+            if n_unchecked > 0 and n_zip > 0:
+                if st.button(
+                    f"✂️ Trim to selection ({n_zip} kept, {n_unchecked} dropped)",
+                    key="trim_pins_btn",
+                    help="Permanently removes unselected pins from memory to free RAM. Cannot be undone without re-scanning.",
+                ):
+                    trimmed = [c for c, inc in zip(coords, st.session_state["img_include"]) if inc]
+                    st.session_state["img_coords"]    = trimmed
+                    st.session_state["img_include"]   = [True] * len(trimmed)
+                    st.session_state["img_coord_key"] = tuple(os.path.basename(fp) for fp, _, __ in trimmed)
+                    st.session_state.pop("pin_editor", None)
+                    st.session_state["pin_list_input"] = ""
+                    st.rerun()
+            # ─────────────────────────────────────────────────────────────────
+
+            # Build ZIP from checked rows with sequential renamed files
             pad_zip = max(2, len(str(n_zip))) if n_zip else 2
             zip_buf = BytesIO()
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
