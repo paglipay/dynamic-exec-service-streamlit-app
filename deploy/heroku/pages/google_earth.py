@@ -526,7 +526,7 @@ def _load_r1_schools():
 
 _ARCGIS_TILE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
 _MAX_TILES   = 144   # 12×12 safety cap
-_GPS_ZOOM    = 19    # zoom level used for both tile capture and GPS→Visio mapping
+_GPS_ZOOM    = 20    # zoom level used for both tile capture and GPS→Visio mapping
 
 
 def _latlon_to_tile(lat, lon, zoom):
