@@ -547,6 +547,27 @@ def _latlon_to_tile_f(lat, lon, zoom):
     return x, y
 
 
+def _geocode_address(address, city=""):
+    """Geocode an address using Nominatim. Returns (lat, lon) or (None, None)."""
+    query = f"{address}, {city}".strip(", ") if city else address
+    if not query:
+        return None, None
+    try:
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": query, "format": "json", "limit": 1},
+            headers={"User-Agent": "visio-camera-layout-tool/1.0"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        results = resp.json()
+        if results:
+            return float(results[0]["lat"]), float(results[0]["lon"])
+    except Exception:
+        pass
+    return None, None
+
+
 def _fetch_satellite_image(coords, zoom=19, padding_tiles=2):
     """
     Stitch ArcGIS World Imagery tiles covering the bounding box of coords.
@@ -1202,9 +1223,22 @@ with tab3:
 
                 # ── Satellite background image ────────────────────────────────
                 if _sel_coords:
-                    _sat_png = _fetch_satellite_image(_sel_coords, zoom=19, padding_tiles=2)
+                    _sat_png = _fetch_satellite_image(_sel_coords, zoom=_GPS_ZOOM, padding_tiles=2)
                     if _sat_png and "visio/media/image3.png" in _contents:
                         _contents["visio/media/image3.png"] = _sat_png
+                elif selected_school:
+                    _geo_lat, _geo_lon = _geocode_address(
+                        str(selected_school.get("Address") or "").strip(),
+                        str(selected_school.get("City") or "").strip(),
+                    )
+                    if _geo_lat is not None:
+                        _sat_png = _fetch_satellite_image(
+                            [("school", _geo_lat, _geo_lon)],
+                            zoom=_GPS_ZOOM,
+                            padding_tiles=4,
+                        )
+                        if _sat_png and "visio/media/image3.png" in _contents:
+                            _contents["visio/media/image3.png"] = _sat_png
                 # ─────────────────────────────────────────────────────────────
 
                 _xml_body = ET.tostring(_tree, encoding="unicode")
