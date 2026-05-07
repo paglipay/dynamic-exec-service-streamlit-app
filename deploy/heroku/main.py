@@ -55,6 +55,7 @@ APP_CATALOG = {
     ],
     "🛠️ Dev Tools": [
         ("api_explorer.py",               "🔌 API Explorer"),
+        ("workflow_submitter.py",         "🔁 Workflow Submitter"),
         ("python_terminal_interactive.py", "🐍 Python Terminal"),
         ("text_processing_tool.py",        "🔤 Text Processing"),
         ("dynamic_page.py",               "⚡ Dynamic Page"),
