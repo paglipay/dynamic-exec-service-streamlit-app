@@ -997,7 +997,7 @@ with tab1:
                 key="download_zip_btn",
             )
 
-            # Build KMZ from checked rows
+            # Build KML from checked rows
             if n_zip > 0:
                 kml_lines = [
                     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -1010,14 +1010,12 @@ with tab1:
                     if edited["Include"].iloc[i]:
                         rank += 1
                         new_name = f"{str(rank).zfill(pad_zip)}{os.path.splitext(fp)[1].lower()}"
-                        img_path_in_kmz = f"files/{new_name}"
                         kml_lines += [
                             "<Placemark>",
                             f"  <name>{new_name}</name>",
                             "  <description><![CDATA[",
                             f"    <b>{new_name}</b><br>",
-                            f"    Original: {os.path.basename(fp)}<br>",
-                            f'    <img src="{img_path_in_kmz}" width="400">',
+                            f"    Original: {os.path.basename(fp)}",
                             "  ]]></description>",
                             "  <Point>",
                             f"    <coordinates>{lon},{lat},0</coordinates>",
@@ -1025,22 +1023,13 @@ with tab1:
                             "</Placemark>",
                         ]
                 kml_lines += ["</Document>", "</kml>"]
-                kmz_buf = BytesIO()
-                with zipfile.ZipFile(kmz_buf, "w", zipfile.ZIP_DEFLATED) as kz:
-                    kz.writestr("doc.kml", "\n".join(kml_lines))
-                    rank = 0
-                    for i, (fp, _, __) in enumerate(coords):
-                        if edited["Include"].iloc[i]:
-                            rank += 1
-                            new_name = f"{str(rank).zfill(pad_zip)}{os.path.splitext(fp)[1].lower()}"
-                            kz.write(fp, arcname=f"files/{new_name}")
-                kmz_buf.seek(0)
+                kml_bytes = "\n".join(kml_lines).encode("utf-8")
                 st.download_button(
-                    label=f"🗺️ Export KMZ ({n_zip} pin{'s' if n_zip != 1 else ''})",
-                    data=kmz_buf,
-                    file_name="exported_pins.kmz",
-                    mime="application/vnd.google-earth.kmz",
-                    key="download_kmz_btn",
+                    label=f"🗺️ Export KML ({n_zip} pin{'s' if n_zip != 1 else ''})",
+                    data=kml_bytes,
+                    file_name="exported_pins.kml",
+                    mime="application/vnd.google-earth.kml+xml",
+                    key="download_kml_btn",
                 )
 
             m = build_map_from_image_coords(coords)
