@@ -641,15 +641,12 @@ def _get_page_dimensions(tree):
     return w or 11.0, h or 8.5
 
 
-def _vplace_cameras_by_gps(tree, coords, source_shape_id=61, margin_frac=0.08):
+def _vplace_cameras_by_gps(tree, coords, source_shape_id=61, usable_frac=0.75):
     """
-    Place one camera shape per (filepath, lat, lon) entry in coords, positioned
-    on the Visio page using Mercator-correct GPS-to-page mapping.
+    Place one camera shape per (filepath, lat, lon) entry in coords.
+    All cameras are centered on the Visio page with relative GPS positions preserved.
 
-    The bounding box of the coords (plus padding) determines the mapping so the
-    layout matches the satellite image captured by _fetch_satellite_image.
-
-    margin_frac: fraction of page dimension used as margin on each side (default 8%).
+    usable_frac: fraction of the page used for the layout (default 75%).
     """
     shapes_container = tree.find(_vtag("Shapes"))
     if shapes_container is None:
@@ -668,44 +665,37 @@ def _vplace_cameras_by_gps(tree, coords, source_shape_id=61, margin_frac=0.08):
 
     page_w, page_h = _get_page_dimensions(tree)
 
-    # Calibrate: if the source shape's PinX is far outside normal inch-based page bounds,
-    # the template likely uses a scaled coordinate system — derive the scale factor so
-    # GPS positions map into the same unit space.
+    # Infer the coordinate unit scale from the source shape's PinX.
+    # Visio stores PageWidth in inches; if PinX is also in inches, unit_scale=1.
+    # If the template uses a scaled drawing (e.g. 1 in = 100 ft), PinX will be
+    # proportionally larger — derive the scale so we place in the same unit space.
     src_pin_x = _vget_cell(source_elem, "PinX") or 0.0
-    src_pin_y = _vget_cell(source_elem, "PinY") or 0.0
-    scale = 1.0
-    if page_w > 0 and src_pin_x > page_w * 2:
-        # Source shape is well outside inch-based page → compute scale from its position
-        scale = src_pin_x / (page_w / 2.0)  # assume source is near page center
+    unit_scale = (src_pin_x / (page_w / 2.0)) if (page_w > 0 and src_pin_x > page_w) else 1.0
 
-    margin_x = page_w * margin_frac * scale
-    margin_y = page_h * margin_frac * scale
-    usable_w = page_w * scale - 2 * margin_x
-    usable_h = page_h * scale - 2 * margin_y
+    # Page center and usable area in Visio units
+    cx = (page_w / 2.0) * unit_scale
+    cy = (page_h / 2.0) * unit_scale
+    usable_w = page_w * usable_frac * unit_scale
+    usable_h = page_h * usable_frac * unit_scale
 
-    # Compute Mercator tile coordinates for every pin (float precision)
+    # Project GPS coords to Mercator tile space (float precision, consistent projection)
     tile_coords = [_latlon_to_tile_f(lat, lon, _GPS_ZOOM) for _, lat, lon in coords]
     tx_all = [tc[0] for tc in tile_coords]
     ty_all = [tc[1] for tc in tile_coords]
 
-    tx_min, tx_max = min(tx_all), max(tx_all)
-    ty_min, ty_max = min(ty_all), max(ty_all)
+    tx_mid = (min(tx_all) + max(tx_all)) / 2.0
+    ty_mid = (min(ty_all) + max(ty_all)) / 2.0
+    span_x = max(tx_all) - min(tx_all) or 1.0
+    span_y = max(ty_all) - min(ty_all) or 1.0
 
-    # Add the same 2-tile padding used when capturing the satellite image
-    padding = 2.0
-    tx_min -= padding
-    tx_max += padding
-    ty_min -= padding
-    ty_max += padding
-
-    span_x = tx_max - tx_min or 1.0
-    span_y = ty_max - ty_min or 1.0
+    # Single uniform scale preserves relative geometry (no distortion)
+    fit_scale = min(usable_w / span_x, usable_h / span_y)
 
     is_camera = _vis_is_camera(source_elem)
     next_id     = _vmax_shape_id(tree) + 1
     cam_counter = 1
 
-    for idx, (tc, (_, lat, lon)) in enumerate(zip(tile_coords, coords)):
+    for tc, (_, lat, lon) in zip(tile_coords, coords):
         new_elem = copy.deepcopy(source_elem)
         new_elem.set("ID",    str(next_id))
         new_elem.set("Name",  f"GpsCam.{next_id}")
@@ -713,14 +703,10 @@ def _vplace_cameras_by_gps(tree, coords, source_shape_id=61, margin_frac=0.08):
         next_id += 1
         next_id = _vreassign_sub_ids(new_elem, next_id)
 
-        # frac_x: 0=west edge, 1=east edge
-        # frac_y: 0=north edge, 1=south edge (tile Y increases southward)
-        frac_x = (tc[0] - tx_min) / span_x
-        frac_y = (tc[1] - ty_min) / span_y
-
-        # Visio origin is bottom-left; north = top = higher Y
-        pin_x = margin_x + frac_x * usable_w
-        pin_y = margin_y + (1.0 - frac_y) * usable_h
+        # Tile X increases east  → Visio X increases east  (same direction)
+        # Tile Y increases south → Visio Y increases north (flip sign)
+        pin_x = cx + (tc[0] - tx_mid) * fit_scale
+        pin_y = cy - (tc[1] - ty_mid) * fit_scale
 
         _vset_cell(new_elem, "PinX", pin_x)
         _vset_cell(new_elem, "PinY", pin_y)
@@ -928,21 +914,25 @@ with tab1:
             if paste_raw.strip():
                 try:
                     chosen = {int(x.strip()) for x in paste_raw.split(",") if x.strip()}
-                    include_flags = [((i + 1) in chosen) for i in range(len(coords))]
-                    st.session_state["img_include"] = include_flags
-                    st.session_state.pop("pin_editor", None)
+                    trimmed = [c for i, c in enumerate(coords, start=1) if i in chosen]
+                    if trimmed:
+                        st.session_state["img_coords"]    = trimmed
+                        st.session_state["img_include"]   = [True] * len(trimmed)
+                        st.session_state["img_coord_key"] = tuple(os.path.basename(fp) for fp, _, __ in trimmed)
+                        st.session_state.pop("pin_editor", None)
+                        st.session_state["pin_list_input"] = ""
+                        st.rerun()
                 except ValueError:
                     st.warning("List must be comma-separated numbers, e.g. 1,3,5")
-                    include_flags = list(st.session_state["img_include"])
-            else:
-                # Pre-apply any pending editor delta so Renamed As is up-to-date
-                include_flags = list(st.session_state["img_include"])
-                editor_delta = st.session_state.get("pin_editor") or {}
-                for row_str, changes in (editor_delta.get("edited_rows") or {}).items():
-                    row_idx = int(row_str)
-                    if "Include" in changes and row_idx < len(include_flags):
-                        include_flags[row_idx] = changes["Include"]
-                st.session_state["img_include"] = include_flags
+
+            # Pre-apply any pending editor delta so Renamed As is up-to-date
+            include_flags = list(st.session_state["img_include"])
+            editor_delta = st.session_state.get("pin_editor") or {}
+            for row_str, changes in (editor_delta.get("edited_rows") or {}).items():
+                row_idx = int(row_str)
+                if "Include" in changes and row_idx < len(include_flags):
+                    include_flags[row_idx] = changes["Include"]
+            st.session_state["img_include"] = include_flags
 
             # Compute Renamed As: sequential among checked rows, in order
             checked_indices = [i for i, v in enumerate(include_flags) if v]
@@ -984,25 +974,8 @@ with tab1:
             # Persist for next rerun
             st.session_state["img_include"] = edited["Include"].tolist()
 
-            # ── Trim unselected pins from memory ─────────────────────────────
-            n_zip = int(edited["Include"].sum())
-            n_unchecked = len(coords) - n_zip
-            if n_unchecked > 0 and n_zip > 0:
-                if st.button(
-                    f"✂️ Trim to selection ({n_zip} kept, {n_unchecked} dropped)",
-                    key="trim_pins_btn",
-                    help="Permanently removes unselected pins from memory to free RAM. Cannot be undone without re-scanning.",
-                ):
-                    trimmed = [c for c, inc in zip(coords, st.session_state["img_include"]) if inc]
-                    st.session_state["img_coords"]    = trimmed
-                    st.session_state["img_include"]   = [True] * len(trimmed)
-                    st.session_state["img_coord_key"] = tuple(os.path.basename(fp) for fp, _, __ in trimmed)
-                    st.session_state.pop("pin_editor", None)
-                    st.session_state.pop("pin_list_input", None)
-                    st.rerun()
-            # ─────────────────────────────────────────────────────────────────
-
             # Build ZIP from checked rows with sequential renamed files
+            n_zip = int(edited["Include"].sum())
             pad_zip = max(2, len(str(n_zip))) if n_zip else 2
             zip_buf = BytesIO()
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
