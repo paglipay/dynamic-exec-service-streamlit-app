@@ -906,9 +906,6 @@ with tab1:
                 st.session_state["pin_list_input"] = ""
 
             # ── Paste-list input: override checkboxes from map's Get List ─
-            # Clear the input before the widget renders (flag set on previous rerun)
-            if st.session_state.pop("_clear_paste", False):
-                st.session_state["pin_list_input"] = ""
             paste_raw = st.text_input(
                 "Paste list (from map 📋 Get List):",
                 key="pin_list_input",
@@ -917,25 +914,21 @@ with tab1:
             if paste_raw.strip():
                 try:
                     chosen = {int(x.strip()) for x in paste_raw.split(",") if x.strip()}
-                    trimmed = [c for i, c in enumerate(coords, start=1) if i in chosen]
-                    if trimmed:
-                        st.session_state["img_coords"]    = trimmed
-                        st.session_state["img_include"]   = [True] * len(trimmed)
-                        st.session_state["img_coord_key"] = tuple(os.path.basename(fp) for fp, _, __ in trimmed)
-                        st.session_state.pop("pin_editor", None)
-                        st.session_state["_clear_paste"]  = True
-                        st.rerun()
+                    include_flags = [((i + 1) in chosen) for i in range(len(coords))]
+                    st.session_state["img_include"] = include_flags
+                    st.session_state.pop("pin_editor", None)
                 except ValueError:
                     st.warning("List must be comma-separated numbers, e.g. 1,3,5")
-
-            # Pre-apply any pending editor delta so Renamed As is up-to-date
-            include_flags = list(st.session_state["img_include"])
-            editor_delta = st.session_state.get("pin_editor") or {}
-            for row_str, changes in (editor_delta.get("edited_rows") or {}).items():
-                row_idx = int(row_str)
-                if "Include" in changes and row_idx < len(include_flags):
-                    include_flags[row_idx] = changes["Include"]
-            st.session_state["img_include"] = include_flags
+                    include_flags = list(st.session_state["img_include"])
+            else:
+                # Pre-apply any pending editor delta so Renamed As is up-to-date
+                include_flags = list(st.session_state["img_include"])
+                editor_delta = st.session_state.get("pin_editor") or {}
+                for row_str, changes in (editor_delta.get("edited_rows") or {}).items():
+                    row_idx = int(row_str)
+                    if "Include" in changes and row_idx < len(include_flags):
+                        include_flags[row_idx] = changes["Include"]
+                st.session_state["img_include"] = include_flags
 
             # Compute Renamed As: sequential among checked rows, in order
             checked_indices = [i for i, v in enumerate(include_flags) if v]
@@ -976,6 +969,24 @@ with tab1:
             )
             # Persist for next rerun
             st.session_state["img_include"] = edited["Include"].tolist()
+
+            # ── Trim unselected pins from memory ─────────────────────────────
+            n_zip = int(edited["Include"].sum())
+            n_unchecked = len(coords) - n_zip
+            if n_unchecked > 0 and n_zip > 0:
+                if st.button(
+                    f"✂️ Trim to selection ({n_zip} kept, {n_unchecked} dropped)",
+                    key="trim_pins_btn",
+                    help="Permanently removes unselected pins from memory to free RAM. Cannot be undone without re-scanning.",
+                ):
+                    trimmed = [c for c, inc in zip(coords, st.session_state["img_include"]) if inc]
+                    st.session_state["img_coords"]    = trimmed
+                    st.session_state["img_include"]   = [True] * len(trimmed)
+                    st.session_state["img_coord_key"] = tuple(os.path.basename(fp) for fp, _, __ in trimmed)
+                    st.session_state.pop("pin_editor", None)
+                    st.session_state.pop("pin_list_input", None)
+                    st.rerun()
+            # ─────────────────────────────────────────────────────────────────
 
             # Build ZIP from checked rows with sequential renamed files
             n_zip = int(edited["Include"].sum())
