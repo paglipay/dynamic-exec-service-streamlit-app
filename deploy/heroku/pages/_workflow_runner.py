@@ -160,20 +160,26 @@ def _render() -> None:
     )
     st.progress((current + 1) / len(steps))
 
-    # ── Instructions ──────────────────────────────────────────────────────────
-    instructions = _instructions_text(workflow_dir, step)
-    if instructions:
-        with st.expander("📋 Instructions", expanded=True):
+    # ── Instructions (left) + inner tool page (right), side-by-side ─────────
+    # Narrow instructions column on the left, wide tool column on the right.
+    # Streamlit's "wide" layout (set in main.py) gives us enough horizontal
+    # space to split 1:3 without cramping most tool pages.
+    instr_col, tool_col = st.columns([1, 3], gap="large")
+
+    with instr_col:
+        instructions = _instructions_text(workflow_dir, step)
+        if instructions:
+            st.markdown("### 📋 Instructions")
             st.markdown(instructions)
+        else:
+            st.caption("_No instructions for this step._")
 
-    st.divider()
-
-    # ── Inner tool page ───────────────────────────────────────────────────────
-    if not page_filename:
-        st.error(f"Step {current + 1} is missing a `page:` filename.")
-    else:
-        module_tag = f"_wf_{slug}_step_{current}"
-        _run_inner_page(page_filename, module_tag)
+    with tool_col:
+        if not page_filename:
+            st.error(f"Step {current + 1} is missing a `page:` filename.")
+        else:
+            module_tag = f"_wf_{slug}_step_{current}"
+            _run_inner_page(page_filename, module_tag)
 
     # ── Prev / Next ───────────────────────────────────────────────────────────
     st.divider()
