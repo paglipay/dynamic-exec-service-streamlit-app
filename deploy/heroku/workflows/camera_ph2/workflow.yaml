@@ -1,0 +1,25 @@
+# Workflow definition.
+# - Drop this file (and its sibling .md files) into deploy/heroku/workflows/<slug>/
+# - The folder name (here: "camera_ph2") becomes the workflow slug
+# - Main.py auto-discovers any folder under workflows/ that contains a workflow.yaml
+
+name: "Camera Phase 2"
+icon: "📷"
+description: "Clean photos → build PDF → sign. Output of each step feeds the next."
+
+steps:
+  - title: "Clean photos for privacy"
+    page: image_cleaner.py
+    instructions: 01_clean.md
+
+  - title: "Build a PDF from cleaned images"
+    page: images_pdf.py
+    instructions: 02_build_pdf.md
+
+  - title: "Sign the PDF"
+    page: pdf_sign.py
+    # You can also put markdown inline instead of pointing at a file:
+    # markdown: |
+    #   ## Inline instructions
+    #   This step expects the PDF you downloaded from step 2.
+    instructions: 03_sign.md
