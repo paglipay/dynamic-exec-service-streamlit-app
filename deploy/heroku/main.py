@@ -42,6 +42,7 @@ APP_CATALOG = {
         ("checklist_pdf.py",  "✅ Checklist PDF"),
         ("word_template.py",  "📝 Word Template"),
         ("pdf_sign.py",       "✍️ PDF Sign"),
+        ("images_pdf.py",     "📄 Images → PDF"),
         ("json_submitter.py", "📋 JSON Submitter"),
     ],
     "🖼️ Media": [
@@ -52,6 +53,9 @@ APP_CATALOG = {
     "📊 Data": [
         ("data_dash.py",           "📊 Data Dashboard"),
         ("interactive_plotter.py", "📈 Plotter"),
+    ],
+    "🗺️ Mapping": [
+        ("google_earth.py", "🌍 Google Earth"),
     ],
     "🛠️ Dev Tools": [
         ("api_explorer.py",               "🔌 API Explorer"),
