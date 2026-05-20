@@ -525,6 +525,10 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
         # Downscale large images to cap memory usage during processing
         if max(image.size) > max_dim:
             image.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        # Save format matches original extension so the file can overwrite the source
+        _fmt = "PNG" if uploaded_file.name.lower().endswith(".png") else "JPEG"
+        _mime = "image/png" if _fmt == "PNG" else "image/jpeg"
+        _save_kw = {"format": "PNG"} if _fmt == "PNG" else {"format": "JPEG", "quality": 92}
 
         # ── Image viewer (top of page — original until result is ready) ────────
         file_id = uploaded_file.name + str(uploaded_file.size)
@@ -661,7 +665,7 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
                     try:
                         _r = _apply_all_effects(image, object_effects)
                         _buf = io.BytesIO()
-                        _r.save(_buf, format="JPEG", quality=92)
+                        _r.save(_buf, **_save_kw)
                         st.session_state[result_key] = _buf.getvalue()
                         del _r, _buf
                         gc.collect()
@@ -674,7 +678,7 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
                     try:
                         _r = _apply_all_effects(image, object_effects)
                         _buf = io.BytesIO()
-                        _r.save(_buf, format="JPEG", quality=92)
+                        _r.save(_buf, **_save_kw)
                         st.session_state[result_key] = _buf.getvalue()
                         del _r, _buf
                         gc.collect()
@@ -683,12 +687,11 @@ for tab, uploaded_file in zip(tabs, uploaded_files):
                         st.error(str(err))
 
             if result_key in st.session_state:
-                _dl_stem = os.path.splitext(uploaded_file.name)[0]
                 st.download_button(
                     label="⬇️ Download cleaned image",
                     data=st.session_state[result_key],
-                    file_name=f"cleaned_{_dl_stem}.jpg",
-                    mime="image/jpeg",
+                    file_name=uploaded_file.name,
+                    mime=_mime,
                     key=f"dl_{file_id}",
                 )
             elif auto_process:
@@ -706,8 +709,7 @@ if uploaded_files:
         fid = uf.name + str(uf.size)
         rk = f"result_{fid}"
         if rk in st.session_state:
-            _z_stem = os.path.splitext(uf.name)[0]
-            result_items.append((f"cleaned_{_z_stem}.jpg", st.session_state[rk]))
+            result_items.append((uf.name, st.session_state[rk]))
 
     if len(result_items) >= 2:
         all_done = len(result_items) == len(uploaded_files)
