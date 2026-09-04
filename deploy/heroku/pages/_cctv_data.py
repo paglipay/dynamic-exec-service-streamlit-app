@@ -692,6 +692,12 @@ def decode_barcodes_from_image(image_bytes: bytes) -> list[str]:
 # a documented Heroku Python buildpack hook, not custom infra.
 
 _MODEL_LABEL_RE = re.compile(r"(?:part\s*no\.?|model\s*no\.?|model)[:\s]*([A-Z0-9][A-Z0-9\-/]{2,})", re.IGNORECASE)
+# Second model pattern: on some labels (e.g. AXIS Q1786-LE) the model is
+# printed straight after "AXIS" with no "Model:"/"Part No." caption at
+# all -- confirmed against a real label read this way. Requires a digit
+# in the captured value so it doesn't also match "AXIS COMMUNICATIONS"
+# (the brand's own logo text, which has no digit) as a fake "model".
+_MODEL_AXIS_RE = re.compile(r"\bAXIS[:\s]*([A-Z][A-Z0-9]*\d[A-Z0-9\-]{2,})", re.IGNORECASE)
 _SERIAL_LABEL_RE = re.compile(r"(?:serial\s*no\.?|s\s*/\s*n)[:\s]*([A-Z0-9][A-Z0-9\-/]{2,})", re.IGNORECASE)
 
 _ocr_engine = None
@@ -737,7 +743,11 @@ def extract_model_serial_from_text(lines: list[str], rules: Optional[list[dict]]
 
     1. Explicit "Part No./Model" and "Serial No./S/N" label prefixes,
        captured from whatever follows on the SAME line/text region.
-    2. If no explicit serial label+value was found on one line, fall
+    2. If no "Model"/"Part No." caption was found, try the "AXIS
+       <model>" pattern instead (_MODEL_AXIS_RE) — some labels (e.g. a
+       real AXIS Q1786-LE box) print the model straight after the brand
+       name with no caption word at all.
+    3. If no explicit serial label+value was found on one line, fall
        back to running the barcode classification rules (same ones
        classify_barcode() uses — B8A4/HW prefixes etc.) against every
        OCR'd line, since a bare serial number is usually distinctive
@@ -756,6 +766,10 @@ def extract_model_serial_from_text(lines: list[str], rules: Optional[list[dict]]
     m = _MODEL_LABEL_RE.search(joined)
     if m:
         model = m.group(1).strip()
+    if not model:
+        m = _MODEL_AXIS_RE.search(joined)
+        if m:
+            model = m.group(1).strip()
 
     m = _SERIAL_LABEL_RE.search(joined)
     if m:
