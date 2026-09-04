@@ -1,8 +1,14 @@
 """camera_assign_review.py — Step 4 of the Camera Asset Intake workflow.
 
-Suggests a camera number for each scanned-but-unassigned asset by
-matching its model against the site's Camera Chart, and lets a human
-confirm or override every suggestion before anything is committed.
+Most items no longer land here: camera_barcode_scan.py auto-assigns
+(and prints a label) immediately at scan time via
+_cctv_data.auto_assign_on_scan(). This step is now the fallback/catch-up
+path for whatever that couldn't handle automatically — most commonly a
+model scanned before the Camera Chart was uploaded, or a chart with no
+matching open slot at all. It suggests a camera number for each such
+scanned-but-unassigned asset and lets a human confirm or override every
+suggestion before anything is committed; it's also the place to fix a
+scan-time auto-assignment that turned out wrong.
 
 ⚠️ The matching heuristic (substring match of Model Number inside the
 Camera Chart's Camera Model text) is UNVALIDATED against a real

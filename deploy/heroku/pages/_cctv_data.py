@@ -434,6 +434,76 @@ def add_scanned_asset(loc_code: str, serial_number: str, model_number: str, **ex
     upsert_camera_assets_rows(loc_code, [row])
 
 
+def auto_assign_on_scan(loc_code: str, serial_number: str) -> Optional[dict]:
+    """Scan-time auto-assign: immediately claim the lowest open Camera
+    Chart slot whose model matches this one asset — no human review
+    pause, unlike suggest_assignments()/camera_assign_review.py's
+    reviewed flow. Deliberately picks the lowest candidate even when
+    several open slots share the model (see camera_assign_review.py's
+    docstring for why that's ambiguous — a chosen tradeoff, not an
+    oversight, made so a label can print right after each scan).
+
+    Returns the assigned camera_id dict, or None if there's no chart
+    uploaded yet, the asset doesn't exist/is already assigned, or no
+    open slot matches this asset's model.
+    """
+    db = get_db()
+    if db is None:
+        return None
+
+    asset = db[ASSETS_COLLECTION].find_one({"loc_code": loc_code, "serial_number": serial_number})
+    if not asset or asset.get("camera_id"):
+        return None
+
+    model = (asset.get("model_number") or "").strip().upper()
+    if not model:
+        return None
+
+    candidates = list(db[CHART_COLLECTION].find({"loc_code": loc_code, "status": "planned"}))
+    matches = [c for c in candidates if model in (c.get("camera_model_text") or "").upper()]
+    if not matches:
+        return None
+    matches.sort(key=lambda r: (r["camera_id"]["num"], r["camera_id"]["letter"]))
+    chosen = matches[0]
+
+    ok = confirm_assignment(loc_code, serial_number, chosen["camera_id"]["canonical"])
+    return chosen["camera_id"] if ok else None
+
+
+# ── Print broker (slack-to-onedrive-sync's /print-jobs; see that repo's
+# app.py + sync_lib.py "Camera-label print queue" section) ─────────────────
+
+def enqueue_print_job(site_name: str, loc_code: str, camera_id: dict, serial_number: str, model_number: str) -> dict:
+    """Best-effort POST to the broker. Never raises — a broker outage or
+    missing config shouldn't break the scan loop, just skip printing.
+    Returns {"ok": bool, "error": str | None}."""
+    broker_url = _get_secret("PRINT_BROKER_URL")
+    broker_secret = _get_secret("PRINT_BROKER_SECRET")
+    if not broker_url or not broker_secret:
+        return {"ok": False, "error": "PRINT_BROKER_URL/PRINT_BROKER_SECRET not configured"}
+
+    try:
+        import requests
+        camera_number = f"CAM{camera_id['num']}{camera_id['letter']}"
+        resp = requests.post(
+            f"{broker_url.rstrip('/')}/print-jobs",
+            headers={"Authorization": f"Bearer {broker_secret}"},
+            json={
+                "camera_number": camera_number,
+                "serial_number": serial_number,
+                "model_number": model_number,
+                "site_name": site_name,
+                "loc_code": loc_code,
+            },
+            timeout=5,
+        )
+        if resp.status_code == 201:
+            return {"ok": True, "error": None}
+        return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 # ── Site directory (read-only; owned by google_earth.py's r1_data) ─────────
 
 @st.cache_data(ttl=300, show_spinner=False)

@@ -33,6 +33,26 @@ MANUFACTURER = "Axis"
 st.subheader(f"📷 Scan received hardware for {site['site_name']} ({loc_code})")
 
 
+def _finish_row(serial: str, model: str, **extra) -> dict:
+    """Save one scanned/typed Model+Serial row, attempt scan-time
+    auto-assign (see _cctv_data.auto_assign_on_scan's docstring for why
+    this always picks the lowest matching slot, ambiguous or not), and
+    — if assigned — enqueue a print job. Never raises; a broker/network
+    failure is reported back, not fatal to the scan loop, so scanning
+    keeps working even if printing doesn't."""
+    cctv.add_scanned_asset(loc_code, serial, model, manufacturer=MANUFACTURER, **extra)
+    result = {"serial": serial, "model": model, "camera_number": None, "print_ok": None, "print_error": None}
+
+    camera_id = cctv.auto_assign_on_scan(loc_code, serial)
+    if camera_id:
+        camera_number = f"CAM{camera_id['num']}{camera_id['letter']}"
+        result["camera_number"] = camera_number
+        printed = cctv.enqueue_print_job(site["site_name"], loc_code, camera_id, serial, model)
+        result["print_ok"] = printed["ok"]
+        result["print_error"] = printed["error"]
+    return result
+
+
 def _autofocus(aria_label: str):
     """Best-effort: refocus the scanner's text input after every rerun, so
     a barcode scanner (type + Enter, no clicking) can keep firing scans
@@ -82,7 +102,13 @@ def _scanner_dialog():
         st.success(f"Model **{pending_model}** captured — now scan the **Serial Number** barcode.")
 
     if last_saved:
-        st.caption(f"✅ Last saved: **{last_saved['Model']}** / **{last_saved['Serial Number']}**")
+        line = f"✅ Last saved: **{last_saved['model']}** / **{last_saved['serial']}**"
+        if last_saved["camera_number"]:
+            line += f" → **{last_saved['camera_number']}**"
+            line += " 🖨️ printed" if last_saved["print_ok"] else f" ⚠️ print failed ({last_saved['print_error']})"
+        else:
+            line += " — no matching Camera Chart slot yet"
+        st.caption(line)
 
     with st.form("scanner_capture_form", clear_on_submit=True):
         value = st.text_input(label, key="cctv_scanner_input", autocomplete="off")
@@ -102,13 +128,22 @@ def _scanner_dialog():
             # full-script rerun").
             st.rerun(scope="fragment")
         else:
-            cctv.add_scanned_asset(loc_code, value, pending_model, manufacturer=MANUFACTURER)
-            row = {"Model": pending_model, "Serial Number": value}
-            log.append(row)
-            st.session_state["cctv_scan_last_saved"] = row
+            result = _finish_row(value, pending_model)
+            log.append({
+                "Model": pending_model,
+                "Serial Number": value,
+                "Camera #": result["camera_number"] or "—",
+                "Print": "🖨️" if result["print_ok"] else ("⚠️" if result["camera_number"] else "—"),
+            })
+            st.session_state["cctv_scan_last_saved"] = result
             st.session_state["cctv_scan_pending_model"] = None
             st.session_state["cctv_scan_stage"] = "model"
-            st.toast(f"Saved {value}", icon="✅")
+            if result["camera_number"] and result["print_ok"]:
+                st.toast(f"Saved {value} → {result['camera_number']}, sent to printer", icon="🖨️")
+            elif result["camera_number"]:
+                st.toast(f"Saved {value} → {result['camera_number']} (print failed)", icon="⚠️")
+            else:
+                st.toast(f"Saved {value} (no matching Camera Chart slot yet)", icon="✅")
             st.rerun(scope="fragment")
 
     if log:
@@ -117,7 +152,7 @@ def _scanner_dialog():
         st.dataframe(
             pd.DataFrame(list(reversed(log))),
             hide_index=True, use_container_width=True,
-            column_order=["Model", "Serial Number"],
+            column_order=["Model", "Serial Number", "Camera #", "Print"],
         )
 
     if st.button("✅ Done scanning", use_container_width=True):
@@ -148,12 +183,13 @@ with st.expander("Or enter manually"):
             if not serial or not model:
                 st.error("Model and Serial Number are both required.")
             else:
-                cctv.add_scanned_asset(
-                    loc_code, serial, model,
-                    manufacturer=MANUFACTURER,
-                    mac_address=mac or None,
-                )
-                st.toast(f"Recorded {serial}", icon="✅")
+                result = _finish_row(serial, model, mac_address=mac or None)
+                if result["camera_number"] and result["print_ok"]:
+                    st.toast(f"Recorded {serial} → {result['camera_number']}, sent to printer", icon="🖨️")
+                elif result["camera_number"]:
+                    st.toast(f"Recorded {serial} → {result['camera_number']} (print failed)", icon="⚠️")
+                else:
+                    st.toast(f"Recorded {serial} (no matching Camera Chart slot yet)", icon="✅")
 
 st.divider()
 
@@ -176,7 +212,8 @@ if assigned:
         )
 
 st.caption(
-    "Next step suggests a camera number for each unassigned item by matching "
-    "its model against the uploaded Camera Chart — you'll confirm or override "
-    "every suggestion there."
+    "Each scan now auto-assigns a camera number and prints a label immediately "
+    "(no review pause — see the Assign step for why that's a deliberate "
+    "tradeoff). Anything still unassigned above had no matching Camera Chart "
+    "slot yet — the Assign step handles those once the chart is uploaded."
 )

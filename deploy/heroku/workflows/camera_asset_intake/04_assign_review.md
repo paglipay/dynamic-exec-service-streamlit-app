@@ -1,7 +1,14 @@
-## Step 4: Assign camera numbers
+## Step 4: Assign camera numbers (fallback / catch-up)
 
-For every scanned item without a camera number yet, this step suggests
-the lowest open Camera Chart slot whose model matches.
+Most items are already assigned by this point — the Scan step now
+auto-assigns and prints a label the instant a Model+Serial pair is
+captured. This step only shows what that couldn't handle: usually a
+model scanned before the Camera Chart was uploaded, or one with no
+matching open slot at all. It's also where to fix a scan-time
+auto-assignment that turned out wrong.
+
+For every item shown here, this step suggests the lowest open Camera
+Chart slot whose model matches.
 
 ⚠️ **This matching logic hasn't been validated against a real project
 yet** — it's only been checked for parsing correctness on two files
