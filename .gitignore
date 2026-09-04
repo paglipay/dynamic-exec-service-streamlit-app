@@ -43,4 +43,4 @@ build/
 # (A worktree-cleanup bug previously let a broken, dangling gitlink under
 # here get committed at e90848d — "fix"; see the follow-up commit that
 # removes it. This blanket ignore is the actual fix so it can't recur.)
-.claude/
+.claude/local_print_agent/*.log
