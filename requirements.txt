@@ -28,3 +28,4 @@ fastkml
 piexif
 PyYAML
 python-dotenv
+zxing-cpp

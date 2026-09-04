@@ -569,3 +569,85 @@ def list_sites() -> list[dict]:
         {"_id": 0, "School Name": 1, "Site": 1, "Loc Code": 1, "Address": 1, "City": 1, "Contractor": 1},
     ).sort("School Name", 1)
     return [dict(doc) for doc in cursor]
+
+
+# ── Barcode image decoding + classification (camera_barcode_settings.py) ───
+#
+# Global, not per-site: barcode format is a property of the hardware line
+# (Axis), not the school. Rules are ordered; the first regex that matches
+# a decoded barcode's text wins. A catch-all ".*" rule is required as the
+# last entry so every decoded value always classifies as something —
+# get_barcode_rules() re-appends one if it's ever missing (e.g. someone
+# deleted every row in the settings page).
+
+BARCODE_RULES_COLLECTION = "cctv_barcode_rules"
+BARCODE_RULES_DOC_ID = "default"  # single global doc; not per-site
+
+DEFAULT_BARCODE_RULES = [
+    {"pattern": "^B8A4", "field": "serial_number", "label": "Serial Number", "case_insensitive": True},
+    {"pattern": ".*", "field": "model_number", "label": "Model Number (default)", "case_insensitive": True},
+]
+
+
+def get_barcode_rules() -> list[dict]:
+    """Ordered classification rules, seeding the default set on first use."""
+    db = get_db()
+    if db is None:
+        return list(DEFAULT_BARCODE_RULES)
+    doc = db[BARCODE_RULES_COLLECTION].find_one({"_id": BARCODE_RULES_DOC_ID})
+    rules = (doc or {}).get("rules")
+    if not rules:
+        rules = list(DEFAULT_BARCODE_RULES)
+        save_barcode_rules(rules)
+    # Guard against a saved set that's missing a catch-all (e.g. every rule
+    # was deleted in the settings page) — classify_barcode() depends on one
+    # always matching.
+    if not any(r.get("pattern") == ".*" for r in rules):
+        rules = rules + [{"pattern": ".*", "field": "model_number", "label": "Model Number (default)", "case_insensitive": True}]
+    return rules
+
+
+def save_barcode_rules(rules: list[dict]) -> None:
+    db = get_db()
+    if db is None:
+        raise RuntimeError("MONGODB_URI is not configured")
+    db[BARCODE_RULES_COLLECTION].update_one(
+        {"_id": BARCODE_RULES_DOC_ID},
+        {"$set": {"rules": rules}},
+        upsert=True,
+    )
+
+
+def classify_barcode(text: str, rules: Optional[list[dict]] = None) -> Optional[str]:
+    """Return the target field ('serial_number' or 'model_number') for a
+    decoded barcode string, per the first matching rule. None only if
+    `rules` has no catch-all (get_barcode_rules() always adds one; a
+    caller passing a hand-built list without one can still get None)."""
+    if rules is None:
+        rules = get_barcode_rules()
+    for rule in rules:
+        pattern = rule.get("pattern") or ""
+        flags = re.IGNORECASE if rule.get("case_insensitive", True) else 0
+        try:
+            if re.search(pattern, text, flags):
+                return rule.get("field")
+        except re.error:
+            continue  # a bad regex in a saved rule shouldn't break every scan
+    return None
+
+
+def decode_barcodes_from_image(image_bytes: bytes) -> list[str]:
+    """Decode every barcode found in an image (any symbology zxing-cpp
+    supports — Code128, Code39, EAN, QR, DataMatrix, etc.), e.g. a single
+    photo of a label carrying both the Model and Serial barcodes.
+    Returns decoded text strings, empty list if none found or on any
+    decode failure (never raises — a bad/corrupt image shouldn't break
+    the scan page)."""
+    try:
+        import zxingcpp
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        results = zxingcpp.read_barcodes(img)
+        return [r.text for r in results if r.valid and r.text]
+    except Exception:
+        return []

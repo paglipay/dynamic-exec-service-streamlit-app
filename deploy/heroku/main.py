@@ -114,6 +114,9 @@ APP_CATALOG = {
     "🆘 Support": [
         ("contact_support.py", "🆘 Contact & Support"),
     ],
+    "⚙️ Settings": [
+        ("camera_barcode_settings.py", "🏷️ Barcode Classification Rules"),
+    ],
 }
 
 # ── Session state ──────────────────────────────────────────────────────────

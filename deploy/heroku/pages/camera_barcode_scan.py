@@ -220,6 +220,53 @@ if st.button("📷 Open Barcode Scanner", type="primary", use_container_width=Tr
     st.session_state["cctv_scan_last_saved"] = None
     _scanner_dialog()
 
+with st.expander("🖼️ Upload barcode image"):
+    st.caption(
+        "Upload a photo of the label — decodes every barcode found and "
+        "classifies each as Model or Serial automatically (rules: "
+        "**⚙️ Settings → Barcode Classification Rules**, default: text "
+        "starting `B8A4` → Serial, anything else → Model). Auto-adds the "
+        "row immediately once exactly one of each is found, same as a "
+        "live scan — no confirmation step, so a misread goes straight "
+        "through; re-upload a clearer photo if the result looks wrong."
+    )
+    img_file = st.file_uploader(
+        "Barcode image", type=["png", "jpg", "jpeg", "bmp", "webp"], key="cctv_barcode_image",
+    )
+    if img_file is not None:
+        decoded = cctv.decode_barcodes_from_image(img_file.getvalue())
+        if not decoded:
+            st.error("No barcode found in that image — try a clearer or closer photo.")
+        else:
+            rules = cctv.get_barcode_rules()
+            models, serials, other = [], [], []
+            for text in decoded:
+                field = cctv.classify_barcode(text, rules)
+                (models if field == "model_number" else serials if field == "serial_number" else other).append(text)
+
+            if len(models) == 1 and len(serials) == 1:
+                result = _finish_row(serials[0], models[0])
+                if result["camera_number"] and result["print_ok"]:
+                    st.success(f"✅ {models[0]} / {serials[0]} → {result['camera_number']}, sent to printer")
+                elif result["camera_number"]:
+                    st.warning(f"⚠️ {models[0]} / {serials[0]} → {result['camera_number']} (print failed: {result['print_error']})")
+                else:
+                    st.info(f"✅ {models[0]} / {serials[0]} recorded — no matching Camera Chart slot yet")
+            else:
+                st.warning(
+                    f"Found {len(decoded)} barcode(s) but couldn't tell which is which — "
+                    "expected exactly one Model and one Serial. Add manually below, or "
+                    "adjust the rules in Settings if these are being classified wrong."
+                )
+                st.dataframe(
+                    pd.DataFrame(
+                        [{"Value": t, "Classified as": "Model"} for t in models]
+                        + [{"Value": t, "Classified as": "Serial"} for t in serials]
+                        + [{"Value": t, "Classified as": "—"} for t in other]
+                    ),
+                    hide_index=True, use_container_width=True,
+                )
+
 with st.expander("Or enter manually"):
     with st.form("scan_form_manual", clear_on_submit=True):
         c1, c2 = st.columns(2)
