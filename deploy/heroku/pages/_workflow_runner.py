@@ -13,10 +13,14 @@ main.py is responsible for:
 This script reads the slug from session_state, loads
   workflows/<slug>/workflow.yaml,
 and renders the active step:
-  1. Workflow title + "Step N of M" breadcrumb
-  2. Step instructions (markdown file or inline `markdown:` key)
-  3. The inner page from pages/<page>.py, executed inline
-  4. Prev / Next buttons
+  1. Workflow title + description
+  2. A locked-down nav header (Step N of M + Prev/Next buttons), fixed
+     to the top of the viewport so it stays visible as you scroll
+     through a long step's content — see _sticky_header_css()'s
+     docstring for how (position: fixed, not sticky — sticky doesn't
+     work inside Streamlit's own container nesting; verified).
+  3. Step instructions (markdown file or inline `markdown:` key)
+  4. The inner page from pages/<page>.py, executed inline
 
 Steps are independent — each tool keeps its own session_state, so the
 user downloads from step N and uploads as input to step N+1 (the
@@ -95,6 +99,102 @@ def _instructions_text(workflow_dir: Path, step: dict) -> Optional[str]:
         return f"_(could not read instructions: {exc})_"
 
 
+# ── Sticky nav header ──────────────────────────────────────────────────────────
+
+_STICKY_MARKER_CLASS = "wf-sticky-nav-marker"
+
+
+def _sticky_header_css() -> None:
+    """Injects CSS that pins the step-nav bar to a fixed position at the
+    top of the viewport, below Streamlit's own app header.
+
+    position: sticky does NOT work here — tried it first, and verified
+    empirically (headless-browser measurement, not just theory) that it
+    fails: a st.container()'s own DOM wrapper (stLayoutWrapper) is only
+    ever as tall as the container's own content, giving a sticky child
+    zero room to "float" within it, so it just scrolls away with
+    everything else regardless of which ancestor gets position:sticky.
+    position: fixed sidesteps this entirely — it's anchored to the
+    viewport, not to any Streamlit-controlled containing block, so it's
+    unaffected by that nesting. Confirmed working the same way: measured
+    the nav bar's on-screen position before/after a large programmatic
+    scroll and confirmed it didn't move.
+
+    `top: 60px` matches Streamlit's own header height, measured the same
+    way (header['data-testid=stHeader'].getBoundingClientRect().height
+    == 60 in this Streamlit version) — if a future Streamlit version
+    changes that height, this offset would need re-measuring.
+
+    Targeting the container: st.container() only gets an auto-generated
+    (emotion-hashed) CSS class, no stable name to select by, and a
+    selector keyed to DOM position (nth-of-type) would silently target
+    the wrong block the moment content above it changes. Instead: an
+    invisible <span class="wf-sticky-nav-marker"> is rendered as the
+    FIRST element inside the container, and CSS :has() keys the
+    selector to that container's *content*, not its position — verified
+    against this Streamlit version's actual rendered DOM (a
+    st.container()'s st.markdown/st.columns children are siblings under
+    one div[data-testid="stVerticalBlock"], so :has() targeting that
+    div's stElementContainer child, not a bare div, correctly grabs
+    only this one container and not an outer ancestor that also
+    happens to have the marker as a deep descendant).
+    Requires a browser with CSS :has() support (Chrome/Edge 105+,
+    Safari 15.4+, Firefox 121+) — on an older browser this just
+    silently isn't fixed in place; the buttons still render and work.
+    """
+    st.markdown(
+        f"""
+        <style>
+        div[data-testid="stVerticalBlock"]:has(> div.stElementContainer .{_STICKY_MARKER_CLASS}) {{
+            position: fixed;
+            top: 60px;
+            left: 0;
+            right: 0;
+            z-index: 999;
+            background-color: var(--background-color, white);
+            padding: 0.5rem 2rem;
+            border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+        }}
+        /* room for the fixed bar so it doesn't cover the content that
+        would otherwise render right at the top of the page */
+        div[data-testid="stMainBlockContainer"] {{
+            padding-top: 5rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_nav_header(step_key: str, current: int, total: int) -> None:
+    """The fixed bar itself: step breadcrumb + Prev/Next. Lives inside
+    one st.container() so _sticky_header_css()'s :has() selector can
+    pin the whole thing as a unit."""
+    with st.container():
+        st.markdown(f'<span class="{_STICKY_MARKER_CLASS}"></span>', unsafe_allow_html=True)
+        col_prev, col_mid, col_next = st.columns([1, 2, 1])
+
+        with col_prev:
+            if current > 0:
+                if st.button("⬅️ Previous step", use_container_width=True):
+                    st.session_state[step_key] = current - 1
+                    st.rerun()
+
+        with col_mid:
+            st.markdown(
+                f"<div style='text-align:center'>Step {current + 1} of {total}</div>",
+                unsafe_allow_html=True,
+            )
+
+        with col_next:
+            if current < total - 1:
+                if st.button("Next step ➡️", use_container_width=True, type="primary"):
+                    st.session_state[step_key] = current + 1
+                    st.rerun()
+            else:
+                st.success("✅ Final step")
+
+
 # ── Inner-page execution ──────────────────────────────────────────────────────
 
 def _run_inner_page(page_filename: str, module_tag: str) -> None:
@@ -155,9 +255,13 @@ def _render() -> None:
     st.title(f"{workflow_icon} {workflow_name}")
     if description:
         st.caption(description)
-    st.markdown(
-        f"**Step {current + 1} of {len(steps)} — {step_title}**"
-    )
+
+    # Sticky nav: step breadcrumb + Prev/Next, pinned to the top of the
+    # scroll area (see _sticky_header_css()'s docstring) so a long
+    # step's content never buries navigation at the bottom.
+    _sticky_header_css()
+    _render_nav_header(step_key, current, len(steps))
+    st.markdown(f"**{step_title}**")
     st.progress((current + 1) / len(steps))
 
     # ── Instructions (left) + inner tool page (right), side-by-side ─────────
@@ -180,27 +284,6 @@ def _render() -> None:
         else:
             module_tag = f"_wf_{slug}_step_{current}"
             _run_inner_page(page_filename, module_tag)
-
-    # ── Prev / Next ───────────────────────────────────────────────────────────
-    st.divider()
-    col_prev, col_mid, col_next = st.columns([1, 2, 1])
-
-    with col_prev:
-        if current > 0:
-            if st.button("⬅️ Previous step", use_container_width=True):
-                st.session_state[step_key] = current - 1
-                st.rerun()
-
-    with col_mid:
-        st.caption(f"Step {current + 1} / {len(steps)}")
-
-    with col_next:
-        if current < len(steps) - 1:
-            if st.button("Next step ➡️", use_container_width=True, type="primary"):
-                st.session_state[step_key] = current + 1
-                st.rerun()
-        else:
-            st.success("✅ Final step")
 
 
 # Execute on module load (matches the convention of the other pages —
