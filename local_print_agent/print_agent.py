@@ -40,14 +40,33 @@ class PrintAgentApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title("Camera Label — Print Agent")
-        root.geometry("560x820")
-        root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Six stacked sections (Printer, Live Mode, Label fields, Actions,
+        # Preview, Log) add up to ~820px tall — taller than the usable work
+        # area on plenty of laptop screens (1366x768 minus taskbar is
+        # ~728px) once you account for Windows scaling. Fixed-size +
+        # non-resizable used to just crop whatever didn't fit, with no way
+        # to reach it. Scrollable content + a resizable window fixes that
+        # on any screen: everything is reachable via scroll/resize/maximize
+        # instead of silently cut off.
+        root.minsize(480, 360)
+        screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
+        # winfo_screenheight() is the raw display height, not the usable
+        # work area (taskbar, window chrome eat into it) — trim a fixed
+        # margin rather than guess exactly, then still cap to a sane
+        # maximum so the window doesn't balloon on a huge monitor.
+        init_w = min(600, screen_w - 80)
+        init_h = min(820, screen_h - 120)
+        root.geometry(f"{init_w}x{init_h}")
+        root.resizable(True, True)
 
         self._preview_image = None  # keep a reference so Tk doesn't GC it
         self._live_polling = False
         self._poll_after_id = None
         self._config = agent_config.load()
+
+        self.container = self._build_scrollable_container()
 
         self._build_printer_section()
         self._build_live_mode_section()
@@ -59,9 +78,46 @@ class PrintAgentApp:
         self._log("Ready.")
         self.refresh_printers()
 
+    def _build_scrollable_container(self) -> ttk.Frame:
+        """A Canvas+Scrollbar wrapping a Frame that every _build_* method
+        below packs into (instead of self.root directly) — so content
+        taller than the window is reachable by scrolling (mouse wheel or
+        the scrollbar) rather than simply invisible below the window edge.
+        """
+        canvas = tk.Canvas(self.root, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        container = ttk.Frame(canvas)
+        container_window = canvas.create_window((0, 0), window=container, anchor="nw")
+
+        def on_container_configure(_event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def on_canvas_configure(event):
+            # Stretch the inner frame to the canvas's visible width so
+            # child widgets packed with fill="x" actually reach it, instead
+            # of staying at their natural (narrower) size.
+            canvas.itemconfigure(container_window, width=event.width)
+
+        container.bind("<Configure>", on_container_configure)
+        canvas.bind("<Configure>", on_canvas_configure)
+
+        def on_mousewheel(event):
+            # Windows delivers <MouseWheel> with event.delta in multiples
+            # of 120; this agent is Windows-only (see module docstring),
+            # so no <Button-4>/<Button-5> fallback is needed.
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+
+        return container
+
     # ── Printer selection ────────────────────────────────────────────────
     def _build_printer_section(self):
-        frame = ttk.LabelFrame(self.root, text="Printer (this PC)")
+        frame = ttk.LabelFrame(self.container, text="Printer (this PC)")
         frame.pack(fill="x", padx=12, pady=(12, 6))
 
         self.printer_var = tk.StringVar()
@@ -86,7 +142,7 @@ class PrintAgentApp:
 
     # ── Live Mode (poll the broker) ──────────────────────────────────────
     def _build_live_mode_section(self):
-        frame = ttk.LabelFrame(self.root, text="Live Mode (poll broker for real scans)")
+        frame = ttk.LabelFrame(self.container, text="Live Mode (poll broker for real scans)")
         frame.pack(fill="x", padx=12, pady=6)
 
         ttk.Label(frame, text="Broker URL", width=14).grid(row=0, column=0, padx=8, pady=4, sticky="w")
@@ -228,7 +284,7 @@ class PrintAgentApp:
 
     # ── Label fields (manual test input) ────────────────────────────────
     def _build_label_fields(self):
-        frame = ttk.LabelFrame(self.root, text="Label fields (manual test input)")
+        frame = ttk.LabelFrame(self.container, text="Label fields (manual test input)")
         frame.pack(fill="x", padx=12, pady=6)
 
         self.fields: dict[str, tk.StringVar] = {}
@@ -256,7 +312,7 @@ class PrintAgentApp:
 
     # ── Actions ───────────────────────────────────────────────────────────
     def _build_actions(self):
-        frame = ttk.Frame(self.root)
+        frame = ttk.Frame(self.container)
         frame.pack(fill="x", padx=12, pady=6)
         ttk.Button(frame, text="🔍 Preview", command=self.preview).pack(side="left", padx=4)
         ttk.Button(frame, text="🖨️ Print", command=self.print_now).pack(side="left", padx=4)
@@ -287,13 +343,13 @@ class PrintAgentApp:
 
     # ── Preview + log widgets ────────────────────────────────────────────
     def _build_preview(self):
-        frame = ttk.LabelFrame(self.root, text="Preview")
+        frame = ttk.LabelFrame(self.container, text="Preview")
         frame.pack(fill="x", padx=12, pady=6)
         self.preview_label = ttk.Label(frame)
         self.preview_label.pack(padx=8, pady=8)
 
     def _build_log(self):
-        frame = ttk.LabelFrame(self.root, text="Log")
+        frame = ttk.LabelFrame(self.container, text="Log")
         frame.pack(fill="both", expand=True, padx=12, pady=(6, 12))
         self.log_text = tk.Text(frame, height=8, state="disabled", wrap="word")
         self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
