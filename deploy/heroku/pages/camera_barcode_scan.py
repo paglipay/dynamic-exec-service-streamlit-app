@@ -32,18 +32,51 @@ MANUFACTURER = "Axis"
 
 st.subheader(f"📷 Scan received hardware for {site['site_name']} ({loc_code})")
 
+# ── Print device picker ─────────────────────────────────────────────────
+# Every print agent has its own device_id (local_print_agent/agent_config.py)
+# and jobs are routed to exactly one — otherwise every running agent would
+# grab every job and duplicate-print across every printer in the building.
+# A device only shows up here once it's polled at least once, so start
+# that desk's Live Mode before scanning.
+devices = cctv.list_print_devices()
+col_dev, col_refresh = st.columns([4, 1])
+with col_dev:
+    if devices:
+        device_labels = {d["device_id"]: d["device_name"] for d in devices}
+        options = list(device_labels.keys())
+        current = st.session_state.get("cctv_print_device")
+        default_idx = options.index(current) if current in options else 0
+        chosen = st.selectbox(
+            "🖨️ Print to which desk?", options=options, index=default_idx,
+            format_func=lambda k: device_labels[k],
+        )
+        st.session_state["cctv_print_device"] = chosen
+    else:
+        st.session_state["cctv_print_device"] = None
+        st.warning(
+            "No print agents online — start local_print_agent's Live Mode on the "
+            "intake desk's PC first (it needs to poll at least once before it "
+            "shows up here)."
+        )
+with col_refresh:
+    st.write("")  # vertical spacer to align the button with the selectbox
+    if st.button("🔄", help="Refresh device list"):
+        st.rerun()
+
 with st.expander("🔌 Test print-broker connection (no scan/chart needed)"):
     st.caption(
         "Sends one dummy job straight to the broker's /print-jobs, bypassing "
         "auto-assign entirely — for checking Heroku → broker → local agent "
-        "connectivity on its own, independent of any real scan or Camera Chart."
+        "connectivity on its own, independent of any real scan or Camera Chart. "
+        "Uses whichever desk is selected above."
     )
     if st.button("🖨️ Send test print job"):
         test_result = cctv.enqueue_print_job(
             site["site_name"], loc_code, {"num": 0, "letter": ""}, "TEST-SERIAL", "TEST-MODEL",
+            device_id=st.session_state.get("cctv_print_device"),
         )
         if test_result["ok"]:
-            st.success("✅ Enqueued — check the local print agent's Live Mode log for CAM0 / TEST-SERIAL.")
+            st.success("✅ Enqueued — check the selected desk's print agent Live Mode log for CAM0 / TEST-SERIAL.")
         else:
             st.error(f"❌ {test_result['error']}")
 
@@ -62,7 +95,10 @@ def _finish_row(serial: str, model: str, **extra) -> dict:
     if camera_id:
         camera_number = f"CAM{camera_id['num']}{camera_id['letter']}"
         result["camera_number"] = camera_number
-        printed = cctv.enqueue_print_job(site["site_name"], loc_code, camera_id, serial, model)
+        printed = cctv.enqueue_print_job(
+            site["site_name"], loc_code, camera_id, serial, model,
+            device_id=st.session_state.get("cctv_print_device"),
+        )
         result["print_ok"] = printed["ok"]
         result["print_error"] = printed["error"]
     return result

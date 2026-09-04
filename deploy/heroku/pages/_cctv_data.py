@@ -389,33 +389,48 @@ def suggest_assignments(loc_code: str) -> list[dict]:
 
 
 def confirm_assignment(loc_code: str, serial_number: str, camera_id_canonical: str) -> bool:
-    """Human-confirmed: attach a Camera Chart slot to a scanned asset.
-    Marks the chart slot 'assigned' and stamps the asset with that
-    camera_id + status 'assigned'. Returns False if either side is
-    already taken (re-fetches fresh state rather than trusting a stale
-    suggestion, in case another step wrote in the meantime)."""
+    """Attach a Camera Chart slot to a scanned asset. Marks the chart
+    slot 'assigned' and stamps the asset with that camera_id + status
+    'assigned'. Returns False if either side is already taken.
+
+    Atomic by construction, not check-then-set: with multiple sessions
+    (multiple techs/desks) potentially confirming against the same
+    site's chart concurrently — e.g. two auto_assign_on_scan() calls
+    landing at the same instant — a plain find_one() followed by a
+    separate update_one() has a race where both callers could pass the
+    check before either writes. Each step below folds its own
+    precondition ('still planned' / 'still unassigned') into the
+    update's filter, so MongoDB itself guarantees only one caller wins
+    a given slot.
+    """
     db = get_db()
     if db is None:
         raise RuntimeError("MONGODB_URI is not configured")
 
-    chart_row = db[CHART_COLLECTION].find_one(
-        {"loc_code": loc_code, "camera_id.canonical": camera_id_canonical}
-    )
-    if not chart_row or chart_row.get("status") != "planned":
-        return False
-
-    asset_row = db[ASSETS_COLLECTION].find_one({"loc_code": loc_code, "serial_number": serial_number})
-    if not asset_row or asset_row.get("camera_id"):
-        return False
-
-    db[CHART_COLLECTION].update_one(
-        {"loc_code": loc_code, "camera_id.canonical": camera_id_canonical},
+    # find_one_and_update's default returns the doc as it was BEFORE
+    # this update -- camera_id itself is never touched here, so that's
+    # fine to read off it below.
+    chart_row = db[CHART_COLLECTION].find_one_and_update(
+        {"loc_code": loc_code, "camera_id.canonical": camera_id_canonical, "status": "planned"},
         {"$set": {"status": "assigned", "assigned_serial_number": serial_number}},
     )
-    db[ASSETS_COLLECTION].update_one(
-        {"loc_code": loc_code, "serial_number": serial_number},
+    if not chart_row:
+        return False  # slot doesn't exist, or another caller just claimed it
+
+    asset_result = db[ASSETS_COLLECTION].update_one(
+        {"loc_code": loc_code, "serial_number": serial_number, "camera_id": None},
         {"$set": {"camera_id": chart_row["camera_id"], "status": "assigned"}},
     )
+    if asset_result.modified_count == 0:
+        # Asset doesn't exist, or another caller already assigned it —
+        # release the chart slot we just claimed so it's not stuck
+        # orphaned as "assigned" with no asset actually attached.
+        db[CHART_COLLECTION].update_one(
+            {"loc_code": loc_code, "camera_id.canonical": camera_id_canonical},
+            {"$set": {"status": "planned"}, "$unset": {"assigned_serial_number": ""}},
+        )
+        return False
+
     return True
 
 
@@ -472,15 +487,50 @@ def auto_assign_on_scan(loc_code: str, serial_number: str) -> Optional[dict]:
 
 # ── Print broker (slack-to-onedrive-sync's /print-jobs; see that repo's
 # app.py + sync_lib.py "Camera-label print queue" section) ─────────────────
+#
+# Multi-desk routing: every print agent has its own persistent device_id
+# (see local_print_agent/agent_config.py), so a job must say which one
+# should print it — list_print_devices() lists agents that have polled
+# recently, for the session's device picker (see camera_site_select.py),
+# and its choice is passed into enqueue_print_job() as device_id. Without
+# this, every running agent would grab every job regardless of site/desk,
+# duplicate-printing across every printer in the building.
 
-def enqueue_print_job(site_name: str, loc_code: str, camera_id: dict, serial_number: str, model_number: str) -> dict:
-    """Best-effort POST to the broker. Never raises — a broker outage or
-    missing config shouldn't break the scan loop, just skip printing.
+def list_print_devices() -> list[dict]:
+    """Print agents that have polled the broker recently (active print
+    agents), for the session's device picker. Returns [] on any broker
+    problem — the picker just shows nothing rather than erroring, since
+    this is polled from the UI on every rerun."""
+    broker_url = _get_secret("PRINT_BROKER_URL")
+    broker_secret = _get_secret("PRINT_BROKER_SECRET")
+    if not broker_url or not broker_secret:
+        return []
+    try:
+        import requests
+        resp = requests.get(
+            f"{broker_url.rstrip('/')}/print-jobs/devices",
+            headers={"Authorization": f"Bearer {broker_secret}"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("items", [])
+        return []
+    except Exception:
+        return []
+
+
+def enqueue_print_job(site_name: str, loc_code: str, camera_id: dict, serial_number: str,
+                       model_number: str, device_id: str) -> dict:
+    """Best-effort POST to the broker, targeting one specific print
+    agent (device_id — see list_print_devices()). Never raises — a
+    broker outage shouldn't break the scan loop, just skip printing.
     Returns {"ok": bool, "error": str | None}."""
     broker_url = _get_secret("PRINT_BROKER_URL")
     broker_secret = _get_secret("PRINT_BROKER_SECRET")
     if not broker_url or not broker_secret:
         return {"ok": False, "error": "PRINT_BROKER_URL/PRINT_BROKER_SECRET not configured"}
+    if not device_id:
+        return {"ok": False, "error": "No print device selected"}
 
     try:
         import requests
@@ -494,6 +544,7 @@ def enqueue_print_job(site_name: str, loc_code: str, camera_id: dict, serial_num
                 "model_number": model_number,
                 "site_name": site_name,
                 "loc_code": loc_code,
+                "device_id": device_id,
             },
             timeout=5,
         )

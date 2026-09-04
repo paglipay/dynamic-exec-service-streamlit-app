@@ -103,16 +103,31 @@ class PrintAgentApp:
             command=lambda: self.device_token_entry.configure(show="" if self.show_token_var.get() else "•"),
         ).grid(row=1, column=2, padx=(0, 8), pady=4, sticky="w")
 
-        ttk.Label(frame, text="Poll every (sec)", width=14).grid(row=2, column=0, padx=8, pady=4, sticky="w")
+        # device_name is what shows up in the Streamlit app's "Print to
+        # which desk?" picker — give it something a tech can recognize
+        # (e.g. "Front Desk", "Room 12"), not the raw device_id below.
+        ttk.Label(frame, text="Device Name", width=14).grid(row=2, column=0, padx=8, pady=4, sticky="w")
+        self.device_name_var = tk.StringVar(value=self._config["device_name"])
+        ttk.Entry(frame, textvariable=self.device_name_var, width=38).grid(row=2, column=1, padx=8, pady=4, sticky="w")
+
+        # device_id is generated once by agent_config.load() and persisted —
+        # shown read-only just so it's visible/copyable for troubleshooting.
+        ttk.Label(frame, text="Device ID", width=14).grid(row=3, column=0, padx=8, pady=4, sticky="w")
+        device_id_entry = ttk.Entry(frame, width=38)
+        device_id_entry.insert(0, self._config["device_id"])
+        device_id_entry.configure(state="readonly")
+        device_id_entry.grid(row=3, column=1, padx=8, pady=4, sticky="w")
+
+        ttk.Label(frame, text="Poll every (sec)", width=14).grid(row=4, column=0, padx=8, pady=4, sticky="w")
         self.poll_interval_var = tk.IntVar(value=self._config["poll_interval_seconds"])
         ttk.Spinbox(frame, from_=2, to=60, textvariable=self.poll_interval_var, width=6).grid(
-            row=2, column=1, padx=8, pady=4, sticky="w"
+            row=4, column=1, padx=8, pady=4, sticky="w"
         )
 
         self.live_status_var = tk.StringVar(value="Stopped")
-        ttk.Label(frame, textvariable=self.live_status_var).grid(row=3, column=0, padx=8, pady=(4, 8), sticky="w")
+        ttk.Label(frame, textvariable=self.live_status_var).grid(row=5, column=0, padx=8, pady=(4, 8), sticky="w")
         self.live_toggle_btn = ttk.Button(frame, text="▶ Start", command=self.toggle_live_mode)
-        self.live_toggle_btn.grid(row=3, column=1, padx=8, pady=(4, 8), sticky="w")
+        self.live_toggle_btn.grid(row=5, column=1, padx=8, pady=(4, 8), sticky="w")
 
     def toggle_live_mode(self):
         if self._live_polling:
@@ -127,22 +142,29 @@ class PrintAgentApp:
 
         broker_url = self.broker_url_var.get().strip()
         device_token = self.device_token_var.get().strip()
+        device_name = self.device_name_var.get().strip()
         if not broker_url or not device_token:
             messagebox.showwarning("Missing config", "Broker URL and Device Token are both required.")
+            return
+        if not device_name:
+            messagebox.showwarning("Missing config", "Device Name is required — it's what shows up in the Streamlit app's device picker.")
             return
         if not self.printer_var.get():
             messagebox.showwarning("No printer selected", "Pick a printer first.")
             return
 
+        self._config["device_name"] = device_name  # device_id is never edited, only device_name
         agent_config.save({
             "broker_url": broker_url,
             "device_token": device_token,
+            "device_id": self._config["device_id"],
+            "device_name": device_name,
             "poll_interval_seconds": self.poll_interval_var.get(),
         })
 
         self._live_polling = True
         self.live_toggle_btn.configure(text="⏹ Stop")
-        self._log(f"Live Mode started — polling {broker_url} every {self.poll_interval_var.get()}s.")
+        self._log(f"Live Mode started as '{device_name}' — polling {broker_url} every {self.poll_interval_var.get()}s.")
         # Fingerprint only (length + last 4 chars) — enough to compare against
         # what's actually stored in the broker's Heroku config vars without
         # ever logging the real secret. A length mismatch usually means
@@ -156,24 +178,26 @@ class PrintAgentApp:
 
         broker_url = self.broker_url_var.get().strip()
         device_token = self.device_token_var.get().strip()
+        device_id = self._config["device_id"]
+        device_name = self.device_name_var.get().strip()
         printer = self.printer_var.get()
 
         try:
-            jobs = broker.list_pending(broker_url, device_token)
+            jobs = broker.list_pending(broker_url, device_token, device_id, device_name)
         except Exception as exc:
             self.live_status_var.set(f"Error (retrying): {exc}")
             self._log(f"⚠️ Poll failed: {exc}")
             jobs = []
         else:
-            self.live_status_var.set(f"Polling — last check {datetime.now().strftime('%H:%M:%S')}, {len(jobs)} pending")
+            self.live_status_var.set(f"Polling as '{device_name}' — last check {datetime.now().strftime('%H:%M:%S')}, {len(jobs)} pending")
 
         for job in jobs:
-            self._print_job(broker_url, device_token, printer, job)
+            self._print_job(broker_url, device_token, device_id, printer, job)
 
         if self._live_polling:
             self._poll_after_id = self.root.after(self.poll_interval_var.get() * 1000, self._poll_once)
 
-    def _print_job(self, broker_url: str, device_token: str, printer: str, job: dict):
+    def _print_job(self, broker_url: str, device_token: str, device_id: str, printer: str, job: dict):
         data = label.LabelData(
             camera_number=job.get("camera_number") or "—",
             serial_number=job.get("serial_number") or "",
@@ -189,7 +213,7 @@ class PrintAgentApp:
             return  # leave it pending — will retry next poll
 
         try:
-            broker.ack(broker_url, device_token, job["job_id"])
+            broker.ack(broker_url, device_token, job["job_id"], device_id)
         except Exception as exc:
             self._log(f"⚠️ Printed {data.camera_number} but ack failed (may reprint next poll): {exc}")
             return
