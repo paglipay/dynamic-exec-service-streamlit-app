@@ -1,0 +1,3 @@
+# Holds a live DEVICE_TOKEN once filled in via the GUI — never commit.
+agent_config.json
+label_preview.png

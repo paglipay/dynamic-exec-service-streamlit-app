@@ -511,10 +511,19 @@ def _vapply_replacements(tree, replacements):
     return changed
 
 
+def _get_secret(name: str) -> str:
+    """Read from st.secrets if available, fall back to os.environ.
+    Matches the convention used by _auth_guard.py, image_cleaner.py, etc."""
+    try:
+        return str(st.secrets.get(name) or "")
+    except Exception:
+        return os.environ.get(name, "")
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_r1_schools():
     """Load all records from the r1_data MongoDB collection."""
-    mongo_uri = os.environ.get("MONGODB_URI", "")
+    mongo_uri = _get_secret("MONGODB_URI")
     if not mongo_uri:
         return []
     try:

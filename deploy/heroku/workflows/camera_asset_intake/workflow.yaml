@@ -1,0 +1,24 @@
+name: "Camera Asset Intake"
+icon: "📷"
+description: "Select a site → upload Asset Workbook + Camera Chart → scan received hardware → assign camera numbers → export."
+
+steps:
+  - title: "Select site"
+    page: camera_site_select.py
+    instructions: 01_select_site.md
+
+  - title: "Upload Asset Workbook + Camera Chart"
+    page: camera_file_upload.py
+    instructions: 02_upload_files.md
+
+  - title: "Scan received hardware"
+    page: camera_barcode_scan.py
+    instructions: 03_scan_assets.md
+
+  - title: "Assign camera numbers"
+    page: camera_assign_review.py
+    instructions: 04_assign_review.md
+
+  - title: "Export"
+    page: camera_export.py
+    instructions: 05_export.md

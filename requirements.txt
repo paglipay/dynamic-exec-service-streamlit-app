@@ -27,3 +27,4 @@ streamlit-folium
 fastkml
 piexif
 PyYAML
+python-dotenv
