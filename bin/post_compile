@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Heroku's Python buildpack runs this after `pip install -r requirements.txt`
+# succeeds, in the same build env (same `pip`/`python` the app will run
+# with) — before the slug is finalized. Documented buildpack hook, not
+# custom infra: https://devcenter.heroku.com/articles/python-support
+#
+# Why this exists: rapidocr-onnxruntime (camera_barcode_scan.py's OCR
+# fallback, via _cctv_data.py's decode_text_from_image()) hard-depends on
+# GUI `opencv-python`, not `opencv-python-headless` — confirmed against
+# PyPI's requires_dist for even its latest release, no headless-friendly
+# extra exists. This app already depends on `opencv-python-headless`
+# (image_cleaner.py's YOLO detection) specifically because Heroku dynos
+# lack the system libs (libGL.so.1 etc.) the GUI build needs — having
+# BOTH installed doesn't cleanly coexist (confirmed locally: they share
+# the same `cv2/` install directory, and the GUI package's files can
+# leave the shared install broken even after being uninstalled again,
+# e.g. `cv2.resize` disappearing). So: let requirements.txt's normal
+# `pip install` pull in GUI opencv-python as rapidocr's dependency, then
+# swap it back out for a clean headless-only install right here.
+set -e
+echo "-----> Swapping GUI opencv-python for opencv-python-headless (rapidocr-onnxruntime dependency fix)"
+pip uninstall -y opencv-python opencv-python-headless
+pip install --no-cache-dir opencv-python-headless

@@ -519,11 +519,19 @@ def list_print_devices() -> list[dict]:
         return []
 
 
-def enqueue_print_job(site_name: str, loc_code: str, camera_id: dict, serial_number: str,
-                       model_number: str, device_id: str) -> dict:
+def enqueue_print_job(site_name: str, loc_code: str, camera_id: Optional[dict], serial_number: str,
+                       model_number: str, device_id: str, camera_number_override: Optional[str] = None) -> dict:
     """Best-effort POST to the broker, targeting one specific print
     agent (device_id — see list_print_devices()). Never raises — a
     broker outage shouldn't break the scan loop, just skip printing.
+
+    `camera_number_override`: use this literal string as the label's
+    camera number instead of formatting one from `camera_id` — for the
+    "force print" path (camera_barcode_scan.py), where there's no real
+    Camera Chart assignment (`camera_id` is None) but printing is
+    wanted anyway, e.g. to exercise the pipeline without a chart
+    uploaded yet.
+
     Returns {"ok": bool, "error": str | None}."""
     broker_url = _get_secret("PRINT_BROKER_URL")
     broker_secret = _get_secret("PRINT_BROKER_SECRET")
@@ -534,7 +542,7 @@ def enqueue_print_job(site_name: str, loc_code: str, camera_id: dict, serial_num
 
     try:
         import requests
-        camera_number = f"CAM{camera_id['num']}{camera_id['letter']}"
+        camera_number = camera_number_override or f"CAM{camera_id['num']}{camera_id['letter']}"
         resp = requests.post(
             f"{broker_url.rstrip('/')}/print-jobs",
             headers={"Authorization": f"Bearer {broker_secret}"},
@@ -569,3 +577,217 @@ def list_sites() -> list[dict]:
         {"_id": 0, "School Name": 1, "Site": 1, "Loc Code": 1, "Address": 1, "City": 1, "Contractor": 1},
     ).sort("School Name", 1)
     return [dict(doc) for doc in cursor]
+
+
+# ── Barcode image decoding + classification (camera_barcode_settings.py) ───
+#
+# Global, not per-site: barcode format is a property of the hardware line
+# (Axis), not the school. Rules are ordered; the first regex that matches
+# a decoded barcode's text wins. A catch-all ".*" rule is required as the
+# last entry so every decoded value always classifies as something —
+# get_barcode_rules() re-appends one if it's ever missing (e.g. someone
+# deleted every row in the settings page).
+#
+# `field` is one of "serial_number", "model_number", or "ignore" — ignore
+# is for barcodes that are neither, e.g. the EAN-13 retail/GTIN barcode
+# printed on most Axis boxes alongside the actual Part No./Serial No.
+# barcodes (confirmed against a real AXIS T90A21 IR-LED box label: three
+# barcodes present — Part No. 5013-211, Serial No. HW013509110, and a
+# 13-digit EAN-13 — the last of which must be dropped, not counted as a
+# second "model", or it blocks the "exactly one Model + one Serial"
+# auto-add check in camera_barcode_scan.py).
+#
+# B8A4-prefixed serials are MAC-derived (B8:A4:4F is Axis's registered
+# MAC OUI), which only applies to networked devices whose serial IS their
+# MAC address (network cameras). Non-networked accessories (like that
+# IR-LED illuminator) get a different serial format — HW-prefixed, per
+# that same real label — hence two separate serial rules below rather
+# than assuming one prefix covers every Axis product.
+
+BARCODE_RULES_COLLECTION = "cctv_barcode_rules"
+BARCODE_RULES_DOC_ID = "default"  # single global doc; not per-site
+
+DEFAULT_BARCODE_RULES = [
+    {"pattern": "^B8A4", "field": "serial_number", "label": "Serial Number (MAC-derived, networked devices)", "case_insensitive": True},
+    {"pattern": "^HW", "field": "serial_number", "label": "Serial Number (HW-prefixed, accessories)", "case_insensitive": True},
+    {"pattern": r"^\d{13}$", "field": "ignore", "label": "EAN-13 retail barcode (ignored)", "case_insensitive": True},
+    {"pattern": ".*", "field": "model_number", "label": "Model Number (default)", "case_insensitive": True},
+]
+
+
+def get_barcode_rules() -> list[dict]:
+    """Ordered classification rules, seeding the default set on first use."""
+    db = get_db()
+    if db is None:
+        return list(DEFAULT_BARCODE_RULES)
+    doc = db[BARCODE_RULES_COLLECTION].find_one({"_id": BARCODE_RULES_DOC_ID})
+    rules = (doc or {}).get("rules")
+    if not rules:
+        rules = list(DEFAULT_BARCODE_RULES)
+        save_barcode_rules(rules)
+    # Guard against a saved set that's missing a catch-all (e.g. every rule
+    # was deleted in the settings page) — classify_barcode() depends on one
+    # always matching.
+    if not any(r.get("pattern") == ".*" for r in rules):
+        rules = rules + [{"pattern": ".*", "field": "model_number", "label": "Model Number (default)", "case_insensitive": True}]
+    return rules
+
+
+def save_barcode_rules(rules: list[dict]) -> None:
+    db = get_db()
+    if db is None:
+        raise RuntimeError("MONGODB_URI is not configured")
+    db[BARCODE_RULES_COLLECTION].update_one(
+        {"_id": BARCODE_RULES_DOC_ID},
+        {"$set": {"rules": rules}},
+        upsert=True,
+    )
+
+
+def classify_barcode(text: str, rules: Optional[list[dict]] = None) -> Optional[str]:
+    """Return the target field ('serial_number' or 'model_number') for a
+    decoded barcode string, per the first matching rule. None only if
+    `rules` has no catch-all (get_barcode_rules() always adds one; a
+    caller passing a hand-built list without one can still get None)."""
+    if rules is None:
+        rules = get_barcode_rules()
+    for rule in rules:
+        pattern = rule.get("pattern") or ""
+        flags = re.IGNORECASE if rule.get("case_insensitive", True) else 0
+        try:
+            if re.search(pattern, text, flags):
+                return rule.get("field")
+        except re.error:
+            continue  # a bad regex in a saved rule shouldn't break every scan
+    return None
+
+
+def decode_barcodes_from_image(image_bytes: bytes) -> list[str]:
+    """Decode every barcode found in an image (any symbology zxing-cpp
+    supports — Code128, Code39, EAN, QR, DataMatrix, etc.), e.g. a single
+    photo of a label carrying both the Model and Serial barcodes.
+    Returns decoded text strings, empty list if none found or on any
+    decode failure (never raises — a bad/corrupt image shouldn't break
+    the scan page)."""
+    try:
+        import zxingcpp
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        results = zxingcpp.read_barcodes(img)
+        return [r.text for r in results if r.valid and r.text]
+    except Exception:
+        return []
+
+
+# ── OCR text reading (fallback/complement to barcode decoding) ─────────────
+#
+# rapidocr-onnxruntime, not pytesseract: pytesseract needs the Tesseract
+# binary installed at the OS level, which Heroku's default Python
+# buildpack doesn't provide without extra buildpack/Aptfile work. rapidocr
+# is a pure pip package with its own bundled ONNX models (~15MB) and
+# reuses onnxruntime, already a dependency here (image_cleaner.py's YOLO
+# detection) — no new heavy runtime, no system binary.
+#
+# Real deployment gotcha, already handled: rapidocr-onnxruntime hard-
+# depends on GUI `opencv-python` (confirmed against PyPI metadata, no
+# headless-friendly release exists), which conflicts with this app's
+# `opencv-python-headless` (also image_cleaner.py) — both packages share
+# the same `cv2/` install directory and don't coexist cleanly (confirmed
+# locally: having both installed, even briefly, can leave `cv2` broken —
+# e.g. `cv2.resize` missing — even after uninstalling the GUI one again).
+# See bin/post_compile, which swaps GUI opencv-python back out for
+# opencv-python-headless right after `pip install -r requirements.txt` —
+# a documented Heroku Python buildpack hook, not custom infra.
+
+_MODEL_LABEL_RE = re.compile(r"(?:part\s*no\.?|model\s*no\.?|model)[:\s]*([A-Z0-9][A-Z0-9\-/]{2,})", re.IGNORECASE)
+# Second model pattern: on some labels (e.g. AXIS Q1786-LE) the model is
+# printed straight after "AXIS" with no "Model:"/"Part No." caption at
+# all -- confirmed against a real label read this way. Requires a digit
+# in the captured value so it doesn't also match "AXIS COMMUNICATIONS"
+# (the brand's own logo text, which has no digit) as a fake "model".
+_MODEL_AXIS_RE = re.compile(r"\bAXIS[:\s]*([A-Z][A-Z0-9]*\d[A-Z0-9\-]{2,})", re.IGNORECASE)
+_SERIAL_LABEL_RE = re.compile(r"(?:serial\s*no\.?|s\s*/\s*n)[:\s]*([A-Z0-9][A-Z0-9\-/]{2,})", re.IGNORECASE)
+
+_ocr_engine = None
+
+
+def _get_ocr_engine():
+    """Lazily construct and cache the OCR engine — it loads ONNX models
+    from disk on first use, so this avoids paying that cost until an
+    image is actually uploaded."""
+    global _ocr_engine
+    if _ocr_engine is None:
+        from rapidocr_onnxruntime import RapidOCR
+        _ocr_engine = RapidOCR()
+    return _ocr_engine
+
+
+def read_text_from_image(image_bytes: bytes) -> list[str]:
+    """OCR every text line found in an image. Returns [] on any failure
+    (missing engine, corrupt image, no text found) — never raises, same
+    convention as decode_barcodes_from_image()."""
+    try:
+        import numpy as np
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        engine = _get_ocr_engine()
+        result, _elapse = engine(np.array(img))
+        if not result:
+            return []
+        return [text for _box, text, _score in result if text]
+    except Exception:
+        return []
+
+
+def extract_model_serial_from_text(lines: list[str], rules: Optional[list[dict]] = None) -> dict:
+    """Best-effort: find Model/Serial values in OCR'd label text lines.
+
+    Two passes, because a real AXIS label's layout isn't consistent
+    (confirmed against a real T90A21 box label): "Part No. 5013-211" is
+    one line — label and value together — but "Serial No." is its own
+    line, with the actual value ("HW013509110") printed separately below
+    the barcode, so OCR returns them as two unrelated text lines with
+    nothing connecting them.
+
+    1. Explicit "Part No./Model" and "Serial No./S/N" label prefixes,
+       captured from whatever follows on the SAME line/text region.
+    2. If no "Model"/"Part No." caption was found, try the "AXIS
+       <model>" pattern instead (_MODEL_AXIS_RE) — some labels (e.g. a
+       real AXIS Q1786-LE box) print the model straight after the brand
+       name with no caption word at all.
+    3. If no explicit serial label+value was found on one line, fall
+       back to running the barcode classification rules (same ones
+       classify_barcode() uses — B8A4/HW prefixes etc.) against every
+       OCR'd line, since a bare serial number is usually distinctive
+       enough on its own even without its caption attached. This
+       fallback is serial-only (not model) because the model catch-all
+       rule (".*") is too permissive for free OCR text — it would treat
+       company names, certification marks, etc. as a "model" too.
+
+    Returns {"model": str|None, "serial": str|None} — either or both
+    may be None if not found.
+    """
+    model = None
+    serial = None
+    joined = " ".join(lines)
+
+    m = _MODEL_LABEL_RE.search(joined)
+    if m:
+        model = m.group(1).strip()
+    if not model:
+        m = _MODEL_AXIS_RE.search(joined)
+        if m:
+            model = m.group(1).strip()
+
+    m = _SERIAL_LABEL_RE.search(joined)
+    if m:
+        serial = m.group(1).strip()
+
+    if not serial:
+        for line in lines:
+            cleaned = line.strip()
+            if cleaned and classify_barcode(cleaned, rules) == "serial_number":
+                serial = cleaned
+                break
+
+    return {"model": model, "serial": serial}
