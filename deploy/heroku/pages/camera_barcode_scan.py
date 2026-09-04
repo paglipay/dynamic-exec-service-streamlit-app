@@ -226,54 +226,80 @@ with st.expander("🖼️ Upload barcode image"):
         "classifies each as Model or Serial automatically (rules: "
         "**⚙️ Settings → Barcode Classification Rules**; default: `B8A4`/`HW` "
         "prefixes → Serial, a 13-digit EAN retail barcode → ignored, anything "
-        "else → Model). Auto-adds the row immediately once exactly one Model "
-        "and one Serial are found, same as a live scan — no confirmation "
-        "step, so a misread goes straight through; re-upload a clearer photo "
-        "if the result looks wrong."
+        "else → Model). If a barcode is unreadable (glare, damage, bad angle) "
+        "it falls back to reading the printed label text on the same photo — "
+        "'Part No. ...'/'Model ...' and 'Serial No. .../S/N ...'. Auto-adds "
+        "the row immediately once exactly one Model and one Serial are "
+        "found, same as a live scan — no confirmation step, so a misread "
+        "goes straight through; re-upload a clearer photo if the result "
+        "looks wrong."
     )
     img_file = st.file_uploader(
-        "Barcode image", type=["png", "jpg", "jpeg", "bmp", "webp"], key="cctv_barcode_image",
+        "Barcode/label image", type=["png", "jpg", "jpeg", "bmp", "webp"], key="cctv_barcode_image",
     )
     if img_file is not None:
-        decoded = cctv.decode_barcodes_from_image(img_file.getvalue())
-        if not decoded:
-            st.error("No barcode found in that image — try a clearer or closer photo.")
-        else:
-            rules = cctv.get_barcode_rules()
-            models, serials, other = [], [], []
-            for text in decoded:
-                field = cctv.classify_barcode(text, rules)
-                if field == "model_number":
-                    models.append(text)
-                elif field == "serial_number":
-                    serials.append(text)
-                elif field == "ignore":
-                    continue  # e.g. an EAN-13 retail barcode — not model/serial, dropped
-                else:
-                    other.append(text)
+        image_bytes = img_file.getvalue()
+        decoded = cctv.decode_barcodes_from_image(image_bytes)
 
-            if len(models) == 1 and len(serials) == 1:
-                result = _finish_row(serials[0], models[0])
-                if result["camera_number"] and result["print_ok"]:
-                    st.success(f"✅ {models[0]} / {serials[0]} → {result['camera_number']}, sent to printer")
-                elif result["camera_number"]:
-                    st.warning(f"⚠️ {models[0]} / {serials[0]} → {result['camera_number']} (print failed: {result['print_error']})")
-                else:
-                    st.info(f"✅ {models[0]} / {serials[0]} recorded — no matching Camera Chart slot yet")
+        rules = cctv.get_barcode_rules()
+        models, serials, other = [], [], []
+        for text in decoded:
+            field = cctv.classify_barcode(text, rules)
+            if field == "model_number":
+                models.append(text)
+            elif field == "serial_number":
+                serials.append(text)
+            elif field == "ignore":
+                continue  # e.g. an EAN-13 retail barcode — not model/serial, dropped
             else:
-                st.warning(
-                    f"Found {len(decoded)} barcode(s) but couldn't tell which is which — "
-                    "expected exactly one Model and one Serial. Add manually below, or "
-                    "adjust the rules in Settings if these are being classified wrong."
-                )
-                st.dataframe(
-                    pd.DataFrame(
-                        [{"Value": t, "Classified as": "Model"} for t in models]
-                        + [{"Value": t, "Classified as": "Serial"} for t in serials]
-                        + [{"Value": t, "Classified as": "—"} for t in other]
-                    ),
-                    hide_index=True, use_container_width=True,
-                )
+                other.append(text)
+
+        model = models[0] if len(models) == 1 else None
+        serial = serials[0] if len(serials) == 1 else None
+        model_source = "barcode" if model else None
+        serial_source = "barcode" if serial else None
+
+        # OCR fallback — only runs when barcode decoding alone didn't
+        # already resolve both fields, since it's slower (ONNX inference)
+        # and barcodes are the more exact source when they're readable.
+        ocr_lines = []
+        if not (model and serial):
+            with st.spinner("Barcode didn't resolve both fields — trying OCR on the same image…"):
+                ocr_lines = cctv.read_text_from_image(image_bytes)
+            if ocr_lines:
+                ocr_result = cctv.extract_model_serial_from_text(ocr_lines, rules=rules)
+                if not model and ocr_result["model"]:
+                    model = ocr_result["model"]
+                    model_source = "OCR"
+                if not serial and ocr_result["serial"]:
+                    serial = ocr_result["serial"]
+                    serial_source = "OCR"
+
+        if model and serial:
+            result = _finish_row(serial, model)
+            note = "" if model_source == serial_source == "barcode" else f" (model via {model_source}, serial via {serial_source})"
+            if result["camera_number"] and result["print_ok"]:
+                st.success(f"✅ {model} / {serial}{note} → {result['camera_number']}, sent to printer")
+            elif result["camera_number"]:
+                st.warning(f"⚠️ {model} / {serial}{note} → {result['camera_number']} (print failed: {result['print_error']})")
+            else:
+                st.info(f"✅ {model} / {serial}{note} recorded — no matching Camera Chart slot yet")
+        elif not decoded and not ocr_lines:
+            st.error("No barcode or readable text found in that image — try a clearer or closer photo.")
+        else:
+            st.warning(
+                f"Couldn't resolve both a Model and a Serial from that image — "
+                f"expected exactly one of each. Add manually below, or adjust the "
+                f"rules in Settings if these are being classified wrong."
+            )
+            rows = (
+                [{"Value": t, "Source": "barcode", "Classified as": "Model"} for t in models]
+                + [{"Value": t, "Source": "barcode", "Classified as": "Serial"} for t in serials]
+                + [{"Value": t, "Source": "barcode", "Classified as": "—"} for t in other]
+            )
+            if ocr_lines:
+                rows += [{"Value": t, "Source": "OCR", "Classified as": "—"} for t in ocr_lines]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 with st.expander("Or enter manually"):
     with st.form("scan_form_manual", clear_on_submit=True):

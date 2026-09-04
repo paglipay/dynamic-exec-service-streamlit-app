@@ -669,3 +669,103 @@ def decode_barcodes_from_image(image_bytes: bytes) -> list[str]:
         return [r.text for r in results if r.valid and r.text]
     except Exception:
         return []
+
+
+# ── OCR text reading (fallback/complement to barcode decoding) ─────────────
+#
+# rapidocr-onnxruntime, not pytesseract: pytesseract needs the Tesseract
+# binary installed at the OS level, which Heroku's default Python
+# buildpack doesn't provide without extra buildpack/Aptfile work. rapidocr
+# is a pure pip package with its own bundled ONNX models (~15MB) and
+# reuses onnxruntime, already a dependency here (image_cleaner.py's YOLO
+# detection) — no new heavy runtime, no system binary.
+#
+# Real deployment gotcha, already handled: rapidocr-onnxruntime hard-
+# depends on GUI `opencv-python` (confirmed against PyPI metadata, no
+# headless-friendly release exists), which conflicts with this app's
+# `opencv-python-headless` (also image_cleaner.py) — both packages share
+# the same `cv2/` install directory and don't coexist cleanly (confirmed
+# locally: having both installed, even briefly, can leave `cv2` broken —
+# e.g. `cv2.resize` missing — even after uninstalling the GUI one again).
+# See bin/post_compile, which swaps GUI opencv-python back out for
+# opencv-python-headless right after `pip install -r requirements.txt` —
+# a documented Heroku Python buildpack hook, not custom infra.
+
+_MODEL_LABEL_RE = re.compile(r"(?:part\s*no\.?|model\s*no\.?|model)[:\s]*([A-Z0-9][A-Z0-9\-/]{2,})", re.IGNORECASE)
+_SERIAL_LABEL_RE = re.compile(r"(?:serial\s*no\.?|s\s*/\s*n)[:\s]*([A-Z0-9][A-Z0-9\-/]{2,})", re.IGNORECASE)
+
+_ocr_engine = None
+
+
+def _get_ocr_engine():
+    """Lazily construct and cache the OCR engine — it loads ONNX models
+    from disk on first use, so this avoids paying that cost until an
+    image is actually uploaded."""
+    global _ocr_engine
+    if _ocr_engine is None:
+        from rapidocr_onnxruntime import RapidOCR
+        _ocr_engine = RapidOCR()
+    return _ocr_engine
+
+
+def read_text_from_image(image_bytes: bytes) -> list[str]:
+    """OCR every text line found in an image. Returns [] on any failure
+    (missing engine, corrupt image, no text found) — never raises, same
+    convention as decode_barcodes_from_image()."""
+    try:
+        import numpy as np
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        engine = _get_ocr_engine()
+        result, _elapse = engine(np.array(img))
+        if not result:
+            return []
+        return [text for _box, text, _score in result if text]
+    except Exception:
+        return []
+
+
+def extract_model_serial_from_text(lines: list[str], rules: Optional[list[dict]] = None) -> dict:
+    """Best-effort: find Model/Serial values in OCR'd label text lines.
+
+    Two passes, because a real AXIS label's layout isn't consistent
+    (confirmed against a real T90A21 box label): "Part No. 5013-211" is
+    one line — label and value together — but "Serial No." is its own
+    line, with the actual value ("HW013509110") printed separately below
+    the barcode, so OCR returns them as two unrelated text lines with
+    nothing connecting them.
+
+    1. Explicit "Part No./Model" and "Serial No./S/N" label prefixes,
+       captured from whatever follows on the SAME line/text region.
+    2. If no explicit serial label+value was found on one line, fall
+       back to running the barcode classification rules (same ones
+       classify_barcode() uses — B8A4/HW prefixes etc.) against every
+       OCR'd line, since a bare serial number is usually distinctive
+       enough on its own even without its caption attached. This
+       fallback is serial-only (not model) because the model catch-all
+       rule (".*") is too permissive for free OCR text — it would treat
+       company names, certification marks, etc. as a "model" too.
+
+    Returns {"model": str|None, "serial": str|None} — either or both
+    may be None if not found.
+    """
+    model = None
+    serial = None
+    joined = " ".join(lines)
+
+    m = _MODEL_LABEL_RE.search(joined)
+    if m:
+        model = m.group(1).strip()
+
+    m = _SERIAL_LABEL_RE.search(joined)
+    if m:
+        serial = m.group(1).strip()
+
+    if not serial:
+        for line in lines:
+            cleaned = line.strip()
+            if cleaned and classify_barcode(cleaned, rules) == "serial_number":
+                serial = cleaned
+                break
+
+    return {"model": model, "serial": serial}
