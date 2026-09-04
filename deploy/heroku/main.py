@@ -3,6 +3,14 @@ import os
 import sys
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # local dev convenience only; no-op if no .env is present.
+    # Production and `streamlit run` prefer .streamlit/secrets.toml
+    # (st.secrets) — see each page's `_get_secret()` helper.
+except ImportError:
+    pass
+
 import streamlit as st
 
 st.set_page_config(
