@@ -1,14 +1,18 @@
 ## Step 3: Scan received hardware
 
-As the shipment arrives, scan each part's serial-number barcode with a
-USB or Bluetooth barcode scanner — it types into the focused field like
-a keyboard, so just click into **Serial Number** first.
+Click **📷 Open Barcode Scanner** as the shipment arrives. It's a
+focused window that walks through each Axis camera box in a fixed
+order:
 
-Fill in **Model / Part Number** and **Manufacturer** for each scan too
-— the next step matches scanned hardware to a Camera Chart slot by
-model, so this needs to be accurate. **MAC Address** is optional; add
-it if the box has a separate MAC barcode.
+1. Scan the box's **Model / Part Number** barcode.
+2. Scan its **Serial Number** barcode.
+3. It saves automatically and the window resets for the next camera —
+   scan Model, then Serial, again.
 
-This form is a starting point — if your scanners output a different
-format (e.g. a single barcode encoding model + serial together), this
-step is the one to adapt.
+A USB/Bluetooth barcode scanner types into the focused field like a
+keyboard and sends Enter, so just keep scanning — no clicking between
+scans. Click **Done scanning** when the box is empty.
+
+This step is scoped to Axis camera equipment for now (manufacturer is
+fixed). Use **Or enter manually** below the scanner button if a
+barcode won't read.
