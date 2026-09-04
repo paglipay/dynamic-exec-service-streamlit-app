@@ -131,19 +131,7 @@ if not selected and not selected_workflow:
     st.caption("Select a tool below to get started.")
     st.divider()
 
-    for section, apps in APP_CATALOG.items():
-        existing = [(f, label) for f, label in apps if os.path.exists(os.path.join(PAGE_DIR, f))]
-        if not existing:
-            continue
-        st.markdown(f'<div class="ctk-section">{section}</div>', unsafe_allow_html=True)
-        cols = st.columns(COLS)
-        for i, (filename, label) in enumerate(existing):
-            with cols[i % COLS]:
-                if st.button(label, key=f"card_{filename}", use_container_width=True):
-                    st.session_state["selected_app"] = filename
-                    st.rerun()
-
-    # ── Workflows section (auto-discovered) ────────────────────────────────
+    # ── Workflows section (auto-discovered) — shown first ───────────────────
     workflows = discover_workflows()
     if workflows:
         st.markdown(
@@ -160,6 +148,18 @@ if not selected and not selected_workflow:
                     st.session_state["selected_workflow"] = slug
                     # Always start a fresh workflow from step 0
                     st.session_state.pop(f"_wf_step_{slug}", None)
+                    st.rerun()
+
+    for section, apps in APP_CATALOG.items():
+        existing = [(f, label) for f, label in apps if os.path.exists(os.path.join(PAGE_DIR, f))]
+        if not existing:
+            continue
+        st.markdown(f'<div class="ctk-section">{section}</div>', unsafe_allow_html=True)
+        cols = st.columns(COLS)
+        for i, (filename, label) in enumerate(existing):
+            with cols[i % COLS]:
+                if st.button(label, key=f"card_{filename}", use_container_width=True):
+                    st.session_state["selected_app"] = filename
                     st.rerun()
 
     render_footer()
