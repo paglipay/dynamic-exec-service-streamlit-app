@@ -45,11 +45,29 @@ Fill in:
   that repo's `.env`/Heroku config vars). **Not** `TRIGGER_SECRET` —
   that one gates *enqueuing* jobs (used by the Streamlit app), and this
   agent only *polls/acks*, a different, device-scoped permission.
+- **Device Name** — a human-readable label for this PC/printer (e.g.
+  "Front Desk", "Room 12 Intake"). Defaults to this machine's hostname.
+  This is exactly what shows up in the Streamlit app's **"Print to
+  which desk?"** picker — so with multiple intake desks running their
+  own agent, this is how a tech there tells them apart.
+- **Device ID** — auto-generated once, shown read-only. Stays stable
+  across restarts (persisted in `agent_config.json`) — this, not the
+  name, is what the broker actually uses to route jobs to *this*
+  agent specifically and no other. Don't edit it; if you ever need a
+  clean slate, delete `agent_config.json` and a new one is generated.
 - **Poll every (sec)** — how often to check for new jobs.
 
-Click **▶ Start**. These three fields save to `agent_config.json`
+Click **▶ Start**. These fields save to `agent_config.json`
 (gitignored — holds a live token, never commit it) so you don't have to
 retype them next launch.
+
+**Multiple desks:** run this agent on each intake PC, each with its own
+Device Name (Device ID is generated per-machine automatically) and its
+own printer selected. A device only appears in the Streamlit app's
+picker after it's polled at least once, so start Live Mode *before*
+scanning at that desk. Jobs are routed by device_id — even two desks
+working the same site concurrently only ever print what they
+themselves scanned, never each other's.
 
 ## Testing with Microsoft Print to PDF
 
@@ -94,10 +112,6 @@ printer/rendering path on its own.
   `arial.ttf`, `seguisb.ttf`) and falls back to PIL's tiny built-in
   bitmap font if none are found — labels will look much rougher on a
   machine without those fonts installed.
-- No site/device scoping on the broker's pending-jobs list yet — this
-  agent (and any other) sees every pending job from every site. Only
-  safe for a single intake desk at a time; see `sync_lib.py`'s
-  "Camera-label print queue" section in the broker repo.
 - A job that fails to print (e.g. printer offline) stays pending and
   gets retried next poll — a job that prints but fails to ack could
   print again on the next poll (logged either way, not silent).
