@@ -579,12 +579,30 @@ def list_sites() -> list[dict]:
 # last entry so every decoded value always classifies as something —
 # get_barcode_rules() re-appends one if it's ever missing (e.g. someone
 # deleted every row in the settings page).
+#
+# `field` is one of "serial_number", "model_number", or "ignore" — ignore
+# is for barcodes that are neither, e.g. the EAN-13 retail/GTIN barcode
+# printed on most Axis boxes alongside the actual Part No./Serial No.
+# barcodes (confirmed against a real AXIS T90A21 IR-LED box label: three
+# barcodes present — Part No. 5013-211, Serial No. HW013509110, and a
+# 13-digit EAN-13 — the last of which must be dropped, not counted as a
+# second "model", or it blocks the "exactly one Model + one Serial"
+# auto-add check in camera_barcode_scan.py).
+#
+# B8A4-prefixed serials are MAC-derived (B8:A4:4F is Axis's registered
+# MAC OUI), which only applies to networked devices whose serial IS their
+# MAC address (network cameras). Non-networked accessories (like that
+# IR-LED illuminator) get a different serial format — HW-prefixed, per
+# that same real label — hence two separate serial rules below rather
+# than assuming one prefix covers every Axis product.
 
 BARCODE_RULES_COLLECTION = "cctv_barcode_rules"
 BARCODE_RULES_DOC_ID = "default"  # single global doc; not per-site
 
 DEFAULT_BARCODE_RULES = [
-    {"pattern": "^B8A4", "field": "serial_number", "label": "Serial Number", "case_insensitive": True},
+    {"pattern": "^B8A4", "field": "serial_number", "label": "Serial Number (MAC-derived, networked devices)", "case_insensitive": True},
+    {"pattern": "^HW", "field": "serial_number", "label": "Serial Number (HW-prefixed, accessories)", "case_insensitive": True},
+    {"pattern": r"^\d{13}$", "field": "ignore", "label": "EAN-13 retail barcode (ignored)", "case_insensitive": True},
     {"pattern": ".*", "field": "model_number", "label": "Model Number (default)", "case_insensitive": True},
 ]
 

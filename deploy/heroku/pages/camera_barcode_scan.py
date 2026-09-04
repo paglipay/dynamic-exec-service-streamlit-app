@@ -224,11 +224,12 @@ with st.expander("🖼️ Upload barcode image"):
     st.caption(
         "Upload a photo of the label — decodes every barcode found and "
         "classifies each as Model or Serial automatically (rules: "
-        "**⚙️ Settings → Barcode Classification Rules**, default: text "
-        "starting `B8A4` → Serial, anything else → Model). Auto-adds the "
-        "row immediately once exactly one of each is found, same as a "
-        "live scan — no confirmation step, so a misread goes straight "
-        "through; re-upload a clearer photo if the result looks wrong."
+        "**⚙️ Settings → Barcode Classification Rules**; default: `B8A4`/`HW` "
+        "prefixes → Serial, a 13-digit EAN retail barcode → ignored, anything "
+        "else → Model). Auto-adds the row immediately once exactly one Model "
+        "and one Serial are found, same as a live scan — no confirmation "
+        "step, so a misread goes straight through; re-upload a clearer photo "
+        "if the result looks wrong."
     )
     img_file = st.file_uploader(
         "Barcode image", type=["png", "jpg", "jpeg", "bmp", "webp"], key="cctv_barcode_image",
@@ -242,7 +243,14 @@ with st.expander("🖼️ Upload barcode image"):
             models, serials, other = [], [], []
             for text in decoded:
                 field = cctv.classify_barcode(text, rules)
-                (models if field == "model_number" else serials if field == "serial_number" else other).append(text)
+                if field == "model_number":
+                    models.append(text)
+                elif field == "serial_number":
+                    serials.append(text)
+                elif field == "ignore":
+                    continue  # e.g. an EAN-13 retail barcode — not model/serial, dropped
+                else:
+                    other.append(text)
 
             if len(models) == 1 and len(serials) == 1:
                 result = _finish_row(serials[0], models[0])

@@ -39,7 +39,7 @@ edited = st.data_editor(
     column_config={
         "pattern": st.column_config.TextColumn("Regex pattern", required=True, width="medium"),
         "field": st.column_config.SelectboxColumn(
-            "Classifies as", options=["serial_number", "model_number"], required=True,
+            "Classifies as", options=["serial_number", "model_number", "ignore"], required=True,
         ),
         "label": st.column_config.TextColumn("Label (for display only)"),
         "case_insensitive": st.column_config.CheckboxColumn("Case-insensitive", default=True),
@@ -75,8 +75,10 @@ test_value = st.text_input("Paste a decoded barcode value to see which rule catc
 if test_value:
     field = cctv.classify_barcode(test_value, rules=edited.to_dict("records"))
     if field == "serial_number":
-        st.success(f"→ **Serial Number**")
+        st.success("→ **Serial Number**")
     elif field == "model_number":
-        st.info(f"→ **Model Number**")
+        st.info("→ **Model Number**")
+    elif field == "ignore":
+        st.warning("→ **Ignored** (e.g. an EAN-13 retail barcode) — dropped, not treated as Model or Serial.")
     else:
         st.warning("No rule matched (this shouldn't happen once a catch-all is saved).")
