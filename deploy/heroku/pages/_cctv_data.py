@@ -519,11 +519,19 @@ def list_print_devices() -> list[dict]:
         return []
 
 
-def enqueue_print_job(site_name: str, loc_code: str, camera_id: dict, serial_number: str,
-                       model_number: str, device_id: str) -> dict:
+def enqueue_print_job(site_name: str, loc_code: str, camera_id: Optional[dict], serial_number: str,
+                       model_number: str, device_id: str, camera_number_override: Optional[str] = None) -> dict:
     """Best-effort POST to the broker, targeting one specific print
     agent (device_id — see list_print_devices()). Never raises — a
     broker outage shouldn't break the scan loop, just skip printing.
+
+    `camera_number_override`: use this literal string as the label's
+    camera number instead of formatting one from `camera_id` — for the
+    "force print" path (camera_barcode_scan.py), where there's no real
+    Camera Chart assignment (`camera_id` is None) but printing is
+    wanted anyway, e.g. to exercise the pipeline without a chart
+    uploaded yet.
+
     Returns {"ok": bool, "error": str | None}."""
     broker_url = _get_secret("PRINT_BROKER_URL")
     broker_secret = _get_secret("PRINT_BROKER_SECRET")
@@ -534,7 +542,7 @@ def enqueue_print_job(site_name: str, loc_code: str, camera_id: dict, serial_num
 
     try:
         import requests
-        camera_number = f"CAM{camera_id['num']}{camera_id['letter']}"
+        camera_number = camera_number_override or f"CAM{camera_id['num']}{camera_id['letter']}"
         resp = requests.post(
             f"{broker_url.rstrip('/')}/print-jobs",
             headers={"Authorization": f"Bearer {broker_secret}"},

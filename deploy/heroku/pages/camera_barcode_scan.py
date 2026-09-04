@@ -63,6 +63,19 @@ with col_refresh:
     if st.button("🔄", help="Refresh device list"):
         st.rerun()
 
+st.session_state.setdefault("cctv_force_print", False)
+st.checkbox(
+    "🔧 Force print even without a Camera Chart match (testing)",
+    key="cctv_force_print",
+    help=(
+        "Normally a row only prints once auto-assign finds a matching Camera "
+        "Chart slot. Turn this on to send a print job for every row regardless "
+        "— useful for exercising the Heroku → broker → local agent → printer "
+        "flow end-to-end before a real Camera Chart is uploaded. The label "
+        "prints \"UNASSIGNED\" instead of a real camera number."
+    ),
+)
+
 with st.expander("🔌 Test print-broker connection (no scan/chart needed)"):
     st.caption(
         "Sends one dummy job straight to the broker's /print-jobs, bypassing "
@@ -85,19 +98,28 @@ def _finish_row(serial: str, model: str, **extra) -> dict:
     """Save one scanned/typed Model+Serial row, attempt scan-time
     auto-assign (see _cctv_data.auto_assign_on_scan's docstring for why
     this always picks the lowest matching slot, ambiguous or not), and
-    — if assigned — enqueue a print job. Never raises; a broker/network
-    failure is reported back, not fatal to the scan loop, so scanning
-    keeps working even if printing doesn't."""
+    — if assigned, or "Force print" is on — enqueue a print job. Never
+    raises; a broker/network failure is reported back, not fatal to the
+    scan loop, so scanning keeps working even if printing doesn't."""
     cctv.add_scanned_asset(loc_code, serial, model, manufacturer=MANUFACTURER, **extra)
     result = {"serial": serial, "model": model, "camera_number": None, "print_ok": None, "print_error": None}
 
     camera_id = cctv.auto_assign_on_scan(loc_code, serial)
     if camera_id:
-        camera_number = f"CAM{camera_id['num']}{camera_id['letter']}"
-        result["camera_number"] = camera_number
+        result["camera_number"] = f"CAM{camera_id['num']}{camera_id['letter']}"
         printed = cctv.enqueue_print_job(
             site["site_name"], loc_code, camera_id, serial, model,
             device_id=st.session_state.get("cctv_print_device"),
+        )
+        result["print_ok"] = printed["ok"]
+        result["print_error"] = printed["error"]
+    elif st.session_state.get("cctv_force_print"):
+        result["camera_number"] = "UNASSIGNED"
+        result["forced"] = True
+        printed = cctv.enqueue_print_job(
+            site["site_name"], loc_code, None, serial, model,
+            device_id=st.session_state.get("cctv_print_device"),
+            camera_number_override="UNASSIGNED",
         )
         result["print_ok"] = printed["ok"]
         result["print_error"] = printed["error"]
