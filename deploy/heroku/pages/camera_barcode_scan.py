@@ -32,6 +32,21 @@ MANUFACTURER = "Axis"
 
 st.subheader(f"📷 Scan received hardware for {site['site_name']} ({loc_code})")
 
+with st.expander("🔌 Test print-broker connection (no scan/chart needed)"):
+    st.caption(
+        "Sends one dummy job straight to the broker's /print-jobs, bypassing "
+        "auto-assign entirely — for checking Heroku → broker → local agent "
+        "connectivity on its own, independent of any real scan or Camera Chart."
+    )
+    if st.button("🖨️ Send test print job"):
+        test_result = cctv.enqueue_print_job(
+            site["site_name"], loc_code, {"num": 0, "letter": ""}, "TEST-SERIAL", "TEST-MODEL",
+        )
+        if test_result["ok"]:
+            st.success("✅ Enqueued — check the local print agent's Live Mode log for CAM0 / TEST-SERIAL.")
+        else:
+            st.error(f"❌ {test_result['error']}")
+
 
 def _finish_row(serial: str, model: str, **extra) -> dict:
     """Save one scanned/typed Model+Serial row, attempt scan-time
