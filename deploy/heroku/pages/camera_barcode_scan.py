@@ -96,7 +96,11 @@ def _scanner_dialog():
         elif stage == "model":
             st.session_state["cctv_scan_pending_model"] = value
             st.session_state["cctv_scan_stage"] = "serial"
-            st.rerun()
+            # scope="fragment": rerun just this dialog, not the whole app —
+            # a plain st.rerun() here would close the dialog (per st.dialog's
+            # own docs: "the dialog function is not called during the
+            # full-script rerun").
+            st.rerun(scope="fragment")
         else:
             cctv.add_scanned_asset(loc_code, value, pending_model, manufacturer=MANUFACTURER)
             row = {"Model": pending_model, "Serial Number": value}
@@ -105,7 +109,7 @@ def _scanner_dialog():
             st.session_state["cctv_scan_pending_model"] = None
             st.session_state["cctv_scan_stage"] = "model"
             st.toast(f"Saved {value}", icon="✅")
-            st.rerun()
+            st.rerun(scope="fragment")
 
     if log:
         st.divider()
