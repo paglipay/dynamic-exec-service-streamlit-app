@@ -95,9 +95,13 @@ class PrintAgentApp:
 
         ttk.Label(frame, text="Device Token", width=14).grid(row=1, column=0, padx=8, pady=4, sticky="w")
         self.device_token_var = tk.StringVar(value=self._config["device_token"])
-        ttk.Entry(frame, textvariable=self.device_token_var, width=38, show="•").grid(
-            row=1, column=1, padx=8, pady=4, sticky="w"
-        )
+        self.device_token_entry = ttk.Entry(frame, textvariable=self.device_token_var, width=32, show="•")
+        self.device_token_entry.grid(row=1, column=1, padx=8, pady=4, sticky="w")
+        self.show_token_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            frame, text="show", variable=self.show_token_var,
+            command=lambda: self.device_token_entry.configure(show="" if self.show_token_var.get() else "•"),
+        ).grid(row=1, column=2, padx=(0, 8), pady=4, sticky="w")
 
         ttk.Label(frame, text="Poll every (sec)", width=14).grid(row=2, column=0, padx=8, pady=4, sticky="w")
         self.poll_interval_var = tk.IntVar(value=self._config["poll_interval_seconds"])
@@ -139,6 +143,11 @@ class PrintAgentApp:
         self._live_polling = True
         self.live_toggle_btn.configure(text="⏹ Stop")
         self._log(f"Live Mode started — polling {broker_url} every {self.poll_interval_var.get()}s.")
+        # Fingerprint only (length + last 4 chars) — enough to compare against
+        # what's actually stored in the broker's Heroku config vars without
+        # ever logging the real secret. A length mismatch usually means
+        # trailing whitespace got pasted into the Heroku config var itself.
+        self._log(f"Using device token: {len(device_token)} chars, ending '...{device_token[-4:]}'")
         self._poll_once()
 
     def _poll_once(self):
