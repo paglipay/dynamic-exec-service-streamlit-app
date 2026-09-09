@@ -279,6 +279,23 @@ class PrintAgentApp:
 
         self._log(f"🖨️ Printed + acked: {data.camera_number} / {data.serial_number}")
 
+        # Included templates (see the Templates section's Include checkbox)
+        # also fire on a real scan, by design -- best-effort and logged on
+        # its own; a failure here never un-acks or retries the primary job
+        # above, which already succeeded. Substituted from this job's real
+        # scan data (not the Label fields section, which is irrelevant here).
+        included = [t for t in self._templates if t.get("include", True)]
+        if included:
+            values = {
+                "camera_number": job.get("camera_number") or "",
+                "serial_number": job.get("serial_number") or "",
+                "model_number": job.get("model_number") or "",
+                "site_name": job.get("site_name") or "",
+                "loc_code": job.get("loc_code") or "",
+            }
+            ok = self._print_templates(printer, included, values, context_label=data.camera_number)
+            self._log(f"📑 Included templates for {data.camera_number}: {ok}/{len(included)} sent.")
+
     def _on_close(self):
         self._live_polling = False
         if self._poll_after_id is not None:
@@ -376,67 +393,179 @@ class PrintAgentApp:
         return True
 
     # ── Templates ────────────────────────────────────────────────────────
+    # "Include" (☑/☐, toggled via double-click or 🔁 Toggle Include) is a
+    # persistent per-template flag, not a selection — it drives 🖨️ Print
+    # Included *and* a real Live Mode scan (see _print_job), without having
+    # to reselect anything each time. Print Selected (ctrl/shift-click on
+    # the list) is the separate, ad hoc path for a one-off batch that
+    # doesn't match whatever's currently marked Include.
     def _build_templates_section(self):
         frame = ttk.LabelFrame(self.container, text="📑 Templates")
         frame.pack(fill="x", padx=12, pady=6)
 
-        # extended select -- ctrl/shift-click for "single or multiple
-        # templates" per the batch-print action below.
-        self.templates_listbox = tk.Listbox(frame, height=6, selectmode="extended", exportselection=False)
-        self.templates_listbox.pack(fill="x", padx=8, pady=(8, 4))
+        ttk.Label(
+            frame,
+            text=(
+                "Fields may use {camera_number} {serial_number} {model_number} {site_name} {loc_code} — filled in "
+                "from the Label fields above (or, for Included templates, from a real scan) when printed."
+            ),
+            wraplength=520, justify="left", foreground="#555",
+        ).pack(fill="x", padx=8, pady=(8, 4))
 
-        btn_row = ttk.Frame(frame)
-        btn_row.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Button(btn_row, text="💾 Save As New", command=self._save_template).pack(side="left", padx=(0, 4))
-        ttk.Button(btn_row, text="📥 Load Selected", command=self._load_template).pack(side="left", padx=4)
-        ttk.Button(btn_row, text="🖨️ Print Selected", command=self._print_selected_templates).pack(side="left", padx=4)
-        ttk.Button(btn_row, text="🗑️ Delete Selected", command=self._delete_selected_templates).pack(side="left", padx=4)
+        self.templates_listbox = tk.Listbox(frame, height=6, selectmode="extended", exportselection=False)
+        self.templates_listbox.pack(fill="x", padx=8, pady=4)
+        self.templates_listbox.bind("<Double-Button-1>", self._on_template_double_click)
+
+        btn_row1 = ttk.Frame(frame)
+        btn_row1.pack(fill="x", padx=8, pady=(4, 2))
+        ttk.Button(btn_row1, text="➕ New Template", command=self._new_template).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_row1, text="✏️ Edit Selected", command=self._edit_selected_template).pack(side="left", padx=4)
+        ttk.Button(btn_row1, text="📥 Load Selected", command=self._load_template).pack(side="left", padx=4)
+        ttk.Button(btn_row1, text="🔁 Toggle Include", command=self._toggle_include_selected).pack(side="left", padx=4)
+
+        btn_row2 = ttk.Frame(frame)
+        btn_row2.pack(fill="x", padx=8, pady=(2, 8))
+        ttk.Button(btn_row2, text="🖨️ Print Selected", command=self._print_selected_templates).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_row2, text="🖨️ Print Included", command=self._print_included_now).pack(side="left", padx=4)
+        ttk.Button(btn_row2, text="🗑️ Delete Selected", command=self._delete_selected_templates).pack(side="left", padx=4)
 
         self._refresh_template_list()
 
     def _refresh_template_list(self):
+        selected = set(self._selected_template_indices()) if hasattr(self, "templates_listbox") else set()
         self.templates_listbox.delete(0, "end")
         for t in self._templates:
             cam = t.get("camera_number") or "—"
             model = t.get("model_number") or ""
             copies = t.get("copies", 1)
-            self.templates_listbox.insert(
-                "end", f"{t.get('name', '(unnamed)'):<24} x{copies:<3} {cam:<10} {model}"
-            )
+            glyph = "☑" if t.get("include", True) else "☐"
+            self.templates_listbox.insert("end", f"{glyph} {t.get('name', '(unnamed)'):<22} x{copies:<3} {cam:<14} {model}")
+        for i in selected:
+            if i < self.templates_listbox.size():
+                self.templates_listbox.selection_set(i)
 
     def _selected_template_indices(self) -> list[int]:
         return [int(i) for i in self.templates_listbox.curselection()]
 
-    def _save_template(self):
-        name = simpledialog.askstring("Save Template", "Template name:", parent=self.root)
-        if not name:
-            return
-        name = name.strip()
-        if not name:
-            return
+    def _on_template_double_click(self, _event):
+        # tk selects the clicked row before this fires, so a plain
+        # double-click always toggles exactly the row under the cursor —
+        # even if it changes what was previously selected.
+        indices = self._selected_template_indices()
+        if len(indices) == 1:
+            self._toggle_include([indices[0]])
 
-        existing_idx = next((i for i, t in enumerate(self._templates) if t.get("name") == name), None)
-        if existing_idx is not None:
-            if not messagebox.askyesno("Overwrite template?", f"A template named '{name}' already exists. Overwrite it?"):
-                return
+    def _toggle_include_selected(self):
+        indices = self._selected_template_indices()
+        if not indices:
+            messagebox.showwarning("Toggle Include", "Select one or more templates first.")
+            return
+        self._toggle_include(indices)
 
-        data = self._current_label_data()
-        new_template = {
-            "name": name,
-            "camera_number": data.camera_number,
-            "serial_number": data.serial_number,
-            "model_number": data.model_number,
-            "site_name": data.site_name,
-            "loc_code": data.loc_code,
-            "copies": self._copies_count(),
-        }
-        if existing_idx is not None:
-            self._templates[existing_idx] = new_template
-        else:
-            self._templates.append(new_template)
+    def _toggle_include(self, indices: list[int]):
+        for i in indices:
+            self._templates[i]["include"] = not self._templates[i].get("include", True)
         templates.save(self._templates)
         self._refresh_template_list()
-        self._log(f"💾 Saved template '{name}' (x{new_template['copies']}).")
+
+    def _new_template(self):
+        self._open_template_editor(None)
+
+    def _edit_selected_template(self):
+        indices = self._selected_template_indices()
+        if len(indices) != 1:
+            messagebox.showwarning("Edit Template", "Select exactly one template to edit.")
+            return
+        self._open_template_editor(indices[0])
+
+    def _open_template_editor(self, existing_index: int | None):
+        """Shared Add/Edit dialog. `existing_index is None` -> new template,
+        prefilled from the current Label fields + Copies (the same starting
+        point the old one-click Save used to capture directly) so a tech can
+        still just click New + Save for a plain snapshot, or edit any field
+        into a placeholder first. Otherwise edits self._templates[existing_index]
+        in place."""
+        existing = self._templates[existing_index] if existing_index is not None else None
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Edit Template" if existing else "New Template")
+        dialog.transient(self.root)
+        dialog.grab_set()  # modal — Save/Cancel below is the only way out
+
+        def prefill(key: str) -> str:
+            if existing is not None:
+                return existing.get(key, "")
+            return self.fields[key].get()  # new template: start from what's on screen now
+
+        name_var = tk.StringVar(value=existing.get("name", "") if existing else "")
+        field_vars = {key: tk.StringVar(value=prefill(key)) for key in self.fields}
+        copies_var = tk.IntVar(value=existing.get("copies", self._copies_count()) if existing else self._copies_count())
+        include_var = tk.BooleanVar(value=existing.get("include", True) if existing else True)
+
+        ttk.Label(
+            dialog,
+            text="Placeholders: {camera_number} {serial_number} {model_number} {site_name} {loc_code}",
+            foreground="#555",
+        ).grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 6), sticky="w")
+
+        ttk.Label(dialog, text="Name", width=14).grid(row=1, column=0, padx=10, pady=4, sticky="w")
+        ttk.Entry(dialog, textvariable=name_var, width=42).grid(row=1, column=1, padx=10, pady=4, sticky="w")
+
+        field_labels = [
+            ("camera_number", "Camera Number"), ("serial_number", "Serial Number"),
+            ("model_number", "Model Number"), ("site_name", "Site Name"), ("loc_code", "Loc Code"),
+        ]
+        for i, (key, text) in enumerate(field_labels, start=2):
+            ttk.Label(dialog, text=text, width=14).grid(row=i, column=0, padx=10, pady=4, sticky="w")
+            ttk.Entry(dialog, textvariable=field_vars[key], width=42).grid(row=i, column=1, padx=10, pady=4, sticky="w")
+
+        copies_row = 2 + len(field_labels)
+        ttk.Label(dialog, text="Copies", width=14).grid(row=copies_row, column=0, padx=10, pady=4, sticky="w")
+        ttk.Spinbox(dialog, from_=1, to=99, textvariable=copies_var, width=6).grid(row=copies_row, column=1, padx=10, pady=4, sticky="w")
+
+        ttk.Checkbutton(
+            dialog, text='Include (fires from "🖨️ Print Included" and from a real scan)', variable=include_var,
+        ).grid(row=copies_row + 1, column=0, columnspan=2, padx=10, pady=(4, 10), sticky="w")
+
+        def do_save():
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showwarning("Name required", "Give this template a name.", parent=dialog)
+                return
+            collision_idx = next(
+                (i for i, t in enumerate(self._templates) if t.get("name") == name and i != existing_index), None
+            )
+            if collision_idx is not None and not messagebox.askyesno(
+                "Overwrite template?", f"A template named '{name}' already exists. Overwrite it?", parent=dialog
+            ):
+                return
+
+            new_template = {
+                "name": name,
+                **{key: var.get() for key, var in field_vars.items()},
+                "copies": max(1, copies_var.get()),
+                "include": include_var.get(),
+            }
+            if existing_index is not None:
+                self._templates[existing_index] = new_template
+                if collision_idx is not None:
+                    del self._templates[collision_idx]  # assigned above by original index — safe either order
+            elif collision_idx is not None:
+                self._templates[collision_idx] = new_template
+            else:
+                self._templates.append(new_template)
+
+            templates.save(self._templates)
+            self._refresh_template_list()
+            self._log(f"💾 Saved template '{name}'.")
+            dialog.destroy()
+
+        btn_row = ttk.Frame(dialog)
+        btn_row.grid(row=copies_row + 2, column=0, columnspan=2, pady=(0, 10))
+        ttk.Button(btn_row, text="Save", command=do_save).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+        dialog.bind("<Return>", lambda _e: do_save())
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
 
     def _load_template(self):
         indices = self._selected_template_indices()
@@ -444,13 +573,30 @@ class PrintAgentApp:
             messagebox.showwarning("Load Template", "Select exactly one template to load.")
             return
         t = self._templates[indices[0]]
-        self.fields["camera_number"].set(t.get("camera_number", ""))
-        self.fields["serial_number"].set(t.get("serial_number", ""))
-        self.fields["model_number"].set(t.get("model_number", ""))
-        self.fields["site_name"].set(t.get("site_name", ""))
-        self.fields["loc_code"].set(t.get("loc_code", ""))
+        for key in self.fields:
+            self.fields[key].set(t.get(key, ""))
         self.copies_var.set(t.get("copies", 1))
-        self._log(f"📥 Loaded template '{t.get('name')}' into the fields above.")
+        self._log(f"📥 Loaded template '{t.get('name')}' into the fields above (placeholders load as literal text).")
+
+    def _print_templates(self, printer: str, template_list: list[dict], values: dict, context_label: str) -> int:
+        """Renders + prints each template in template_list — placeholders in
+        its fields substituted from `values` — its own saved copies count
+        each. Returns how many fully succeeded; a per-template failure (e.g.
+        printer went offline mid-batch) is logged and skipped rather than
+        aborting the rest (see _print_copies)."""
+        ok = 0
+        for t in template_list:
+            data = label.LabelData(**{
+                key: templates.apply_placeholders(t.get(key, ""), values) for key in self.fields
+            })
+            copies = max(1, int(t.get("copies", 1)))
+            job_label = f"{t.get('name', data.camera_number)} [{context_label}]"
+            if self._print_copies(printer, data, copies, job_label=job_label):
+                ok += 1
+        return ok
+
+    def _current_field_values(self) -> dict:
+        return {key: var.get().strip() for key, var in self.fields.items()}
 
     def _print_selected_templates(self):
         indices = self._selected_template_indices()
@@ -463,28 +609,30 @@ class PrintAgentApp:
             return
 
         selected = [self._templates[i] for i in indices]
-        total_copies = sum(t.get("copies", 1) for t in selected)
+        total_copies = sum(max(1, int(t.get("copies", 1))) for t in selected)
         if not messagebox.askyesno(
-            "Print Selected",
-            f"Print {len(selected)} template(s), {total_copies} label(s) total, to '{printer}'?",
+            "Print Selected", f"Print {len(selected)} template(s), {total_copies} label(s) total, to '{printer}'?",
         ):
             return
-
-        ok_count = 0
-        for t in selected:
-            data = label.LabelData(
-                camera_number=t.get("camera_number", ""),
-                serial_number=t.get("serial_number", ""),
-                model_number=t.get("model_number", ""),
-                site_name=t.get("site_name", ""),
-                loc_code=t.get("loc_code", ""),
-            )
-            copies = max(1, int(t.get("copies", 1)))
-            # One template's print failure (e.g. printer went offline
-            # mid-batch) shouldn't abort the rest of the selection.
-            if self._print_copies(printer, data, copies, job_label=t.get("name", data.camera_number)):
-                ok_count += 1
+        ok_count = self._print_templates(printer, selected, self._current_field_values(), context_label="selected")
         self._log(f"🖨️ Print Selected: {ok_count}/{len(selected)} template(s) sent successfully.")
+
+    def _print_included_now(self):
+        included = [t for t in self._templates if t.get("include", True)]
+        if not included:
+            messagebox.showinfo("Print Included", "No templates are marked Include (☑) — nothing to print.")
+            return
+        printer = self.printer_var.get()
+        if not printer:
+            messagebox.showwarning("No printer selected", "Pick a printer first.")
+            return
+        total_copies = sum(max(1, int(t.get("copies", 1))) for t in included)
+        if not messagebox.askyesno(
+            "Print Included", f"Print {len(included)} included template(s), {total_copies} label(s) total, to '{printer}'?",
+        ):
+            return
+        ok_count = self._print_templates(printer, included, self._current_field_values(), context_label="included")
+        self._log(f"🖨️ Print Included: {ok_count}/{len(included)} template(s) sent successfully.")
 
     def _delete_selected_templates(self):
         indices = self._selected_template_indices()
