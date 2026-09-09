@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from datetime import datetime
-from tkinter import ttk, messagebox
+from tkinter import simpledialog, ttk, messagebox
 
 from PIL import ImageTk
 
@@ -34,6 +34,7 @@ import agent_config
 import broker
 import label
 import printing
+import templates
 
 
 class PrintAgentApp:
@@ -65,6 +66,7 @@ class PrintAgentApp:
         self._live_polling = False
         self._poll_after_id = None
         self._config = agent_config.load()
+        self._templates = templates.load()
 
         self.container = self._build_scrollable_container()
 
@@ -72,6 +74,7 @@ class PrintAgentApp:
         self._build_live_mode_section()
         self._build_label_fields()
         self._build_actions()
+        self._build_templates_section()
         self._build_preview()
         self._build_log()
 
@@ -317,6 +320,14 @@ class PrintAgentApp:
         ttk.Button(frame, text="🔍 Preview", command=self.preview).pack(side="left", padx=4)
         ttk.Button(frame, text="🖨️ Print", command=self.print_now).pack(side="left", padx=4)
 
+        ttk.Label(frame, text="Copies").pack(side="left", padx=(16, 4))
+        # This is also what "💾 Save As New" (below) captures as a new
+        # template's copies count, and what "📥 Load Selected" writes back
+        # here -- one visible control doing double duty rather than a
+        # second copies field living only inside the Templates section.
+        self.copies_var = tk.IntVar(value=1)
+        ttk.Spinbox(frame, from_=1, to=99, textvariable=self.copies_var, width=4).pack(side="left")
+
     def preview(self):
         img = label.render_label(self._current_label_data())
         thumb = img.copy()
@@ -325,21 +336,169 @@ class PrintAgentApp:
         self.preview_label.configure(image=self._preview_image)
         self._log("Preview updated.")
 
+    def _copies_count(self) -> int:
+        try:
+            n = int(self.copies_var.get())
+        except (tk.TclError, ValueError):
+            n = 1
+        return max(1, n)
+
     def print_now(self):
         printer = self.printer_var.get()
         if not printer:
             messagebox.showwarning("No printer selected", "Pick a printer first.")
             return
-        img = label.render_label(self._current_label_data())
-        try:
-            printing.print_image(printer, img, job_name="Camera Label")
-        except Exception as exc:
-            self._log(f"❌ Print failed: {exc}")
-            messagebox.showerror("Print failed", str(exc))
-            return
-        self._log(f"✅ Sent to '{printer}'.")
-        if printer == "Microsoft Print to PDF":
+        copies = self._copies_count()
+        data = self._current_label_data()
+        self._print_copies(printer, data, copies, job_label=data.camera_number or "Camera Label")
+
+    def _print_copies(self, printer: str, data: label.LabelData, copies: int, job_label: str) -> bool:
+        """Renders once, prints it `copies` times. Returns whether every
+        copy succeeded. A mid-batch failure (e.g. printer went offline)
+        stops that template's remaining copies but doesn't raise -- lets
+        _print_selected_templates keep going to the next template."""
+        img = label.render_label(data)
+        for i in range(copies):
+            try:
+                job_name = f"Camera Label {job_label}" + (f" ({i + 1}/{copies})" if copies > 1 else "")
+                printing.print_image(printer, img, job_name=job_name)
+            except Exception as exc:
+                self._log(f"❌ Print failed for '{job_label}' (copy {i + 1}/{copies}): {exc}")
+                if i == 0:
+                    messagebox.showerror("Print failed", str(exc))
+                return False
+        suffix = f" x{copies}" if copies > 1 else ""
+        self._log(f"✅ Sent '{job_label}'{suffix} to '{printer}'.")
+        if printer == "Microsoft Print to PDF" and copies > 1:
+            self._log(f"  → Windows will prompt its 'Save Print Output As' dialog {copies} times (once per copy).")
+        elif printer == "Microsoft Print to PDF":
             self._log("  → Windows should now prompt a 'Save Print Output As' dialog.")
+        return True
+
+    # ── Templates ────────────────────────────────────────────────────────
+    def _build_templates_section(self):
+        frame = ttk.LabelFrame(self.container, text="📑 Templates")
+        frame.pack(fill="x", padx=12, pady=6)
+
+        # extended select -- ctrl/shift-click for "single or multiple
+        # templates" per the batch-print action below.
+        self.templates_listbox = tk.Listbox(frame, height=6, selectmode="extended", exportselection=False)
+        self.templates_listbox.pack(fill="x", padx=8, pady=(8, 4))
+
+        btn_row = ttk.Frame(frame)
+        btn_row.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(btn_row, text="💾 Save As New", command=self._save_template).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_row, text="📥 Load Selected", command=self._load_template).pack(side="left", padx=4)
+        ttk.Button(btn_row, text="🖨️ Print Selected", command=self._print_selected_templates).pack(side="left", padx=4)
+        ttk.Button(btn_row, text="🗑️ Delete Selected", command=self._delete_selected_templates).pack(side="left", padx=4)
+
+        self._refresh_template_list()
+
+    def _refresh_template_list(self):
+        self.templates_listbox.delete(0, "end")
+        for t in self._templates:
+            cam = t.get("camera_number") or "—"
+            model = t.get("model_number") or ""
+            copies = t.get("copies", 1)
+            self.templates_listbox.insert(
+                "end", f"{t.get('name', '(unnamed)'):<24} x{copies:<3} {cam:<10} {model}"
+            )
+
+    def _selected_template_indices(self) -> list[int]:
+        return [int(i) for i in self.templates_listbox.curselection()]
+
+    def _save_template(self):
+        name = simpledialog.askstring("Save Template", "Template name:", parent=self.root)
+        if not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+
+        existing_idx = next((i for i, t in enumerate(self._templates) if t.get("name") == name), None)
+        if existing_idx is not None:
+            if not messagebox.askyesno("Overwrite template?", f"A template named '{name}' already exists. Overwrite it?"):
+                return
+
+        data = self._current_label_data()
+        new_template = {
+            "name": name,
+            "camera_number": data.camera_number,
+            "serial_number": data.serial_number,
+            "model_number": data.model_number,
+            "site_name": data.site_name,
+            "loc_code": data.loc_code,
+            "copies": self._copies_count(),
+        }
+        if existing_idx is not None:
+            self._templates[existing_idx] = new_template
+        else:
+            self._templates.append(new_template)
+        templates.save(self._templates)
+        self._refresh_template_list()
+        self._log(f"💾 Saved template '{name}' (x{new_template['copies']}).")
+
+    def _load_template(self):
+        indices = self._selected_template_indices()
+        if len(indices) != 1:
+            messagebox.showwarning("Load Template", "Select exactly one template to load.")
+            return
+        t = self._templates[indices[0]]
+        self.fields["camera_number"].set(t.get("camera_number", ""))
+        self.fields["serial_number"].set(t.get("serial_number", ""))
+        self.fields["model_number"].set(t.get("model_number", ""))
+        self.fields["site_name"].set(t.get("site_name", ""))
+        self.fields["loc_code"].set(t.get("loc_code", ""))
+        self.copies_var.set(t.get("copies", 1))
+        self._log(f"📥 Loaded template '{t.get('name')}' into the fields above.")
+
+    def _print_selected_templates(self):
+        indices = self._selected_template_indices()
+        if not indices:
+            messagebox.showwarning("Print Selected", "Select one or more templates first (ctrl/shift-click for multiple).")
+            return
+        printer = self.printer_var.get()
+        if not printer:
+            messagebox.showwarning("No printer selected", "Pick a printer first.")
+            return
+
+        selected = [self._templates[i] for i in indices]
+        total_copies = sum(t.get("copies", 1) for t in selected)
+        if not messagebox.askyesno(
+            "Print Selected",
+            f"Print {len(selected)} template(s), {total_copies} label(s) total, to '{printer}'?",
+        ):
+            return
+
+        ok_count = 0
+        for t in selected:
+            data = label.LabelData(
+                camera_number=t.get("camera_number", ""),
+                serial_number=t.get("serial_number", ""),
+                model_number=t.get("model_number", ""),
+                site_name=t.get("site_name", ""),
+                loc_code=t.get("loc_code", ""),
+            )
+            copies = max(1, int(t.get("copies", 1)))
+            # One template's print failure (e.g. printer went offline
+            # mid-batch) shouldn't abort the rest of the selection.
+            if self._print_copies(printer, data, copies, job_label=t.get("name", data.camera_number)):
+                ok_count += 1
+        self._log(f"🖨️ Print Selected: {ok_count}/{len(selected)} template(s) sent successfully.")
+
+    def _delete_selected_templates(self):
+        indices = self._selected_template_indices()
+        if not indices:
+            messagebox.showwarning("Delete Selected", "Select one or more templates first.")
+            return
+        names = ", ".join(self._templates[i].get("name", "?") for i in indices)
+        if not messagebox.askyesno("Delete Selected", f"Delete {len(indices)} template(s): {names}?"):
+            return
+        for i in sorted(indices, reverse=True):
+            del self._templates[i]
+        templates.save(self._templates)
+        self._refresh_template_list()
+        self._log(f"🗑️ Deleted {len(indices)} template(s).")
 
     # ── Preview + log widgets ────────────────────────────────────────────
     def _build_preview(self):

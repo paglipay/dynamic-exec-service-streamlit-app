@@ -1,3 +1,7 @@
 # Holds a live DEVICE_TOKEN once filled in via the GUI — never commit.
 agent_config.json
 label_preview.png
+
+# Local, per-tech saved label templates (templates.py) — test data built
+# up on each machine, not something to ship/share via git.
+label_templates.json
