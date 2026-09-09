@@ -65,7 +65,7 @@ def _font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
 
 def _fit_font(
     draw: ImageDraw.ImageDraw, text: str, max_width: int, max_height: int,
-    max_size: int, min_size: int = 10,
+    max_size: int, min_size: int = 10, bold: bool = True,
 ) -> ImageFont.FreeTypeFont:
     """Largest font size (down to min_size, step 2) whose rendered bounding
     box fits within max_width x max_height. Lets a short string (a normal
@@ -74,12 +74,12 @@ def _fit_font(
     instead of clipping or overflowing the label."""
     size = max_size
     while size > min_size:
-        font = _font(size)
+        font = _font(size, bold=bold)
         left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
         if (right - left) <= max_width and (bottom - top) <= max_height:
             return font
         size -= 2
-    return _font(min_size)
+    return _font(min_size, bold=bold)
 
 
 def render_label(data: LabelData) -> Image.Image:
@@ -133,36 +133,68 @@ def render_label(data: LabelData) -> Image.Image:
     return img
 
 
-def render_label_custom(elements: list[dict]) -> Image.Image:
-    """Renders a template's free-form layout (see the "layout" key in
-    templates.py's docstring) -- each element independently positioned,
-    instead of render_label's fixed header/camera#/model/serial bands.
+def render_label_rows(rows: list[dict]) -> Image.Image:
+    """Renders a template's custom layout as a stack of full-width rows,
+    top to bottom -- no free positioning (an earlier version let a row's
+    text be dragged to an arbitrary x/y; on a label this small that was
+    fiddly to use precisely and easy to end up with something that looked
+    nothing like the default label, so it's gone). This is the same
+    banded-layout idea render_label above uses, just generalized from 4
+    fixed named bands to N rows the template defines.
 
-    Each element: {"text", "x", "y", "font_size", "align", "bold"}. x/y
-    are in this label's native 600x300 (2in x 1in @ 300dpi) pixel space --
-    WIDTH_PX/HEIGHT_PX above -- resolution-independent of whatever scale
-    the layout editor's canvas displays them at. (x, y) is the vertical
-    center of the text, at its left/center/right edge per `align` -- a
-    natural drag handle, and avoids baseline-vs-top ambiguity.
-
-    Unlike render_label's _fit_font, nothing here auto-shrinks to fit --
-    that would fight a tool whose whole point is direct manual control.
-    An element positioned or sized to run off the label's edge just does;
-    the editor's own preview makes that visible before it's printed.
+    Each row: {"text", "font_size", "align", "bold", "divider_after"}.
+    divider_after (bool, optional) draws render_label's same thin rule
+    below that row -- the default templates set it after the header and
+    the camera-number row, matching render_label's own two dividers
+    exactly. font_size is a CAP,
+    not a fixed size -- like render_label's bands, each row's actual font
+    is picked by _fit_font so short text still fills its row and long
+    text (force-print's "UNASSIGNED", a long serial) shrinks instead of
+    clipping. A row's share of the label's height is weighted by its own
+    font_size relative to the others' -- a template with one big row and
+    three small ones (the default templates' shape, matching
+    render_label's own header/camera#/model/serial proportions) naturally
+    gets one dominant band and three thin ones, without needing a
+    separate "how tall is this row" setting.
 
     `text` is expected already placeholder-resolved by the caller (see
-    print_agent.py's _print_templates) -- this module stays a pure
+    print_agent.py's _render_template) -- this module stays a pure
     renderer with no knowledge of the placeholder/template system."""
     img = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
     draw = ImageDraw.Draw(img)
-    anchors = {"left": "lm", "center": "mm", "right": "rm"}
-    for el in elements:
-        font = _font(int(el.get("font_size", 24)), bold=el.get("bold", True))
-        anchor = anchors.get(el.get("align", "left"), "lm")
-        draw.text(
-            (el.get("x", 0), el.get("y", 0)), el.get("text", ""),
-            font=font, fill="black", anchor=anchor,
-        )
+    if not rows:
+        draw.rectangle((2, 2, WIDTH_PX - 2, HEIGHT_PX - 2), outline="black", width=2)
+        return img
+
+    usable_w = WIDTH_PX - 2 * MARGIN
+    plain_gap = 4
+    divider_gap = 9  # room for the divider rule itself plus breathing space, matching render_label's own spacing
+    gaps = [divider_gap if r.get("divider_after") else plain_gap for r in rows[:-1]]
+    usable_h = HEIGHT_PX - 2 * MARGIN - sum(gaps)
+    weights = [max(1, int(r.get("font_size", 24))) for r in rows]
+    total_weight = sum(weights)
+
+    y = MARGIN
+    for i, (row, weight) in enumerate(zip(rows, weights)):
+        band_h = max(10, int(usable_h * weight / total_weight))
+        text = row.get("text", "")
+        align = row.get("align", "left")
+        font = _fit_font(draw, text, usable_w, band_h, max_size=weight, min_size=10, bold=row.get("bold", True))
+        if align == "center":
+            pos, anchor = (WIDTH_PX / 2, y + band_h / 2), "mm"
+        elif align == "right":
+            pos, anchor = (WIDTH_PX - MARGIN, y + band_h / 2), "rm"
+        else:
+            pos, anchor = (MARGIN, y + band_h / 2), "lm"
+        draw.text(pos, text, font=font, fill="black", anchor=anchor)
+        y += band_h
+        if i < len(rows) - 1:
+            gap = gaps[i]
+            if row.get("divider_after"):
+                line_y = y + gap // 2
+                draw.line((MARGIN, line_y, WIDTH_PX - MARGIN, line_y), fill="black", width=2)
+            y += gap
+
     draw.rectangle((2, 2, WIDTH_PX - 2, HEIGHT_PX - 2), outline="black", width=2)
     return img
 

@@ -23,12 +23,14 @@ from a real Live Mode scan; missing on an older saved template (from
 before this field existed) defaults to True everywhere it's read, so
 nothing already saved silently stops firing.
 
-An optional "layout" key -- a list of freely-positioned text elements,
-each {"text", "x", "y", "font_size", "align", "bold"} -- overrides the
-classic fixed camera#/model/serial bands entirely when present and
-non-empty (see label.py's render_label_custom and print_agent.py's
-"🎨 Edit Layout"). Absent/empty means "use the classic fixed layout",
-which is every template that predates this feature.
+An optional "layout" key -- a list of rows, top to bottom, each
+{"text", "font_size", "align", "bold", "divider_after"} -- overrides the
+6 fields above entirely when present and non-empty (see
+label.py's render_label_rows and print_agent.py's "🎨 Edit Layout").
+Absent/empty means "use the classic fixed layout" built from the 6
+fields above (render_label), which is every template that predates this
+feature. The 6 fields stay populated even on a template that has a
+layout, as what it falls back to if that layout is ever cleared.
 
 Gitignored (see local_print_agent/.gitignore) — like agent_config.json,
 this is local test data a tech builds up on their own machine, not
@@ -84,11 +86,17 @@ def build_placeholder_values(raw: dict) -> dict:
 
 
 # Seeded only when label_templates.json has never existed on this machine
-# (see load() below) -- illustrates the placeholder system for a tech
-# opening this for the first time, same spirit as agent_config.py
+# (see load() below) -- illustrates the placeholder/layout system for a
+# tech opening this for the first time, same spirit as agent_config.py
 # generating a device_id/device_name on first load. Both start unchecked
 # (include: False) so they never fire on this tech's very next real scan
 # just because they exist -- toggle Include once you've looked them over.
+#
+# Both ship with a "layout" built to look like render_label's own default
+# preview (same 4-band shape: small header, one big dominant row, two
+# small footer rows, dividers in the same two places) -- a known-good
+# starting point to tweak from, rather than an empty layout a tech has to
+# build up from nothing to see anything sensible.
 DEFAULT_TEMPLATES: list[dict] = [
     {
         "name": "Loc + Camera # Combo",
@@ -100,6 +108,12 @@ DEFAULT_TEMPLATES: list[dict] = [
         "ip_address": "{ip_address}",
         "copies": 1,
         "include": False,
+        "layout": [
+            {"text": "{site_name}  ({loc_code})", "font_size": 22, "align": "left", "bold": True, "divider_after": True},
+            {"text": "{loc_code}_{camera_number}", "font_size": 170, "align": "center", "bold": True, "divider_after": True},
+            {"text": "M: {model_number}", "font_size": 36, "align": "left", "bold": True},
+            {"text": "S: {serial_number}", "font_size": 36, "align": "left", "bold": True},
+        ],
     },
     {
         "name": "Compact Serial (Last 4)",
@@ -111,6 +125,12 @@ DEFAULT_TEMPLATES: list[dict] = [
         "ip_address": "",
         "copies": 2,
         "include": False,
+        "layout": [
+            {"text": "{site_name}  ({loc_code})", "font_size": 22, "align": "left", "bold": True, "divider_after": True},
+            {"text": "{camera_number}", "font_size": 170, "align": "center", "bold": True, "divider_after": True},
+            {"text": "M: {model_number}", "font_size": 36, "align": "left", "bold": True},
+            {"text": "S: {serial_last4}", "font_size": 36, "align": "left", "bold": True},
+        ],
     },
 ]
 

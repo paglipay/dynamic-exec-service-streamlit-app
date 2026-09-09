@@ -36,6 +36,18 @@ import label
 import printing
 import templates
 
+# What a fresh "🎨 Edit Layout" starts from when a template has no layout
+# yet -- the same 4-row shape as render_label's own default preview
+# (small header, one dominant row, two small footer rows, dividers in the
+# same two places), so there's always something sensible on screen to
+# tweak instead of a blank list.
+_STARTER_ROWS: list[dict] = [
+    {"text": "{site_name}  ({loc_code})", "font_size": 22, "align": "left", "bold": True, "divider_after": True},
+    {"text": "{camera_number}", "font_size": 170, "align": "center", "bold": True, "divider_after": True},
+    {"text": "M: {model_number}", "font_size": 36, "align": "left", "bold": True, "divider_after": False},
+    {"text": "S: {serial_number}", "font_size": 36, "align": "left", "bold": True, "divider_after": False},
+]
+
 
 class PrintAgentApp:
     def __init__(self, root: tk.Tk):
@@ -690,17 +702,23 @@ class PrintAgentApp:
         self._open_layout_editor(indices[0])
 
     def _open_layout_editor(self, template_index: int):
-        """Free-form layout editor: drag text elements around a 1:1-scale
-        canvas of the label's native 600x300 space (label.WIDTH_PX/
-        HEIGHT_PX), edit each one's text/size/alignment/bold, add/remove
-        elements. Works on a local `working` list -- only written back to
-        self._templates[template_index]["layout"] (and persisted) on
-        Save, same non-destructive-Cancel pattern as _open_template_editor.
-        An empty layout on Save clears any existing custom layout back to
-        the classic fixed rendering (see _render_template)."""
+        """Row-based layout editor: rows stack top to bottom and auto-size
+        to fit the label (see label.render_label_rows) -- no manual x/y
+        positioning. An earlier free-form drag-to-position version was
+        fiddly to use precisely on a label this small (600x300px) and easy
+        to end up with something that looked nothing like the default
+        label; this replaces it entirely with reorder-a-list + a live
+        preview instead of drag/drop. Works on a local `working` list --
+        only written back to self._templates[template_index]["layout"]
+        (and persisted) on Save, same non-destructive-Cancel pattern as
+        _open_template_editor. An empty layout on Save clears any existing
+        custom layout back to the classic fixed rendering (see
+        _render_template). A template with no layout yet starts from
+        _STARTER_ROWS rather than an empty list, so there's always
+        something sensible to look at."""
         t = self._templates[template_index]
-        working: list[dict] = [dict(el) for el in (t.get("layout") or [])]
-        selected_idx = [None]  # boxed so nested handlers can read/write it
+        existing = t.get("layout")
+        working: list[dict] = [dict(r) for r in existing] if existing else [dict(r) for r in _STARTER_ROWS]
 
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Edit Layout — {t.get('name', '(unnamed)')}")
@@ -708,30 +726,34 @@ class PrintAgentApp:
         dialog.grab_set()
 
         ttk.Label(
-            dialog, text="Drag an element to reposition it. Select it below to edit its text, size, and alignment.",
+            dialog,
+            text="Rows stack top to bottom and auto-size to fit the label. Select a row below to edit it.",
             justify="left", foreground="#555",
         ).pack(padx=10, pady=(10, 6), anchor="w")
 
-        canvas = tk.Canvas(
-            dialog, width=label.WIDTH_PX, height=label.HEIGHT_PX,
-            background="white", highlightthickness=1, highlightbackground="#999",
-        )
-        canvas.pack(padx=10, pady=2)
+        rows_listbox = tk.Listbox(dialog, height=6, exportselection=False)
+        rows_listbox.pack(fill="x", padx=10, pady=2)
 
-        add_row = ttk.Frame(dialog)
-        add_row.pack(fill="x", padx=10, pady=4)
-        ttk.Button(add_row, text="➕ Add Text Element", command=lambda: add_element()).pack(side="left", padx=(0, 4))
-        ttk.Button(add_row, text="🔍 Preview", command=lambda: do_preview()).pack(side="left", padx=4)
-        ttk.Button(add_row, text="↺ Clear All (back to classic)", command=lambda: clear_all()).pack(side="left", padx=4)
+        list_btn_row = ttk.Frame(dialog)
+        list_btn_row.pack(fill="x", padx=10, pady=4)
+        ttk.Button(list_btn_row, text="➕ Add Row", command=lambda: add_row()).pack(side="left", padx=(0, 4))
+        move_up_btn = ttk.Button(list_btn_row, text="⬆ Move Up", command=lambda: move_row(-1))
+        move_up_btn.pack(side="left", padx=4)
+        move_down_btn = ttk.Button(list_btn_row, text="⬇ Move Down", command=lambda: move_row(1))
+        move_down_btn.pack(side="left", padx=4)
+        remove_btn = ttk.Button(list_btn_row, text="🗑️ Remove Row", command=lambda: remove_row())
+        remove_btn.pack(side="left", padx=4)
+        ttk.Button(list_btn_row, text="↺ Clear All (back to classic)", command=lambda: clear_all()).pack(side="left", padx=4)
 
-        # ── Element property panel ──
-        props = ttk.LabelFrame(dialog, text="Selected element")
+        # ── Row property panel ──
+        props = ttk.LabelFrame(dialog, text="Selected row")
         props.pack(fill="x", padx=10, pady=6)
 
         text_var = tk.StringVar()
         size_var = tk.IntVar(value=24)
         align_var = tk.StringVar(value="left")
         bold_var = tk.BooleanVar(value=True)
+        divider_var = tk.BooleanVar(value=False)
 
         ttk.Label(props, text="Text", width=10).grid(row=0, column=0, padx=8, pady=4, sticky="w")
         text_entry = ttk.Entry(props, textvariable=text_var, width=44)
@@ -749,8 +771,8 @@ class PrintAgentApp:
 
         bold_check = ttk.Checkbutton(props, text="Bold", variable=bold_var)
         bold_check.grid(row=2, column=1, padx=8, pady=4, sticky="w")
-        remove_btn = ttk.Button(props, text="🗑️ Remove Element", command=lambda: remove_selected())
-        remove_btn.grid(row=2, column=3, padx=8, pady=4, sticky="e")
+        divider_check = ttk.Checkbutton(props, text="Divider line after this row", variable=divider_var)
+        divider_check.grid(row=2, column=2, columnspan=2, padx=8, pady=4, sticky="w")
 
         def insert_into_text(tokens: str):
             pos = text_entry.index(tk.INSERT)
@@ -770,120 +792,70 @@ class PrintAgentApp:
         preview_label_widget.pack(padx=8, pady=8)
         preview_image_ref = [None]  # keep a reference so Tk doesn't GC it
 
-        anchor_map = {"left": "w", "center": "center", "right": "e"}
-        _suspend_trace = [False]  # guards against on_prop_change firing while select_element is populating the vars
+        _suspend_trace = [False]  # guards against on_prop_change firing while on_listbox_select is populating the vars
 
         def set_props_enabled(enabled: bool):
-            text_entry.configure(state="normal" if enabled else "disabled")
-            size_spin.configure(state="normal" if enabled else "disabled")
+            state = "normal" if enabled else "disabled"
+            text_entry.configure(state=state)
+            size_spin.configure(state=state)
             align_combo.configure(state="readonly" if enabled else "disabled")
-            bold_check.configure(state="normal" if enabled else "disabled")
-            remove_btn.configure(state="normal" if enabled else "disabled")
-            picker_listbox.configure(state="normal" if enabled else "disabled")
-            picker_button.configure(state="normal" if enabled else "disabled")
+            bold_check.configure(state=state)
+            divider_check.configure(state=state)
+            picker_listbox.configure(state=state)
+            picker_button.configure(state=state)
+            remove_btn.configure(state=state)
+            move_up_btn.configure(state=state)
+            move_down_btn.configure(state=state)
 
-        # idx -> canvas item id. A full rebuild (redraw_canvas, delete+
-        # recreate every item) invalidates every existing id -- fine for
-        # structural changes (add/remove/clear), but deadly mid-drag: Tk's
-        # implicit grab that routes <B1-Motion>/<ButtonRelease-1> to the
-        # item a <ButtonPress-1> started on does NOT survive that item
-        # being deleted and replaced with a new one, so a rebuild
-        # triggered by select_element (itself called from a drag's own
-        # start_drag) silently killed every drag after the first pixel of
-        # motion. Selection, dragging, and property edits below all use
-        # targeted coords()/itemconfigure() on the existing id instead --
-        # only add/remove/clear_all still call the full rebuild.
-        canvas_items: dict[int, int] = {}
+        def row_summary(row: dict) -> str:
+            text = row.get("text", "") or "(empty)"
+            if len(text) > 36:
+                text = text[:33] + "..."
+            divider = " | divider" if row.get("divider_after") else ""
+            return f"{text}  — {row.get('font_size', 24)}pt {row.get('align', 'left')}{divider}"
 
-        def item_font(el: dict):
-            return ("Arial", max(1, int(el.get("font_size", 24))), "bold" if el.get("bold", True) else "normal")
+        def refresh_list(keep_selection: "int | None"):
+            rows_listbox.delete(0, "end")
+            for row in working:
+                rows_listbox.insert("end", row_summary(row))
+            if keep_selection is not None and 0 <= keep_selection < len(working):
+                rows_listbox.selection_set(keep_selection)
 
-        def item_color(idx: int) -> str:
-            return "#1a56db" if idx == selected_idx[0] else "black"
+        def refresh_preview():
+            values = self._current_field_values()
+            rows = [{**r, "text": templates.apply_placeholders(r.get("text", ""), values)} for r in working]
+            img = label.render_label_rows(rows) if rows else label.render_label(self._current_label_data())
+            thumb = img.copy()
+            thumb.thumbnail((480, 240))
+            preview_image_ref[0] = ImageTk.PhotoImage(thumb)
+            preview_label_widget.configure(image=preview_image_ref[0])
 
-        def redraw_canvas():
-            canvas.delete("all")
-            canvas.create_rectangle(2, 2, label.WIDTH_PX - 2, label.HEIGHT_PX - 2, outline="#ccc")
-            canvas_items.clear()
-            for idx, el in enumerate(working):
-                item = canvas.create_text(
-                    el.get("x", 0), el.get("y", 0), text=el.get("text", "") or "(empty)",
-                    font=item_font(el), anchor=anchor_map.get(el.get("align", "left"), "w"),
-                    fill=item_color(idx),
-                )
-                canvas_items[idx] = item
-                canvas.tag_bind(item, "<ButtonPress-1>", lambda e, i=idx: start_drag(e, i))
-                canvas.tag_bind(item, "<B1-Motion>", lambda e, i=idx: do_drag(e, i))
+        def selected_index():
+            sel = rows_listbox.curselection()
+            return sel[0] if sel else None
 
-        def refresh_item_visual(idx: int):
-            """Updates one item's text/font/anchor/color on its existing
-            canvas id -- no delete/recreate, so its id (and tag_bind) stay
-            valid if this fires mid-drag (e.g. a picker Insert while
-            dragging isn't possible today, but selection-color updates
-            during start_drag are, and this keeps that safe too)."""
-            item = canvas_items.get(idx)
-            if item is None:
-                return
-            el = working[idx]
-            canvas.itemconfigure(
-                item, text=el.get("text", "") or "(empty)", font=item_font(el),
-                anchor=anchor_map.get(el.get("align", "left"), "w"), fill=item_color(idx),
-            )
-
-        def refresh_all_colors():
-            for idx, item in canvas_items.items():
-                canvas.itemconfigure(item, fill=item_color(idx))
-
-        def select_element(idx):
-            selected_idx[0] = idx
+        def on_listbox_select(_event=None):
+            idx = selected_index()
             _suspend_trace[0] = True
             if idx is None:
                 text_var.set("")
                 set_props_enabled(False)
             else:
-                el = working[idx]
-                text_var.set(el.get("text", ""))
-                size_var.set(el.get("font_size", 24))
-                align_var.set(el.get("align", "left"))
-                bold_var.set(el.get("bold", True))
+                row = working[idx]
+                text_var.set(row.get("text", ""))
+                size_var.set(row.get("font_size", 24))
+                align_var.set(row.get("align", "left"))
+                bold_var.set(row.get("bold", True))
+                divider_var.set(row.get("divider_after", False))
                 set_props_enabled(True)
             _suspend_trace[0] = False
-            refresh_all_colors()
 
-        def on_canvas_click(event):
-            # Item clicks are handled by each element's own tag_bind above
-            # via start_drag, which also selects -- this only needs to
-            # catch a click that missed every item, to deselect. Checked
-            # via find_overlapping at the exact click point (an item's
-            # real bbox at event time) rather than Tk's "current" tag,
-            # which only updates from pointer *motion* -- a click with no
-            # preceding hover (the very first click after the dialog
-            # opens, or any programmatically-driven click) would otherwise
-            # never populate it, wrongly deselecting on a genuine hit.
-            if not canvas.find_overlapping(event.x, event.y, event.x, event.y):
-                select_element(None)
-
-        canvas.bind("<ButtonPress-1>", on_canvas_click)
-
-        drag_state = {"idx": None, "start_x": 0, "start_y": 0, "orig_x": 0, "orig_y": 0}
-
-        def start_drag(event, idx):
-            select_element(idx)
-            drag_state.update(idx=idx, start_x=event.x, start_y=event.y, orig_x=working[idx]["x"], orig_y=working[idx]["y"])
-
-        def do_drag(event, idx):
-            if drag_state["idx"] != idx:
-                return
-            working[idx]["x"] = max(0, min(label.WIDTH_PX, drag_state["orig_x"] + (event.x - drag_state["start_x"])))
-            working[idx]["y"] = max(0, min(label.HEIGHT_PX, drag_state["orig_y"] + (event.y - drag_state["start_y"])))
-            item = canvas_items.get(idx)
-            if item is not None:
-                canvas.coords(item, working[idx]["x"], working[idx]["y"])
+        rows_listbox.bind("<<ListboxSelect>>", on_listbox_select)
 
         def on_prop_change(*_args):
             if _suspend_trace[0]:
                 return
-            idx = selected_idx[0]
+            idx = selected_index()
             if idx is None:
                 return
             working[idx]["text"] = text_var.get()
@@ -893,50 +865,52 @@ class PrintAgentApp:
                 pass
             working[idx]["align"] = align_var.get()
             working[idx]["bold"] = bold_var.get()
-            refresh_item_visual(idx)
+            working[idx]["divider_after"] = divider_var.get()
+            refresh_list(keep_selection=idx)
+            refresh_preview()
 
         text_var.trace_add("write", on_prop_change)
         size_var.trace_add("write", on_prop_change)
         align_var.trace_add("write", on_prop_change)
         bold_var.trace_add("write", on_prop_change)
+        divider_var.trace_add("write", on_prop_change)
 
-        # add/remove/clear change *how many* elements there are, unlike
-        # selection/drag/property edits above -- these still go through
-        # the full redraw_canvas rebuild (safe here: none of them can fire
-        # mid-drag, only from their own buttons).
-        def add_element():
-            working.append({
-                "text": "{camera_number}", "x": label.WIDTH_PX // 2, "y": label.HEIGHT_PX // 2,
-                "font_size": 32, "align": "center", "bold": True,
-            })
-            select_element(len(working) - 1)
-            redraw_canvas()
+        def add_row():
+            working.append({"text": "{camera_number}", "font_size": 24, "align": "left", "bold": True, "divider_after": False})
+            new_idx = len(working) - 1
+            refresh_list(keep_selection=new_idx)
+            on_listbox_select()
+            refresh_preview()
 
-        def remove_selected():
-            idx = selected_idx[0]
+        def remove_row():
+            idx = selected_index()
             if idx is None:
                 return
             del working[idx]
-            select_element(None)
-            redraw_canvas()
+            refresh_list(keep_selection=None)
+            on_listbox_select()
+            refresh_preview()
+
+        def move_row(delta: int):
+            idx = selected_index()
+            if idx is None:
+                return
+            new_idx = idx + delta
+            if not (0 <= new_idx < len(working)):
+                return
+            working[idx], working[new_idx] = working[new_idx], working[idx]
+            refresh_list(keep_selection=new_idx)
+            refresh_preview()
 
         def clear_all():
             if working and not messagebox.askyesno(
-                "Clear All", "Remove every element? This reverts to the classic fixed layout once saved.", parent=dialog,
+                "Clear All", "Remove every row? This reverts to the classic fixed layout once saved.", parent=dialog,
             ):
                 return
             working.clear()
-            select_element(None)
-            redraw_canvas()
-
-        def do_preview():
-            values = self._current_field_values()
-            elements = [{**el, "text": templates.apply_placeholders(el.get("text", ""), values)} for el in working]
-            img = label.render_label_custom(elements) if elements else label.render_label(self._current_label_data())
-            thumb = img.copy()
-            thumb.thumbnail((480, 240))
-            preview_image_ref[0] = ImageTk.PhotoImage(thumb)
-            preview_label_widget.configure(image=preview_image_ref[0])
+            refresh_list(keep_selection=None)
+            on_listbox_select()
+            refresh_preview()
 
         def do_save():
             if working:
@@ -945,7 +919,7 @@ class PrintAgentApp:
                 t.pop("layout", None)
             templates.save(self._templates)
             self._refresh_template_list()
-            self._log(f"🎨 Saved layout for '{t.get('name')}' ({len(working)} element(s)).")
+            self._log(f"🎨 Saved layout for '{t.get('name')}' ({len(working)} row(s)).")
             dialog.destroy()
 
         btn_row = ttk.Frame(dialog)
@@ -954,8 +928,9 @@ class PrintAgentApp:
         ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
         dialog.bind("<Escape>", lambda _e: dialog.destroy())
 
-        select_element(None)  # nothing selected at open -- disables the property panel + picker
-        redraw_canvas()  # first draw -- canvas_items starts empty, so this is the initial build
+        refresh_list(keep_selection=None)
+        on_listbox_select()
+        refresh_preview()
 
     def _load_template(self):
         indices = self._selected_template_indices()
@@ -969,19 +944,19 @@ class PrintAgentApp:
         self._log(f"📥 Loaded template '{t.get('name')}' into the fields above (placeholders load as literal text).")
 
     def _render_template(self, t: dict, values: dict):
-        """Renders one template — its custom free-form layout if it has
-        one (non-empty "layout"), else the classic fixed 5-slot layout —
-        with placeholders in either substituted from `values`. Every
-        template that predates the layout editor has no "layout" key, so
-        this is the single dispatch point that keeps them rendering
-        exactly as before."""
+        """Renders one template — its custom row layout if it has one
+        (non-empty "layout"), else the classic fixed 5-slot layout — with
+        placeholders in either substituted from `values`. Every template
+        that predates the layout editor has no "layout" key, so this is
+        the single dispatch point that keeps them rendering exactly as
+        before."""
         layout = t.get("layout")
         if layout:
-            elements = [
-                {**el, "text": templates.apply_placeholders(el.get("text", ""), values)}
-                for el in layout
+            rows = [
+                {**row, "text": templates.apply_placeholders(row.get("text", ""), values)}
+                for row in layout
             ]
-            return label.render_label_custom(elements)
+            return label.render_label_rows(rows)
         data = label.LabelData(**{
             key: templates.apply_placeholders(t.get(key, ""), values) for key in self.fields
         })
