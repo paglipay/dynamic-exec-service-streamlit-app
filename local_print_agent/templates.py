@@ -23,6 +23,13 @@ from a real Live Mode scan; missing on an older saved template (from
 before this field existed) defaults to True everywhere it's read, so
 nothing already saved silently stops firing.
 
+An optional "layout" key -- a list of freely-positioned text elements,
+each {"text", "x", "y", "font_size", "align", "bold"} -- overrides the
+classic fixed camera#/model/serial bands entirely when present and
+non-empty (see label.py's render_label_custom and print_agent.py's
+"🎨 Edit Layout"). Absent/empty means "use the classic fixed layout",
+which is every template that predates this feature.
+
 Gitignored (see local_print_agent/.gitignore) — like agent_config.json,
 this is local test data a tech builds up on their own machine, not
 something to ship/share via git.

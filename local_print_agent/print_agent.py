@@ -128,6 +128,7 @@ class PrintAgentApp:
         self.printer_combo.grid(row=0, column=0, padx=8, pady=8, sticky="w")
 
         ttk.Button(frame, text="Refresh", command=self.refresh_printers).grid(row=0, column=1, padx=8, pady=8)
+        ttk.Button(frame, text="🗑️ Clear Print Queue", command=self.clear_print_queue).grid(row=0, column=2, padx=(0, 8), pady=8)
 
     def refresh_printers(self):
         try:
@@ -141,6 +142,36 @@ class PrintAgentApp:
             self.printer_var.set(default)
         elif printers:
             self.printer_var.set(printers[0])
+
+    def clear_print_queue(self):
+        """Cancels every job in the selected printer's local Windows print
+        queue -- e.g. after a jam, a wrong-printer mistake, or several
+        force-print/Print Included jobs piled up unwanted. Does not touch
+        anything server-side (the broker's pending print_jobs for Live
+        Mode) -- only this PC's own OS-level print spooler."""
+        printer = self.printer_var.get()
+        if not printer:
+            messagebox.showwarning("No printer selected", "Pick a printer first.")
+            return
+        try:
+            count = printing.pending_job_count(printer)
+        except Exception as exc:
+            messagebox.showerror("Clear Print Queue", f"Couldn't read '{printer}''s queue: {exc}")
+            return
+        if count == 0:
+            messagebox.showinfo("Clear Print Queue", f"'{printer}' has no pending jobs.")
+            return
+        if not messagebox.askyesno(
+            "Clear Print Queue", f"Cancel all {count} pending job(s) on '{printer}'? This can't be undone.",
+        ):
+            return
+        try:
+            cleared = printing.clear_print_queue(printer)
+        except Exception as exc:
+            self._log(f"❌ Clear Print Queue failed for '{printer}': {exc}")
+            messagebox.showerror("Clear Print Queue", str(exc))
+            return
+        self._log(f"🗑️ Cleared {cleared}/{count} pending job(s) from '{printer}'.")
         self._log(f"Found {len(printers)} printer(s): {', '.join(printers) or '(none)'}")
 
     # ── Live Mode (poll the broker) ──────────────────────────────────────
@@ -369,14 +400,17 @@ class PrintAgentApp:
             return
         copies = self._copies_count()
         data = self._current_label_data()
-        self._print_copies(printer, data, copies, job_label=data.camera_number or "Camera Label")
-
-    def _print_copies(self, printer: str, data: label.LabelData, copies: int, job_label: str) -> bool:
-        """Renders once, prints it `copies` times. Returns whether every
-        copy succeeded. A mid-batch failure (e.g. printer went offline)
-        stops that template's remaining copies but doesn't raise -- lets
-        _print_selected_templates keep going to the next template."""
         img = label.render_label(data)
+        self._print_copies(printer, img, copies, job_label=data.camera_number or "Camera Label")
+
+    def _print_copies(self, printer: str, img, copies: int, job_label: str) -> bool:
+        """Prints an already-rendered image `copies` times. Returns whether
+        every copy succeeded. A mid-batch failure (e.g. printer went
+        offline) stops that template's remaining copies but doesn't raise
+        -- lets _print_selected_templates keep going to the next template.
+        Takes a pre-rendered image (not a LabelData) so callers can use
+        either the classic fixed layout or a template's custom one -- see
+        _render_template."""
         for i in range(copies):
             try:
                 job_name = f"Camera Label {job_label}" + (f" ({i + 1}/{copies})" if copies > 1 else "")
@@ -425,6 +459,7 @@ class PrintAgentApp:
         ttk.Button(btn_row1, text="✏️ Edit Selected", command=self._edit_selected_template).pack(side="left", padx=4)
         ttk.Button(btn_row1, text="📥 Load Selected", command=self._load_template).pack(side="left", padx=4)
         ttk.Button(btn_row1, text="🔁 Toggle Include", command=self._toggle_include_selected).pack(side="left", padx=4)
+        ttk.Button(btn_row1, text="🎨 Edit Layout", command=self._edit_selected_layout).pack(side="left", padx=4)
 
         btn_row2 = ttk.Frame(frame)
         btn_row2.pack(fill="x", padx=8, pady=(2, 8))
@@ -438,11 +473,18 @@ class PrintAgentApp:
         selected = set(self._selected_template_indices()) if hasattr(self, "templates_listbox") else set()
         self.templates_listbox.delete(0, "end")
         for t in self._templates:
-            cam = t.get("camera_number") or "—"
-            model = t.get("model_number") or ""
             copies = t.get("copies", 1)
             glyph = "☑" if t.get("include", True) else "☐"
-            self.templates_listbox.insert("end", f"{glyph} {t.get('name', '(unnamed)'):<22} x{copies:<3} {cam:<14} {model}")
+            if t.get("layout"):
+                # A custom layout replaces the fixed fields entirely for
+                # rendering (see _render_template) -- showing them here
+                # would misleadingly imply they still apply.
+                summary = f"🎨 custom layout ({len(t['layout'])} element(s))"
+            else:
+                cam = t.get("camera_number") or "—"
+                model = t.get("model_number") or ""
+                summary = f"{cam:<14} {model}"
+            self.templates_listbox.insert("end", f"{glyph} {t.get('name', '(unnamed)'):<22} x{copies:<3} {summary}")
         for i in selected:
             if i < self.templates_listbox.size():
                 self.templates_listbox.selection_set(i)
@@ -505,6 +547,7 @@ class PrintAgentApp:
         copies_var = tk.IntVar(value=existing.get("copies", self._copies_count()) if existing else self._copies_count())
         include_var = tk.BooleanVar(value=existing.get("include", True) if existing else True)
 
+        row = 0
         ttk.Label(
             dialog,
             text=(
@@ -512,27 +555,41 @@ class PrintAgentApp:
                 "Also: {location_code} (same as loc_code), {serial_last4} (last 4 of serial_number)"
             ),
             justify="left", foreground="#555",
-        ).grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 6), sticky="w")
+        ).grid(row=row, column=0, columnspan=2, padx=10, pady=(10, 6), sticky="w")
+        row += 1
 
-        ttk.Label(dialog, text="Name", width=14).grid(row=1, column=0, padx=10, pady=4, sticky="w")
-        ttk.Entry(dialog, textvariable=name_var, width=42).grid(row=1, column=1, padx=10, pady=4, sticky="w")
+        if existing and existing.get("layout"):
+            ttk.Label(
+                dialog,
+                text="⚠ This template has a custom layout (🎨 Edit Layout) — the fields below are ignored when printing.",
+                foreground="#a60", wraplength=440, justify="left",
+            ).grid(row=row, column=0, columnspan=2, padx=10, pady=(0, 6), sticky="w")
+            row += 1
+
+        ttk.Label(dialog, text="Name", width=14).grid(row=row, column=0, padx=10, pady=4, sticky="w")
+        ttk.Entry(dialog, textvariable=name_var, width=42).grid(row=row, column=1, padx=10, pady=4, sticky="w")
+        row += 1
 
         field_labels = [
             ("camera_number", "Camera Number"), ("serial_number", "Serial Number"),
             ("model_number", "Model Number"), ("site_name", "Site Name"), ("loc_code", "Loc Code"),
             ("ip_address", "IP Address"),
         ]
-        for i, (key, text) in enumerate(field_labels, start=2):
-            ttk.Label(dialog, text=text, width=14).grid(row=i, column=0, padx=10, pady=4, sticky="w")
-            ttk.Entry(dialog, textvariable=field_vars[key], width=42).grid(row=i, column=1, padx=10, pady=4, sticky="w")
+        for key, text in field_labels:
+            ttk.Label(dialog, text=text, width=14).grid(row=row, column=0, padx=10, pady=4, sticky="w")
+            ttk.Entry(dialog, textvariable=field_vars[key], width=42).grid(row=row, column=1, padx=10, pady=4, sticky="w")
+            row += 1
 
-        copies_row = 2 + len(field_labels)
+        copies_row = row
         ttk.Label(dialog, text="Copies", width=14).grid(row=copies_row, column=0, padx=10, pady=4, sticky="w")
         ttk.Spinbox(dialog, from_=1, to=99, textvariable=copies_var, width=6).grid(row=copies_row, column=1, padx=10, pady=4, sticky="w")
+        row += 1
 
         ttk.Checkbutton(
             dialog, text='Include (fires from "🖨️ Print Included" and from a real scan)', variable=include_var,
-        ).grid(row=copies_row + 1, column=0, columnspan=2, padx=10, pady=(4, 10), sticky="w")
+        ).grid(row=row, column=0, columnspan=2, padx=10, pady=(4, 10), sticky="w")
+        row += 1
+        btn_grid_row = row
 
         def do_save():
             name = name_var.get().strip()
@@ -553,6 +610,8 @@ class PrintAgentApp:
                 "copies": max(1, copies_var.get()),
                 "include": include_var.get(),
             }
+            if existing and existing.get("layout"):
+                new_template["layout"] = existing["layout"]  # this dialog never touches layout — carry it forward
             if existing_index is not None:
                 self._templates[existing_index] = new_template
                 if collision_idx is not None:
@@ -568,11 +627,225 @@ class PrintAgentApp:
             dialog.destroy()
 
         btn_row = ttk.Frame(dialog)
-        btn_row.grid(row=copies_row + 2, column=0, columnspan=2, pady=(0, 10))
+        btn_row.grid(row=btn_grid_row, column=0, columnspan=2, pady=(0, 10))
         ttk.Button(btn_row, text="Save", command=do_save).pack(side="left", padx=6)
         ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
         dialog.bind("<Return>", lambda _e: do_save())
         dialog.bind("<Escape>", lambda _e: dialog.destroy())
+
+    # ── Layout editor ────────────────────────────────────────────────────
+    def _edit_selected_layout(self):
+        indices = self._selected_template_indices()
+        if len(indices) != 1:
+            messagebox.showwarning("Edit Layout", "Select exactly one template to edit its layout.")
+            return
+        self._open_layout_editor(indices[0])
+
+    def _open_layout_editor(self, template_index: int):
+        """Free-form layout editor: drag text elements around a 1:1-scale
+        canvas of the label's native 600x300 space (label.WIDTH_PX/
+        HEIGHT_PX), edit each one's text/size/alignment/bold, add/remove
+        elements. Works on a local `working` list -- only written back to
+        self._templates[template_index]["layout"] (and persisted) on
+        Save, same non-destructive-Cancel pattern as _open_template_editor.
+        An empty layout on Save clears any existing custom layout back to
+        the classic fixed rendering (see _render_template)."""
+        t = self._templates[template_index]
+        working: list[dict] = [dict(el) for el in (t.get("layout") or [])]
+        selected_idx = [None]  # boxed so nested handlers can read/write it
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Edit Layout — {t.get('name', '(unnamed)')}")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text=(
+                "Drag an element to reposition it. Placeholders: {camera_number} {serial_number} {model_number}\n"
+                "{site_name} {loc_code} {ip_address} {location_code} {serial_last4}"
+            ),
+            justify="left", foreground="#555",
+        ).pack(padx=10, pady=(10, 6), anchor="w")
+
+        canvas = tk.Canvas(
+            dialog, width=label.WIDTH_PX, height=label.HEIGHT_PX,
+            background="white", highlightthickness=1, highlightbackground="#999",
+        )
+        canvas.pack(padx=10, pady=2)
+
+        add_row = ttk.Frame(dialog)
+        add_row.pack(fill="x", padx=10, pady=4)
+        ttk.Button(add_row, text="➕ Add Text Element", command=lambda: add_element()).pack(side="left", padx=(0, 4))
+        ttk.Button(add_row, text="🔍 Preview", command=lambda: do_preview()).pack(side="left", padx=4)
+        ttk.Button(add_row, text="↺ Clear All (back to classic)", command=lambda: clear_all()).pack(side="left", padx=4)
+
+        # ── Element property panel ──
+        props = ttk.LabelFrame(dialog, text="Selected element")
+        props.pack(fill="x", padx=10, pady=6)
+
+        text_var = tk.StringVar()
+        size_var = tk.IntVar(value=24)
+        align_var = tk.StringVar(value="left")
+        bold_var = tk.BooleanVar(value=True)
+
+        ttk.Label(props, text="Text", width=10).grid(row=0, column=0, padx=8, pady=4, sticky="w")
+        text_entry = ttk.Entry(props, textvariable=text_var, width=44)
+        text_entry.grid(row=0, column=1, columnspan=3, padx=8, pady=4, sticky="w")
+
+        ttk.Label(props, text="Font size", width=10).grid(row=1, column=0, padx=8, pady=4, sticky="w")
+        size_spin = ttk.Spinbox(props, from_=8, to=200, textvariable=size_var, width=6)
+        size_spin.grid(row=1, column=1, padx=8, pady=4, sticky="w")
+
+        ttk.Label(props, text="Align").grid(row=1, column=2, padx=(16, 4), pady=4, sticky="e")
+        align_combo = ttk.Combobox(
+            props, textvariable=align_var, values=["left", "center", "right"], state="disabled", width=8,
+        )
+        align_combo.grid(row=1, column=3, padx=4, pady=4, sticky="w")
+
+        bold_check = ttk.Checkbutton(props, text="Bold", variable=bold_var)
+        bold_check.grid(row=2, column=1, padx=8, pady=4, sticky="w")
+        remove_btn = ttk.Button(props, text="🗑️ Remove Element", command=lambda: remove_selected())
+        remove_btn.grid(row=2, column=3, padx=8, pady=4, sticky="e")
+
+        preview_frame = ttk.LabelFrame(dialog, text="Preview")
+        preview_frame.pack(fill="x", padx=10, pady=(0, 6))
+        preview_label_widget = ttk.Label(preview_frame)
+        preview_label_widget.pack(padx=8, pady=8)
+        preview_image_ref = [None]  # keep a reference so Tk doesn't GC it
+
+        anchor_map = {"left": "w", "center": "center", "right": "e"}
+        _suspend_trace = [False]  # guards against on_prop_change firing while select_element is populating the vars
+
+        def set_props_enabled(enabled: bool):
+            text_entry.configure(state="normal" if enabled else "disabled")
+            size_spin.configure(state="normal" if enabled else "disabled")
+            align_combo.configure(state="readonly" if enabled else "disabled")
+            bold_check.configure(state="normal" if enabled else "disabled")
+            remove_btn.configure(state="normal" if enabled else "disabled")
+
+        def redraw_canvas():
+            canvas.delete("all")
+            canvas.create_rectangle(2, 2, label.WIDTH_PX - 2, label.HEIGHT_PX - 2, outline="#ccc")
+            for idx, el in enumerate(working):
+                weight = "bold" if el.get("bold", True) else "normal"
+                item = canvas.create_text(
+                    el.get("x", 0), el.get("y", 0), text=el.get("text", "") or "(empty)",
+                    font=("Arial", max(1, int(el.get("font_size", 24))), weight),
+                    anchor=anchor_map.get(el.get("align", "left"), "w"),
+                    fill="#1a56db" if idx == selected_idx[0] else "black",
+                )
+                canvas.tag_bind(item, "<ButtonPress-1>", lambda e, i=idx: start_drag(e, i))
+                canvas.tag_bind(item, "<B1-Motion>", lambda e, i=idx: do_drag(e, i))
+
+        def select_element(idx):
+            selected_idx[0] = idx
+            _suspend_trace[0] = True
+            if idx is None:
+                text_var.set("")
+                set_props_enabled(False)
+            else:
+                el = working[idx]
+                text_var.set(el.get("text", ""))
+                size_var.set(el.get("font_size", 24))
+                align_var.set(el.get("align", "left"))
+                bold_var.set(el.get("bold", True))
+                set_props_enabled(True)
+            _suspend_trace[0] = False
+            redraw_canvas()
+
+        def on_canvas_click(event):
+            # Tkinter tags whatever's directly under the cursor "current" --
+            # empty means the click missed every element, i.e. deselect.
+            # Item clicks are handled by each element's own tag_bind above
+            # via start_drag, which also selects -- this only ever fires
+            # the deselect branch in practice.
+            if not canvas.find_withtag("current"):
+                select_element(None)
+
+        canvas.bind("<ButtonPress-1>", on_canvas_click)
+
+        drag_state = {"idx": None, "start_x": 0, "start_y": 0, "orig_x": 0, "orig_y": 0}
+
+        def start_drag(event, idx):
+            select_element(idx)
+            drag_state.update(idx=idx, start_x=event.x, start_y=event.y, orig_x=working[idx]["x"], orig_y=working[idx]["y"])
+
+        def do_drag(event, idx):
+            if drag_state["idx"] != idx:
+                return
+            working[idx]["x"] = max(0, min(label.WIDTH_PX, drag_state["orig_x"] + (event.x - drag_state["start_x"])))
+            working[idx]["y"] = max(0, min(label.HEIGHT_PX, drag_state["orig_y"] + (event.y - drag_state["start_y"])))
+            redraw_canvas()
+
+        def on_prop_change(*_args):
+            if _suspend_trace[0]:
+                return
+            idx = selected_idx[0]
+            if idx is None:
+                return
+            working[idx]["text"] = text_var.get()
+            try:
+                working[idx]["font_size"] = max(1, int(size_var.get()))
+            except (tk.TclError, ValueError):
+                pass
+            working[idx]["align"] = align_var.get()
+            working[idx]["bold"] = bold_var.get()
+            redraw_canvas()
+
+        text_var.trace_add("write", on_prop_change)
+        size_var.trace_add("write", on_prop_change)
+        align_var.trace_add("write", on_prop_change)
+        bold_var.trace_add("write", on_prop_change)
+
+        def add_element():
+            working.append({
+                "text": "{camera_number}", "x": label.WIDTH_PX // 2, "y": label.HEIGHT_PX // 2,
+                "font_size": 32, "align": "center", "bold": True,
+            })
+            select_element(len(working) - 1)
+
+        def remove_selected():
+            idx = selected_idx[0]
+            if idx is None:
+                return
+            del working[idx]
+            select_element(None)
+
+        def clear_all():
+            if working and not messagebox.askyesno(
+                "Clear All", "Remove every element? This reverts to the classic fixed layout once saved.", parent=dialog,
+            ):
+                return
+            working.clear()
+            select_element(None)
+
+        def do_preview():
+            values = self._current_field_values()
+            elements = [{**el, "text": templates.apply_placeholders(el.get("text", ""), values)} for el in working]
+            img = label.render_label_custom(elements) if elements else label.render_label(self._current_label_data())
+            thumb = img.copy()
+            thumb.thumbnail((480, 240))
+            preview_image_ref[0] = ImageTk.PhotoImage(thumb)
+            preview_label_widget.configure(image=preview_image_ref[0])
+
+        def do_save():
+            if working:
+                t["layout"] = working
+            else:
+                t.pop("layout", None)
+            templates.save(self._templates)
+            self._refresh_template_list()
+            self._log(f"🎨 Saved layout for '{t.get('name')}' ({len(working)} element(s)).")
+            dialog.destroy()
+
+        btn_row = ttk.Frame(dialog)
+        btn_row.pack(pady=(0, 10))
+        ttk.Button(btn_row, text="Save", command=do_save).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+
+        redraw_canvas()
 
     def _load_template(self):
         indices = self._selected_template_indices()
@@ -585,20 +858,37 @@ class PrintAgentApp:
         self.copies_var.set(t.get("copies", 1))
         self._log(f"📥 Loaded template '{t.get('name')}' into the fields above (placeholders load as literal text).")
 
+    def _render_template(self, t: dict, values: dict):
+        """Renders one template — its custom free-form layout if it has
+        one (non-empty "layout"), else the classic fixed 5-slot layout —
+        with placeholders in either substituted from `values`. Every
+        template that predates the layout editor has no "layout" key, so
+        this is the single dispatch point that keeps them rendering
+        exactly as before."""
+        layout = t.get("layout")
+        if layout:
+            elements = [
+                {**el, "text": templates.apply_placeholders(el.get("text", ""), values)}
+                for el in layout
+            ]
+            return label.render_label_custom(elements)
+        data = label.LabelData(**{
+            key: templates.apply_placeholders(t.get(key, ""), values) for key in self.fields
+        })
+        return label.render_label(data)
+
     def _print_templates(self, printer: str, template_list: list[dict], values: dict, context_label: str) -> int:
-        """Renders + prints each template in template_list — placeholders in
-        its fields substituted from `values` — its own saved copies count
-        each. Returns how many fully succeeded; a per-template failure (e.g.
+        """Renders + prints each template in template_list — placeholders
+        substituted from `values` — its own saved copies count each.
+        Returns how many fully succeeded; a per-template failure (e.g.
         printer went offline mid-batch) is logged and skipped rather than
         aborting the rest (see _print_copies)."""
         ok = 0
         for t in template_list:
-            data = label.LabelData(**{
-                key: templates.apply_placeholders(t.get(key, ""), values) for key in self.fields
-            })
+            img = self._render_template(t, values)
             copies = max(1, int(t.get("copies", 1)))
-            job_label = f"{t.get('name', data.camera_number)} [{context_label}]"
-            if self._print_copies(printer, data, copies, job_label=job_label):
+            job_label = f"{t.get('name', 'template')} [{context_label}]"
+            if self._print_copies(printer, img, copies, job_label=job_label):
                 ok += 1
         return ok
 

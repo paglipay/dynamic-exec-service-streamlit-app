@@ -48,11 +48,14 @@ class LabelData:
     ip_address: str = ""
 
 
-def _font(size: int) -> ImageFont.FreeTypeFont:
+def _font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
     """Best-effort: use a bundled Windows font if available, else PIL's
     built-in default (which ignores `size`, so scale via image size
-    instead in that fallback case)."""
-    for candidate in ("arialbd.ttf", "arial.ttf", "seguisb.ttf"):
+    instead in that fallback case). Every fixed-layout call site below
+    wants bold (the original, still-default behavior); only the free-form
+    layout editor's per-element Bold toggle ever passes bold=False."""
+    candidates = ("arialbd.ttf", "seguisb.ttf") if bold else ("arial.ttf", "segoeui.ttf")
+    for candidate in candidates:
         try:
             return ImageFont.truetype(candidate, size)
         except Exception:
@@ -126,6 +129,40 @@ def render_label(data: LabelData) -> Image.Image:
     serial_font = _fit_font(draw, serial_text, usable_w, line_h - 4, max_size=36, min_size=14)
     draw.text((MARGIN, y), serial_text, font=serial_font, fill="black")
 
+    draw.rectangle((2, 2, WIDTH_PX - 2, HEIGHT_PX - 2), outline="black", width=2)
+    return img
+
+
+def render_label_custom(elements: list[dict]) -> Image.Image:
+    """Renders a template's free-form layout (see the "layout" key in
+    templates.py's docstring) -- each element independently positioned,
+    instead of render_label's fixed header/camera#/model/serial bands.
+
+    Each element: {"text", "x", "y", "font_size", "align", "bold"}. x/y
+    are in this label's native 600x300 (2in x 1in @ 300dpi) pixel space --
+    WIDTH_PX/HEIGHT_PX above -- resolution-independent of whatever scale
+    the layout editor's canvas displays them at. (x, y) is the vertical
+    center of the text, at its left/center/right edge per `align` -- a
+    natural drag handle, and avoids baseline-vs-top ambiguity.
+
+    Unlike render_label's _fit_font, nothing here auto-shrinks to fit --
+    that would fight a tool whose whole point is direct manual control.
+    An element positioned or sized to run off the label's edge just does;
+    the editor's own preview makes that visible before it's printed.
+
+    `text` is expected already placeholder-resolved by the caller (see
+    print_agent.py's _print_templates) -- this module stays a pure
+    renderer with no knowledge of the placeholder/template system."""
+    img = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
+    draw = ImageDraw.Draw(img)
+    anchors = {"left": "lm", "center": "mm", "right": "rm"}
+    for el in elements:
+        font = _font(int(el.get("font_size", 24)), bold=el.get("bold", True))
+        anchor = anchors.get(el.get("align", "left"), "lm")
+        draw.text(
+            (el.get("x", 0), el.get("y", 0)), el.get("text", ""),
+            font=font, fill="black", anchor=anchor,
+        )
     draw.rectangle((2, 2, WIDTH_PX - 2, HEIGHT_PX - 2), outline="black", width=2)
     return img
 
