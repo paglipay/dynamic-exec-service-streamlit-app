@@ -263,6 +263,7 @@ class PrintAgentApp:
             model_number=job.get("model_number") or "",
             site_name=job.get("site_name") or "",
             loc_code=job.get("loc_code") or "",
+            ip_address=job.get("ip_address") or "",  # not in the broker's job payload yet — always "" for now
         )
         try:
             img = label.render_label(data)
@@ -286,13 +287,14 @@ class PrintAgentApp:
         # scan data (not the Label fields section, which is irrelevant here).
         included = [t for t in self._templates if t.get("include", True)]
         if included:
-            values = {
+            values = templates.build_placeholder_values({
                 "camera_number": job.get("camera_number") or "",
                 "serial_number": job.get("serial_number") or "",
                 "model_number": job.get("model_number") or "",
                 "site_name": job.get("site_name") or "",
                 "loc_code": job.get("loc_code") or "",
-            }
+                "ip_address": job.get("ip_address") or "",
+            })
             ok = self._print_templates(printer, included, values, context_label=data.camera_number)
             self._log(f"📑 Included templates for {data.camera_number}: {ok}/{len(included)} sent.")
 
@@ -314,6 +316,12 @@ class PrintAgentApp:
             ("model_number", "Model Number", "P3827-PVE"),
             ("site_name", "Site Name", "Will Rogers Continuation High"),
             ("loc_code", "Loc Code", "8895"),
+            # Not part of render_label's fixed layout (see LabelData) --
+            # exists purely as a value for a template's {ip_address}
+            # placeholder. A real Live Mode scan doesn't carry this yet
+            # (the broker's job payload has no ip_address field), so it
+            # only has real content here, from a manual trigger.
+            ("ip_address", "IP Address", "10.20.30.40"),
         ]
         for i, (key, label_text, default) in enumerate(rows):
             ttk.Label(frame, text=label_text, width=16).grid(row=i, column=0, padx=8, pady=4, sticky="w")
@@ -322,13 +330,7 @@ class PrintAgentApp:
             self.fields[key] = var
 
     def _current_label_data(self) -> label.LabelData:
-        return label.LabelData(
-            camera_number=self.fields["camera_number"].get().strip(),
-            serial_number=self.fields["serial_number"].get().strip(),
-            model_number=self.fields["model_number"].get().strip(),
-            site_name=self.fields["site_name"].get().strip(),
-            loc_code=self.fields["loc_code"].get().strip(),
-        )
+        return label.LabelData(**{key: var.get().strip() for key, var in self.fields.items()})
 
     # ── Actions ───────────────────────────────────────────────────────────
     def _build_actions(self):
@@ -406,8 +408,9 @@ class PrintAgentApp:
         ttk.Label(
             frame,
             text=(
-                "Fields may use {camera_number} {serial_number} {model_number} {site_name} {loc_code} — filled in "
-                "from the Label fields above (or, for Included templates, from a real scan) when printed."
+                "Fields may use {camera_number} {serial_number} {model_number} {site_name} {loc_code} {ip_address}"
+                " — filled in from the Label fields above (or, for Included templates, from a real scan) when "
+                "printed. Also: {location_code} (same as loc_code) and {serial_last4} (last 4 of serial_number)."
             ),
             wraplength=520, justify="left", foreground="#555",
         ).pack(fill="x", padx=8, pady=(8, 4))
@@ -504,8 +507,11 @@ class PrintAgentApp:
 
         ttk.Label(
             dialog,
-            text="Placeholders: {camera_number} {serial_number} {model_number} {site_name} {loc_code}",
-            foreground="#555",
+            text=(
+                "Placeholders: {camera_number} {serial_number} {model_number} {site_name} {loc_code} {ip_address}\n"
+                "Also: {location_code} (same as loc_code), {serial_last4} (last 4 of serial_number)"
+            ),
+            justify="left", foreground="#555",
         ).grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 6), sticky="w")
 
         ttk.Label(dialog, text="Name", width=14).grid(row=1, column=0, padx=10, pady=4, sticky="w")
@@ -514,6 +520,7 @@ class PrintAgentApp:
         field_labels = [
             ("camera_number", "Camera Number"), ("serial_number", "Serial Number"),
             ("model_number", "Model Number"), ("site_name", "Site Name"), ("loc_code", "Loc Code"),
+            ("ip_address", "IP Address"),
         ]
         for i, (key, text) in enumerate(field_labels, start=2):
             ttk.Label(dialog, text=text, width=14).grid(row=i, column=0, padx=10, pady=4, sticky="w")
@@ -596,7 +603,8 @@ class PrintAgentApp:
         return ok
 
     def _current_field_values(self) -> dict:
-        return {key: var.get().strip() for key, var in self.fields.items()}
+        raw = {key: var.get().strip() for key, var in self.fields.items()}
+        return templates.build_placeholder_values(raw)
 
     def _print_selected_templates(self):
         indices = self._selected_template_indices()

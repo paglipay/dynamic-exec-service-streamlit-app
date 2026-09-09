@@ -40,6 +40,12 @@ class LabelData:
     model_number: str
     site_name: str
     loc_code: str = ""
+    # Not part of the fixed 5-slot layout render_label draws below --
+    # available purely as a {ip_address} placeholder value (see
+    # templates.py) for a template that folds it into one of the other
+    # slots (e.g. Model Number field customized to "IP: {ip_address}").
+    # Real Live Mode broker jobs don't carry this yet -- see print_agent.py.
+    ip_address: str = ""
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont:
