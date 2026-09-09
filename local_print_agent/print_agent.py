@@ -513,6 +513,32 @@ class PrintAgentApp:
         templates.save(self._templates)
         self._refresh_template_list()
 
+    def _build_placeholder_picker(self, parent, insert_callback) -> ttk.Frame:
+        """A multiselect list of the fixed, curated set of allowed
+        placeholder tokens (templates.ALLOWED_PLACEHOLDERS) plus an Insert
+        button -- replaces hand-typing {token} syntax (easy to typo, and
+        apply_placeholders can't tell a typo from a token that just isn't
+        provided yet, so a mistake silently prints as literal text instead
+        of an error). Selecting several and clicking Insert joins them with
+        a single space; `insert_callback(text)` decides where that lands
+        (e.g. at whichever field/element text last had focus)."""
+        frame = ttk.Frame(parent)
+        listbox = tk.Listbox(frame, height=5, selectmode="extended", exportselection=False)
+        for key, note in templates.ALLOWED_PLACEHOLDERS:
+            listbox.insert("end", "{" + key + "}" + (f"   — {note}" if note else ""))
+        listbox.pack(side="left", fill="both", expand=True)
+
+        def do_insert():
+            indices = listbox.curselection()
+            if not indices:
+                return
+            tokens = " ".join("{" + templates.ALLOWED_PLACEHOLDERS[i][0] + "}" for i in indices)
+            insert_callback(tokens)
+            listbox.selection_clear(0, "end")
+
+        ttk.Button(frame, text="➕ Insert", command=do_insert).pack(side="left", padx=(6, 0), anchor="n")
+        return frame
+
     def _new_template(self):
         self._open_template_editor(None)
 
@@ -549,13 +575,9 @@ class PrintAgentApp:
 
         row = 0
         ttk.Label(
-            dialog,
-            text=(
-                "Placeholders: {camera_number} {serial_number} {model_number} {site_name} {loc_code} {ip_address}\n"
-                "Also: {location_code} (same as loc_code), {serial_last4} (last 4 of serial_number)"
-            ),
+            dialog, text="Click into a field below, pick placeholder(s) from the list, then Insert.",
             justify="left", foreground="#555",
-        ).grid(row=row, column=0, columnspan=2, padx=10, pady=(10, 6), sticky="w")
+        ).grid(row=row, column=0, columnspan=2, padx=10, pady=(10, 4), sticky="w")
         row += 1
 
         if existing and existing.get("layout"):
@@ -570,6 +592,14 @@ class PrintAgentApp:
         ttk.Entry(dialog, textvariable=name_var, width=42).grid(row=row, column=1, padx=10, pady=4, sticky="w")
         row += 1
 
+        # Whichever field Entry last had focus is where the placeholder
+        # picker's Insert button lands its selection -- see
+        # _build_placeholder_picker. Defaults to Camera Number so Insert
+        # still does something sensible before the tech has clicked into
+        # any field yet.
+        field_entries: dict[str, tk.Entry] = {}
+        focused_entry = [None]
+
         field_labels = [
             ("camera_number", "Camera Number"), ("serial_number", "Serial Number"),
             ("model_number", "Model Number"), ("site_name", "Site Name"), ("loc_code", "Loc Code"),
@@ -577,8 +607,26 @@ class PrintAgentApp:
         ]
         for key, text in field_labels:
             ttk.Label(dialog, text=text, width=14).grid(row=row, column=0, padx=10, pady=4, sticky="w")
-            ttk.Entry(dialog, textvariable=field_vars[key], width=42).grid(row=row, column=1, padx=10, pady=4, sticky="w")
+            entry = ttk.Entry(dialog, textvariable=field_vars[key], width=42)
+            entry.grid(row=row, column=1, padx=10, pady=4, sticky="w")
+            entry.bind("<FocusIn>", lambda _e, en=entry: focused_entry.__setitem__(0, en))
+            field_entries[key] = entry
             row += 1
+        focused_entry[0] = field_entries["camera_number"]
+
+        def insert_into_focused_field(tokens: str):
+            entry = focused_entry[0] or field_entries["camera_number"]
+            var = next(v for k, v in field_vars.items() if field_entries[k] is entry)
+            pos = entry.index(tk.INSERT)
+            current = var.get()
+            var.set(current[:pos] + tokens + current[pos:])
+            entry.focus_set()
+            entry.icursor(pos + len(tokens))
+
+        self._build_placeholder_picker(dialog, insert_into_focused_field).grid(
+            row=row, column=0, columnspan=2, padx=10, pady=(2, 8), sticky="ew"
+        )
+        row += 1
 
         copies_row = row
         ttk.Label(dialog, text="Copies", width=14).grid(row=copies_row, column=0, padx=10, pady=4, sticky="w")
@@ -660,11 +708,7 @@ class PrintAgentApp:
         dialog.grab_set()
 
         ttk.Label(
-            dialog,
-            text=(
-                "Drag an element to reposition it. Placeholders: {camera_number} {serial_number} {model_number}\n"
-                "{site_name} {loc_code} {ip_address} {location_code} {serial_last4}"
-            ),
+            dialog, text="Drag an element to reposition it. Select it below to edit its text, size, and alignment.",
             justify="left", foreground="#555",
         ).pack(padx=10, pady=(10, 6), anchor="w")
 
@@ -708,6 +752,18 @@ class PrintAgentApp:
         remove_btn = ttk.Button(props, text="🗑️ Remove Element", command=lambda: remove_selected())
         remove_btn.grid(row=2, column=3, padx=8, pady=4, sticky="e")
 
+        def insert_into_text(tokens: str):
+            pos = text_entry.index(tk.INSERT)
+            current = text_var.get()
+            text_var.set(current[:pos] + tokens + current[pos:])
+            text_entry.focus_set()
+            text_entry.icursor(pos + len(tokens))
+
+        picker = self._build_placeholder_picker(props, insert_into_text)
+        picker.grid(row=3, column=0, columnspan=4, padx=8, pady=(2, 8), sticky="ew")
+        picker_listbox = picker.winfo_children()[0]
+        picker_button = picker.winfo_children()[1]
+
         preview_frame = ttk.LabelFrame(dialog, text="Preview")
         preview_frame.pack(fill="x", padx=10, pady=(0, 6))
         preview_label_widget = ttk.Label(preview_frame)
@@ -723,20 +779,60 @@ class PrintAgentApp:
             align_combo.configure(state="readonly" if enabled else "disabled")
             bold_check.configure(state="normal" if enabled else "disabled")
             remove_btn.configure(state="normal" if enabled else "disabled")
+            picker_listbox.configure(state="normal" if enabled else "disabled")
+            picker_button.configure(state="normal" if enabled else "disabled")
+
+        # idx -> canvas item id. A full rebuild (redraw_canvas, delete+
+        # recreate every item) invalidates every existing id -- fine for
+        # structural changes (add/remove/clear), but deadly mid-drag: Tk's
+        # implicit grab that routes <B1-Motion>/<ButtonRelease-1> to the
+        # item a <ButtonPress-1> started on does NOT survive that item
+        # being deleted and replaced with a new one, so a rebuild
+        # triggered by select_element (itself called from a drag's own
+        # start_drag) silently killed every drag after the first pixel of
+        # motion. Selection, dragging, and property edits below all use
+        # targeted coords()/itemconfigure() on the existing id instead --
+        # only add/remove/clear_all still call the full rebuild.
+        canvas_items: dict[int, int] = {}
+
+        def item_font(el: dict):
+            return ("Arial", max(1, int(el.get("font_size", 24))), "bold" if el.get("bold", True) else "normal")
+
+        def item_color(idx: int) -> str:
+            return "#1a56db" if idx == selected_idx[0] else "black"
 
         def redraw_canvas():
             canvas.delete("all")
             canvas.create_rectangle(2, 2, label.WIDTH_PX - 2, label.HEIGHT_PX - 2, outline="#ccc")
+            canvas_items.clear()
             for idx, el in enumerate(working):
-                weight = "bold" if el.get("bold", True) else "normal"
                 item = canvas.create_text(
                     el.get("x", 0), el.get("y", 0), text=el.get("text", "") or "(empty)",
-                    font=("Arial", max(1, int(el.get("font_size", 24))), weight),
-                    anchor=anchor_map.get(el.get("align", "left"), "w"),
-                    fill="#1a56db" if idx == selected_idx[0] else "black",
+                    font=item_font(el), anchor=anchor_map.get(el.get("align", "left"), "w"),
+                    fill=item_color(idx),
                 )
+                canvas_items[idx] = item
                 canvas.tag_bind(item, "<ButtonPress-1>", lambda e, i=idx: start_drag(e, i))
                 canvas.tag_bind(item, "<B1-Motion>", lambda e, i=idx: do_drag(e, i))
+
+        def refresh_item_visual(idx: int):
+            """Updates one item's text/font/anchor/color on its existing
+            canvas id -- no delete/recreate, so its id (and tag_bind) stay
+            valid if this fires mid-drag (e.g. a picker Insert while
+            dragging isn't possible today, but selection-color updates
+            during start_drag are, and this keeps that safe too)."""
+            item = canvas_items.get(idx)
+            if item is None:
+                return
+            el = working[idx]
+            canvas.itemconfigure(
+                item, text=el.get("text", "") or "(empty)", font=item_font(el),
+                anchor=anchor_map.get(el.get("align", "left"), "w"), fill=item_color(idx),
+            )
+
+        def refresh_all_colors():
+            for idx, item in canvas_items.items():
+                canvas.itemconfigure(item, fill=item_color(idx))
 
         def select_element(idx):
             selected_idx[0] = idx
@@ -752,15 +848,19 @@ class PrintAgentApp:
                 bold_var.set(el.get("bold", True))
                 set_props_enabled(True)
             _suspend_trace[0] = False
-            redraw_canvas()
+            refresh_all_colors()
 
         def on_canvas_click(event):
-            # Tkinter tags whatever's directly under the cursor "current" --
-            # empty means the click missed every element, i.e. deselect.
             # Item clicks are handled by each element's own tag_bind above
-            # via start_drag, which also selects -- this only ever fires
-            # the deselect branch in practice.
-            if not canvas.find_withtag("current"):
+            # via start_drag, which also selects -- this only needs to
+            # catch a click that missed every item, to deselect. Checked
+            # via find_overlapping at the exact click point (an item's
+            # real bbox at event time) rather than Tk's "current" tag,
+            # which only updates from pointer *motion* -- a click with no
+            # preceding hover (the very first click after the dialog
+            # opens, or any programmatically-driven click) would otherwise
+            # never populate it, wrongly deselecting on a genuine hit.
+            if not canvas.find_overlapping(event.x, event.y, event.x, event.y):
                 select_element(None)
 
         canvas.bind("<ButtonPress-1>", on_canvas_click)
@@ -776,7 +876,9 @@ class PrintAgentApp:
                 return
             working[idx]["x"] = max(0, min(label.WIDTH_PX, drag_state["orig_x"] + (event.x - drag_state["start_x"])))
             working[idx]["y"] = max(0, min(label.HEIGHT_PX, drag_state["orig_y"] + (event.y - drag_state["start_y"])))
-            redraw_canvas()
+            item = canvas_items.get(idx)
+            if item is not None:
+                canvas.coords(item, working[idx]["x"], working[idx]["y"])
 
         def on_prop_change(*_args):
             if _suspend_trace[0]:
@@ -791,19 +893,24 @@ class PrintAgentApp:
                 pass
             working[idx]["align"] = align_var.get()
             working[idx]["bold"] = bold_var.get()
-            redraw_canvas()
+            refresh_item_visual(idx)
 
         text_var.trace_add("write", on_prop_change)
         size_var.trace_add("write", on_prop_change)
         align_var.trace_add("write", on_prop_change)
         bold_var.trace_add("write", on_prop_change)
 
+        # add/remove/clear change *how many* elements there are, unlike
+        # selection/drag/property edits above -- these still go through
+        # the full redraw_canvas rebuild (safe here: none of them can fire
+        # mid-drag, only from their own buttons).
         def add_element():
             working.append({
                 "text": "{camera_number}", "x": label.WIDTH_PX // 2, "y": label.HEIGHT_PX // 2,
                 "font_size": 32, "align": "center", "bold": True,
             })
             select_element(len(working) - 1)
+            redraw_canvas()
 
         def remove_selected():
             idx = selected_idx[0]
@@ -811,6 +918,7 @@ class PrintAgentApp:
                 return
             del working[idx]
             select_element(None)
+            redraw_canvas()
 
         def clear_all():
             if working and not messagebox.askyesno(
@@ -819,6 +927,7 @@ class PrintAgentApp:
                 return
             working.clear()
             select_element(None)
+            redraw_canvas()
 
         def do_preview():
             values = self._current_field_values()
@@ -845,7 +954,8 @@ class PrintAgentApp:
         ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
         dialog.bind("<Escape>", lambda _e: dialog.destroy())
 
-        redraw_canvas()
+        select_element(None)  # nothing selected at open -- disables the property panel + picker
+        redraw_canvas()  # first draw -- canvas_items starts empty, so this is the initial build
 
     def _load_template(self):
         indices = self._selected_template_indices()

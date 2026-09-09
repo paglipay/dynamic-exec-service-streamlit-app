@@ -58,6 +58,20 @@ def apply_placeholders(text: str, values: dict) -> str:
     return _PLACEHOLDER_RE.sub(repl, text or "")
 
 
+ALLOWED_PLACEHOLDERS: list[tuple[str, str]] = [
+    ("camera_number", ""),
+    ("serial_number", ""),
+    ("model_number", ""),
+    ("site_name", ""),
+    ("loc_code", ""),
+    ("ip_address", ""),
+    ("location_code", "alias for loc_code"),
+    ("serial_last4", "last 4 of serial_number"),
+]  # the fixed, curated set print_agent.py's placeholder picker offers --
+   # multiselect-and-insert instead of hand-typing {token} syntax, which
+   # invites typos apply_placeholders can't distinguish from a real miss.
+
+
 def build_placeholder_values(raw: dict) -> dict:
     """Expands a raw field dict (camera_number, serial_number, model_number,
     site_name, loc_code, ip_address) with the two derived/aliased tokens
