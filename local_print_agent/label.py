@@ -1,14 +1,20 @@
 """label.py — Renders a camera asset label as a PIL image.
 
-Size/DPI are placeholders until a real label printer + stock size is
-chosen (see project notes on the printing intention). 4in x 2in at
-300 DPI is a common small-label size (e.g. Dymo/Zebra shipping-style
-labels) and prints legibly to a full sheet via "Microsoft Print to
-PDF" too, which is what we're testing against for now.
+2in x 1in at 300 DPI -- the real label stock size (Dymo/Zebra-style
+small labels), sized to match. printing.py scales whatever image this
+produces to fill the printer's page while preserving aspect ratio, so
+this file is the one place label dimensions need to change.
+
+At this size there's no room for a fixed layout that also handles both
+a short camera number ("CAM6") and force-print's "UNASSIGNED"
+placeholder (see camera_barcode_scan.py) without either wasting space
+or clipping -- every line below is sized via _fit_font, which picks
+the largest font that still fits its band, so short text fills the
+available area and long text shrinks instead of overflowing.
 
 No barcode yet — just the fields a technician needs to read by eye.
 Add one later (e.g. `python-barcode` or `qrcode`) once real label
-stock/printer specs are known; the layout below leaves room for it.
+stock/printer specs are known.
 """
 
 from __future__ import annotations
@@ -19,12 +25,12 @@ from typing import Optional
 from PIL import Image, ImageDraw, ImageFont
 
 DPI = 300
-WIDTH_IN = 4.0
-HEIGHT_IN = 2.0
-WIDTH_PX = int(WIDTH_IN * DPI)
-HEIGHT_PX = int(HEIGHT_IN * DPI)
+WIDTH_IN = 2.0
+HEIGHT_IN = 1.0
+WIDTH_PX = int(WIDTH_IN * DPI)   # 600
+HEIGHT_PX = int(HEIGHT_IN * DPI)  # 300
 
-MARGIN = 40
+MARGIN = 12
 
 
 @dataclass
@@ -48,31 +54,73 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
+def _fit_font(
+    draw: ImageDraw.ImageDraw, text: str, max_width: int, max_height: int,
+    max_size: int, min_size: int = 10,
+) -> ImageFont.FreeTypeFont:
+    """Largest font size (down to min_size, step 2) whose rendered bounding
+    box fits within max_width x max_height. Lets a short string (a normal
+    "CAM06") fill however much of its band the text actually needs, while
+    a long one (force-print's "UNASSIGNED", a long serial) shrinks to fit
+    instead of clipping or overflowing the label."""
+    size = max_size
+    while size > min_size:
+        font = _font(size)
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+        if (right - left) <= max_width and (bottom - top) <= max_height:
+            return font
+        size -= 2
+    return _font(min_size)
+
+
 def render_label(data: LabelData) -> Image.Image:
     img = Image.new("RGB", (WIDTH_PX, HEIGHT_PX), "white")
     draw = ImageDraw.Draw(img)
 
+    usable_w = WIDTH_PX - 2 * MARGIN
     y = MARGIN
-    draw.text((MARGIN, y), data.site_name, font=_font(38), fill="black")
-    y += 52
 
+    # Header: site name + loc code sharing one line -- the least critical
+    # field at this size, so it gets the smallest band and shrinks first.
+    header = data.site_name or ""
     if data.loc_code:
-        draw.text((MARGIN, y), f"Loc Code: {data.loc_code}", font=_font(28), fill="black")
-        y += 42
+        header = f"{header}  ({data.loc_code})" if header else data.loc_code
+    if header:
+        header_font = _fit_font(draw, header, usable_w, 24, max_size=22, min_size=11)
+        draw.text((MARGIN, y), header, font=header_font, fill="black")
+        y += header_font.size + 4
 
-    draw.line((MARGIN, y, WIDTH_PX - MARGIN, y), fill="black", width=3)
-    y += 24
+    draw.line((MARGIN, y, WIDTH_PX - MARGIN, y), fill="black", width=2)
+    y += 5
 
-    draw.text((MARGIN, y), "CAMERA #", font=_font(28), fill="black")
-    y += 34
-    draw.text((MARGIN, y), data.camera_number or "—", font=_font(110), fill="black")
-    y += 140
+    # Camera number: the dominant element on the label -- centered in a
+    # fixed-height band sized to whatever font width the text needs, up to
+    # nearly the full label width.
+    cam_band_h = 140
+    cam_text = data.camera_number or "—"
+    cam_font = _fit_font(draw, cam_text, usable_w, cam_band_h, max_size=170, min_size=28)
+    draw.text((WIDTH_PX / 2, y + cam_band_h / 2), cam_text, font=cam_font, fill="black", anchor="mm")
+    y += cam_band_h + 4
 
-    draw.text((MARGIN, y), f"Model:  {data.model_number}", font=_font(32), fill="black")
-    y += 46
-    draw.text((MARGIN, y), f"Serial: {data.serial_number}", font=_font(32), fill="black")
+    draw.line((MARGIN, y, WIDTH_PX - MARGIN, y), fill="black", width=2)
+    y += 6
 
-    draw.rectangle((4, 4, WIDTH_PX - 4, HEIGHT_PX - 4), outline="black", width=2)
+    # Model / Serial -- split whatever height remains into two lines,
+    # abbreviated ("M:"/"S:" not "Model:"/"Serial:") to leave more width
+    # for the value itself, each shrunk to fit independently.
+    remaining_h = HEIGHT_PX - MARGIN - y
+    line_h = remaining_h // 2
+
+    model_text = f"M: {data.model_number}"
+    model_font = _fit_font(draw, model_text, usable_w, line_h - 4, max_size=36, min_size=14)
+    draw.text((MARGIN, y), model_text, font=model_font, fill="black")
+    y += line_h
+
+    serial_text = f"S: {data.serial_number}"
+    serial_font = _fit_font(draw, serial_text, usable_w, line_h - 4, max_size=36, min_size=14)
+    draw.text((MARGIN, y), serial_text, font=serial_font, fill="black")
+
+    draw.rectangle((2, 2, WIDTH_PX - 2, HEIGHT_PX - 2), outline="black", width=2)
     return img
 
 
