@@ -9,6 +9,10 @@ render_ai_assistant_panel("README Viewer")
 st.title("Dynamic Exec Streamlit UI - Updated Front Page")
 st.write("Displays the contents of the README.md file in this folder as markdown.")
 
+# Test button
+if st.button("Click me"):
+    st.success("Deploy test successful! 🎉")
+
 readme_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "README.md")
 
 if os.path.exists(readme_path):
